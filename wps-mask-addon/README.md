@@ -16,7 +16,7 @@ Select a range and replace every value with realistic fake data; the originals a
 | Text is a prefix plus a random numeric suffix | Prefix defaults to the field name (e.g. 姓名37) and stays editable. Suffix digits default to the fewest that hold this column's non-blank cells with 10% headroom, so 41 customers get 姓名37, never 姓名0037; editable 1–8 |
 | Auto-detect the field name and type | Header matched against 手机/电话/phone/tel → phone; ≥60% of values shaped like a mobile number → phone; ≥80% numeric → number; everything else → text with the field name as prefix. Whole-column and whole-row selections resolve the field name correctly |
 | One-click reverse mapping, mapping stored encrypted | "反映射回原值" looks each cell up in the encrypted table and writes the original back, preserving number/text type and blanks; the table is AES-128-CBC ciphertext in a hidden worksheet |
-| Remember the last settings for this document | Per-field type, distribution, parameters, and prefix are stored in the same encrypted blob, keyed by field name; "重新识别" ignores them and re-detects |
+| Remember the last settings for this document | Per-field type, distribution, parameters, and prefix are stored in the same encrypted blob, keyed by field name; a numeric interval only grows (union with the current data), so a wider column elsewhere never trips the old range; "重新识别" ignores them and re-detects |
 
 ## Install
 
@@ -114,7 +114,7 @@ A junction needs no admin rights or developer mode; a hard link cannot point at 
 | Reverse mapping restored only part of the range | The selection must match the one used to mask; or the column parameters changed, in which case the lookup prefers the current signature before falling back to the global table |
 | Re-masking a column changes nothing | Those cells already hold mapped values, so they are skipped. Revert first if you meant to map the current values again |
 | Numbers show as left-aligned text | Those cells were text-formatted and kept it. Change the cell format |
-| "装不下 N 个不同值" | The interval cannot hold these distinct values (12 amounts inside 1–5). Widen the bounds or add decimal places |
+| "装不下 N 个不同值" | The interval cannot hold these distinct values (12 amounts inside 1–5). Auto-mapping widens the bounds, so this only appears after you narrow them by hand |
 | "解密失败" | `KEY_TEXT` changed, or the hidden table was edited by hand |
 | A mixed cell came back as "字段名+数字" though it looked like an account | It fits none of the five shapes — Chinese text, a one-character value, a code beginning with a digit such as `2024abc`, or one carrying punctuation other than `_ . -` and spaces. The text fallback is still one-to-one and reverts correctly |
 

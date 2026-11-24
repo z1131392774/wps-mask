@@ -505,5 +505,61 @@ const mergedBucket = merged.maps['text|姓名|1'];
 ok(Object.keys(mergedBucket).length === 1 && merged.migrated.dropped === 1,
     '撞值的第二条被丢弃，不产生二对一：' + JSON.stringify(mergedBucket) + ' ' + JSON.stringify(merged.migrated));
 
+/* ---------- 24. 记忆的数值区间只扩不缩 ---------- */
+console.log('\n[24] 记忆的数值区间只扩不缩');
+// 同一个工作簿里两个 sheet 都有「年龄」，第二个值域更宽。
+// 记忆里若原样沿用上一批的区间，第二批就会被「区间装不下 N 个不同值」拦下来。
+function ageRows(from, to) {
+    const rows = [['年龄']];
+    for (let a = from; a <= to; a++) { rows.push([a]); }
+    return rows;
+}
+const ageApp = new MockWPS();
+ageApp.ActiveWorkbook.addSheet('Sheet2');
+ageApp.ActiveWorkbook.addSheet('Sheet3');
+ageApp.setTable('Sheet1', 1, 1, ageRows(20, 40));   // 21 个不同值
+ageApp.setTable('Sheet2', 1, 1, ageRows(20, 46));   // 27 个不同值
+ageApp.setTable('Sheet3', 1, 1, ageRows(25, 30));   // 更窄的一批
+
+// 第一批：区间刚好用完 21 个整数
+ageApp.select('Sheet1', 1, 1, 22, 1);
+let av = Engine.loadVault(ageApp);
+Engine.applyMask(Engine.hydrate(Engine.analyze(ageApp, {}), av), av, {});
+Engine.saveVault(ageApp, av);
+const fakeOf28 = ageApp.getCell('Sheet1', 10, 1);
+ok(fakeOf28 !== 28 && typeof fakeOf28 === 'number', '第一批 28 → ' + fakeOf28);
+ok(Engine.loadVault(ageApp).settings['年龄'].max === 40,
+    '记住的区间就是这批数据的范围：' + JSON.stringify(Engine.loadVault(ageApp).settings['年龄']));
+
+// 第二批：值域扩到 20~46，记忆里的 20~40 只有 21 个槽
+ageApp.select('Sheet2', 1, 1, 28, 1);
+av = Engine.loadVault(ageApp);
+let am = Engine.hydrate(Engine.analyze(ageApp, {}), av);
+ok(am.columns[0].cfg.min === 20 && am.columns[0].cfg.max === 46,
+    '区间并到本批数据范围：' + am.columns[0].cfg.min + '~' + am.columns[0].cfg.max);
+let aErr = null;
+try { Engine.applyMask(am, av, {}); } catch (e) { aErr = e.message; }
+ok(aErr === null, '值域变大不再中断' + (aErr ? '，实际报错：' + aErr : ''));
+ok(ageApp.getCell('Sheet2', 10, 1) === fakeOf28,
+    '28 在新 sheet 沿用第一批的假值：' + ageApp.getCell('Sheet2', 10, 1));
+Engine.saveVault(ageApp, av);
+const numSigs = Object.keys(Engine.loadVault(ageApp).maps).filter(s => s.indexOf('num|') === 0);
+ok(numSigs.length === 1 && numSigs[0].indexOf('|20|46|') > 0,
+    '旧桶已并到新签名下，只剩一个：' + numSigs.join(','));
+ok(Engine.loadVault(ageApp).settings['年龄'].max === 46, '区间扩张后同步写回记忆');
+
+// 第三批：数据更窄，区间不缩，已映射的原值不再新建记录
+ageApp.select('Sheet3', 1, 1, 7, 1);
+av = Engine.loadVault(ageApp);
+const a3 = Engine.applyMask(Engine.hydrate(Engine.analyze(ageApp, {}), av), av, {});
+ok(a3.created === 0 && a3.written === 6, '窄批次全部命中已有记录：新建 ' + a3.created + '，写入 ' + a3.written);
+ok(ageApp.getCell('Sheet3', 5, 1) === fakeOf28, '28 在第三个 sheet 仍是同一个假值');
+
+// 旧区域的假值照样能还原
+ageApp.select('Sheet1', 1, 1, 22, 1);
+av = Engine.loadVault(ageApp);
+Engine.revert(Engine.hydrate(Engine.analyze(ageApp, {}), av), av);
+ok(ageApp.getCell('Sheet1', 10, 1) === 28, '第一批区域还原成 28，实际 ' + ageApp.getCell('Sheet1', 10, 1));
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

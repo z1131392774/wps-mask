@@ -6,7 +6,7 @@
     'use strict';
 
     var E = MaskEngine;
-    var state = { model: null, vault: null, ready: false, selKey: '' };
+    var state = { model: null, vault: null, ready: false, selKey: '', edited: {} };
     var POLL_MS = 800;
 
     function $(id) { return document.getElementById(id); }
@@ -270,6 +270,7 @@
             if (!cfg.prefix) { cfg.prefix = col.header || '文本'; }
         }
         col.cfg = cfg;
+        state.edited[col.header] = true;   // 只有用户动过的列，换选区时才按字段名带回
         updateSample(card, col);
         return col;
     }
@@ -317,13 +318,15 @@
         }
     }
 
-    // 自动刷新会重建卡片，先把用户已修改的参数按字段名保存
+    // 自动刷新会重建卡片，先把用户已修改的参数按字段名保存。
+    // 只留用户动过的列：没动过的列要拿 hydrate 算出来的新配置，
+    // 否则换选区时会把上一个 sheet 同名列的数值区间搬过来，值域一变就装不下。
     function snapshotCfgs() {
         var out = {};
         if (!state.model) { return out; }
         for (var i = 0; i < state.model.columns.length; i++) {
             var c = state.model.columns[i];
-            if (c.header && c.cfg) { out[c.header] = c.cfg; }
+            if (c.header && c.cfg && state.edited[c.header]) { out[c.header] = c.cfg; }
         }
         return out;
     }
@@ -336,6 +339,8 @@
     }
 
     function refresh(useRemember, keepEdits) {
+        // keepEdits 为假时按映射表重读：面板上的临时改动不再带回，包括"哪些列被改过"这件事
+        if (!keepEdits) { state.edited = {}; }
         var snap = keepEdits ? snapshotCfgs() : null;
         try {
             var a = getApp();
@@ -387,8 +392,10 @@
             var a = getApp();
             var vault = E.loadVault(a);
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
+            // 先按记忆重新套一遍，再覆盖面板上的改动：区间并集和随之的搬桶都发生在 hydrate 里，
+            // 跳过它就会拿着扩过的区间去新桶里发假值，同一批人拿到两套结果
+            E.hydrate(model, vault);
             applySavedCfgs(model);
-
             var stats = E.applyMask(model, vault, {});
             if (stats.written === 0) {
                 setStatus('这个区域已经映射过，先反映射再映射。', '');
@@ -512,6 +519,7 @@
             var i = Number(card.getAttribute('data-i'));
             var col = state.model.columns[i];
             col.cfg = defaultForMode(t.value, col);
+            state.edited[col.header] = true;
             renderCard(card, i);
             return;
         }

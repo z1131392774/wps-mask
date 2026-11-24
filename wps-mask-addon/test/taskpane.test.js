@@ -23,10 +23,15 @@ const table = [
     ['张三', '13800138000', 28, '新签']
 ];
 
-function boot() {
+function boot(rows, extraSheets) {
     const app = new MockWPS();
-    app.setTable('Sheet1', 1, 1, table);
-    app.select('Sheet1', 1, 1, table.length, 4);
+    const t = rows || table;
+    app.setTable('Sheet1', 1, 1, t);
+    (extraSheets || []).forEach(s => {
+        app.ActiveWorkbook.addSheet(s.name);
+        app.setTable(s.name, 1, 1, s.rows);
+    });
+    app.select('Sheet1', 1, 1, t.length, t[0].length);
 
     const html = fs.readFileSync(PANE, 'utf8');
     const vc = new VirtualConsole();
@@ -215,6 +220,29 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         '换到 B:C 后自动更新：' + d2.getElementById('selInfo').textContent);
     ok(d2.querySelectorAll('.card').length === 2,
         '卡片跟着变成 2 张，实际 ' + d2.querySelectorAll('.card').length);
+
+    console.log('\n[12] 面板里值域变大，仍沿用同一套假值');
+    // 面板点「映射」时会重新读一次映射表，再套面板上的配置。若跳过了区间并集与搬桶，
+    // 扩过的区间会去一个空桶里发假值：同一个 sheet 里同名列换了值域，28 就变了个样。
+    const ages = (to) => {
+        const rows = [['年龄']];
+        for (let a = 20; a <= to; a++) { rows.push([a]); }
+        return rows;
+    };
+    const b3 = boot(ages(40), [{ name: 'Sheet2', rows: ages(46) }]);
+    await waitLoad(b3.dom);
+    const d3 = b3.dom.window.document;
+    d3.getElementById('btnMask').click();
+    const fake28 = b3.app.getCell('Sheet1', 10, 1);   // 20 在第 2 行，28 在第 10 行
+    ok(typeof fake28 === 'number' && fake28 !== 28, '第一批 28 → ' + fake28);
+
+    b3.app.select('Sheet2', 1, 1, 28, 1);             // 同一列名，27 个不同值
+    await sleep(1900);
+    d3.getElementById('btnMask').click();
+    ok(b3.app.getCell('Sheet2', 10, 1) === fake28,
+        '另一个 sheet 沿用同一个假值：' + b3.app.getCell('Sheet2', 10, 1));
+    ok(!/失败|装不下/.test(d3.getElementById('status').textContent),
+        '状态栏没有报错：' + d3.getElementById('status').textContent);
 
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
     process.exit(fail === 0 ? 0 : 1);

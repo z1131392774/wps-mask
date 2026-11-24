@@ -553,41 +553,54 @@ var MaskEngine = (function () {
         return migrateVault(obj);
     }
 
+    // 把一个桶的记录搬到另一个桶名下，然后删掉来源桶。
+    // 目标桶已有同名键、或这个假值已被占用，就不搬：宁可丢一条记录，也不能让两个原值指向同一个假值。
+    // 丢掉的记录不影响反映射——反查走的是全局索引，旧假值仍在别的桶里找得到原值。
+    function absorbBucket(maps, fromSig, toSig) {
+        if (fromSig === toSig || !maps[fromSig]) { return { moved: 0, dropped: 0 }; }
+        if (!maps[toSig]) { maps[toSig] = {}; }
+        var from = maps[fromSig], to = maps[toSig];
+        var taken = {}, moved = 0, dropped = 0;
+        for (var tk in to) {
+            if (Object.prototype.hasOwnProperty.call(to, tk) && to[tk] != null) {
+                taken[keyOf(to[tk])] = true;
+            }
+        }
+        for (var k in from) {
+            if (!Object.prototype.hasOwnProperty.call(from, k)) { continue; }
+            var mv = from[k];
+            if (Object.prototype.hasOwnProperty.call(to, k) || (mv != null && taken[keyOf(mv)])) {
+                dropped++;
+                continue;
+            }
+            to[k] = mv;
+            if (mv != null) { taken[keyOf(mv)] = true; }
+            moved++;
+        }
+        delete maps[fromSig];
+        return { moved: moved, dropped: dropped };
+    }
+
     // 文本桶的签名曾是 text|zh|前缀|位数，"语言"下拉删掉后变成 text|前缀|位数。
     // 只改写桶名，桶里的记录、表格里的假值一个都不动：不迁移就等于把旧记录孤立，
     // 同一批人在新区域会再拿一个假值，新旧两个桶位宽相同还会撞值，反映射随之指错人。
     function migrateVault(obj) {
         var moved = 0, dropped = 0;
-        for (var sig in obj.maps) {
-            if (!Object.prototype.hasOwnProperty.call(obj.maps, sig)) { continue; }
-            if (sig.indexOf('text|') !== 0) { continue; }
+        var sigs = [];
+        for (var s0 in obj.maps) {
+            if (Object.prototype.hasOwnProperty.call(obj.maps, s0)) { sigs.push(s0); }
+        }
+        for (var i = 0; i < sigs.length; i++) {
+            var sig = sigs[i];
+            if (!obj.maps[sig] || sig.indexOf('text|') !== 0) { continue; }
             var bar = sig.indexOf('|', 5);
             if (bar < 0) { continue; }
             var seg = sig.substring(5, bar);
             // 只认旧格式中间那段两位语言码：新签名这里放的是前缀，通常不是两个小写字母
             if (!/^[a-z]{2}$/.test(seg)) { continue; }
-            var target = 'text|' + sig.substring(bar + 1);
-            if (!obj.maps[target]) { obj.maps[target] = {}; }
-            var from = obj.maps[sig], to = obj.maps[target];
-            var taken = {};
-            for (var tk in to) {
-                if (Object.prototype.hasOwnProperty.call(to, tk) && to[tk] != null) {
-                    taken[keyOf(to[tk])] = true;
-                }
-            }
-            for (var k in from) {
-                if (!Object.prototype.hasOwnProperty.call(from, k)) { continue; }
-                var mv = from[k];
-                // 目标桶已有同名键，或这个假值已被占用，就不搬：宁可丢一条记录，也不能造出二对一
-                if (Object.prototype.hasOwnProperty.call(to, k) || (mv != null && taken[keyOf(mv)])) {
-                    dropped++;
-                    continue;
-                }
-                to[k] = mv;
-                if (mv != null) { taken[keyOf(mv)] = true; }
-                moved++;
-            }
-            delete obj.maps[sig];
+            var r = absorbBucket(obj.maps, sig, 'text|' + sig.substring(bar + 1));
+            moved += r.moved;
+            dropped += r.dropped;
         }
         obj.v = VAULT_VERSION;
         obj.migrated = moved || dropped ? { moved: moved, dropped: dropped } : undefined;
@@ -812,19 +825,51 @@ var MaskEngine = (function () {
     function hydrate(model, vault) {
         for (var i = 0; i < model.columns.length; i++) {
             var col = model.columns[i];
+            var base = defaultCfg(col.header, col.values);
             var saved = vault.settings[col.header];
-            col.cfg = saved ? mergeCfg(saved, col) : defaultCfg(col.header, col.values);
+            if (!saved) { col.cfg = base; continue; }
+            col.cfg = mergeCfg(saved, base);
+            var before = sigOf(col.cfg);
+            widenInterval(col.cfg, base);
+            var after = sigOf(col.cfg);
+            // 区间也是签名的一部分：扩了就等于换了映射空间，必须把旧记录一起搬过去，
+            // 否则同一批人在新旧区域会各拿一套假值。记录只增不减，旧假值都还在。
+            if (after !== before) {
+                absorbBucket(vault.maps, before, after);
+                vault.settings[col.header] = copyCfg(col.cfg);
+            }
         }
         return model;
     }
 
-    function mergeCfg(saved, col) {
-        var base = defaultCfg(col.header, col.values);
+    function copyCfg(cfg) {
         var out = {};
-        for (var k in base) { if (Object.prototype.hasOwnProperty.call(base, k)) { out[k] = base[k]; } }
-        for (var k2 in saved) { if (Object.prototype.hasOwnProperty.call(saved, k2)) { out[k2] = saved[k2]; } }
+        for (var k in cfg) { if (Object.prototype.hasOwnProperty.call(cfg, k)) { out[k] = cfg[k]; } }
+        return out;
+    }
+
+    function mergeCfg(saved, base) {
+        var out = copyCfg(base);
+        for (var k in saved) { if (Object.prototype.hasOwnProperty.call(saved, k)) { out[k] = saved[k]; } }
         out.mode = saved.mode || base.mode;
         return out;
+    }
+
+    // 记忆里的数值区间记录的是"上次那批数据长什么样"，不是策略。
+    // 直接沿用会让下一次映射撞上「区间只有 N 个整数，装不下 M 个不同值」——
+    // 同一个工作簿里另一个 sheet 同名列值域更宽、或者补了行，都必然触发。
+    // 所以取并集：上次区间 ∪ 本批数据范围，只扩不缩。本批数据装得下，容量就一定够，
+    // 旧的假值也都落在旧的子区间里，扩完照样有效。
+    function widenInterval(cfg, base) {
+        if (!cfg || cfg.mode !== 'number' || base.mode !== 'number') { return; }
+        if ((cfg.dec || 0) > 0 || (base.dec || 0) > 0) { return; }
+        var lo = Number(cfg.min), hi = Number(cfg.max);
+        if (!isFinite(lo) || !isFinite(hi)) { return; }
+        var nlo = Math.min(lo, Number(base.min)), nhi = Math.max(hi, Number(base.max));
+        if (nlo !== lo || nhi !== hi) {
+            cfg.min = nlo;
+            cfg.max = nhi;
+        }
     }
 
     function rememberSettings(vault, model) {
@@ -832,9 +877,8 @@ var MaskEngine = (function () {
             var col = model.columns[i];
             if (!col.header) { continue; }
             if (!col.cfg || col.cfg.mode === 'keep') { continue; }
-            var copy = {};
-            for (var k in col.cfg) { if (Object.prototype.hasOwnProperty.call(col.cfg, k)) { copy[k] = col.cfg[k]; } }
-            vault.settings[col.header] = copy;
+            // 记的是策略和当前区间，下次 hydrate 拿它当起点再按新数据取并集
+            vault.settings[col.header] = copyCfg(col.cfg);
         }
     }
 
