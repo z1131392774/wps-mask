@@ -67,7 +67,7 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 
 ## Usage
 
-**Panel.** Select the range (whole column, whole row, or any block), open "映射面板", press "刷新选区". Each column gets a card with a detected type and a sample value at the bottom. Check the type and parameters, then "映射并写入" — the new values replace the range in place. "反映射回原值" puts the originals back.
+**Panel.** Select the range (whole column, whole row, or any block), open "映射面板", press "刷新选区". Each column gets a card: detected type and a sample value in the header, parameters beneath opened on demand. Check them, then "映射并写入" — the new values replace the range in place. "反映射回原值" puts the originals back.
 
 **Masking twice is safe.** A cell that already holds a value from the mapping table is skipped, and the status line names the columns it skipped. A partial mask followed by a whole-region mask therefore cannot map the same cells twice; to map the current values again, revert first.
 

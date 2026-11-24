@@ -51,7 +51,8 @@
     /* ---------------- 渲染 ---------------- */
 
     function modeOptions(cur) {
-        var list = [['phone', '映射为手机号'], ['number', '映射为数字'], ['text', '映射为文本'], ['keep', '不处理']];
+        // 前缀「映射为」在页头与按钮上已经说过一次，这里只留结果，免得十行重复十遍
+        var list = [['phone', '手机号'], ['number', '数字'], ['text', '文本'], ['keep', '不处理']];
         var out = '';
         for (var i = 0; i < list.length; i++) {
             out += '<option value="' + list[i][0] + '"' + (list[i][0] === cur ? ' selected' : '') + '>' + list[i][1] + '</option>';
@@ -75,7 +76,7 @@
 
     function bodyHtml(cfg) {
         if (cfg.mode === 'phone') {
-            return '<div class="hint">生成合法手机号：1[3-9] 开头、共 11 位，列内不重复。</div>';
+            return '<div class="hint">生成 11 位合法手机号，列内不重复。</div>';
         }
         if (cfg.mode === 'keep') {
             return '<div class="hint">保持原值，不做处理。</div>';
@@ -110,20 +111,54 @@
             '<input class="grow f-prefix" type="text" value="' + esc(cfg.prefix) + '"></div>';
     }
 
-    function cardHtml(col, i) {
+    function cardHtml(col, i, open) {
         var cfg = col.cfg || E.defaultCfg(col.header, col.values);
         var name = col.header || ('第 ' + colLetter(col.col) + ' 列');
         var samp;
         try { samp = String(E.sample(cfg, col)); } catch (e) { samp = '—'; }
         return '' +
             '<div class="ch">' +
+            '<div class="ch-top">' +
             '<span class="ref">' + colLetter(col.col) + '</span>' +
             '<span class="nm" title="' + esc(name) + '">' + esc(name) + '</span>' +
-            '<select class="mode">' + modeOptions(cfg.mode) + '</select>' +
+            '<select class="mode" aria-label="' + esc(name) + ' 映射为">' + modeOptions(cfg.mode) + '</select>' +
+            '<button type="button" class="exp" aria-expanded="' + (open ? 'true' : 'false') + '" ' +
+            'aria-controls="cb' + i + '" title="' + (open ? '收起参数' : '展开参数') + '">' +
+            (open ? '▾' : '▸') + '</button>' +
             '</div>' +
-            '<div class="cb">' + bodyHtml(cfg) + '</div>' +
-            '<div class="cs"><span>示例</span><b class="samp">' + esc(samp) + '</b>' +
-            '<span class="meta">' + col.distinctCount + ' 个不同值 / ' + col.nonEmptyCount + ' 非空</span></div>';
+            '<div class="ch-sub"><span class="k">示例</span><b class="samp">' + esc(samp) + '</b></div>' +
+            '</div>' +
+            '<div class="cb" id="cb' + i + '">' + bodyHtml(cfg) +
+            '<div class="hint colstat">本列 ' + col.distinctCount + ' 个不同值，' +
+            col.nonEmptyCount + ' 个非空</div>' +
+            '</div>';
+    }
+
+    function isOpen(card) {
+        return (' ' + card.className + ' ').indexOf(' open ') >= 0;
+    }
+
+    function setCardOpen(card, open) {
+        card.className = 'card' + (open ? ' open' : '');
+        var btn = card.querySelector('.exp');
+        if (!btn) { return; }
+        btn.textContent = open ? '▾' : '▸';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.title = open ? '收起参数' : '展开参数';
+    }
+
+    function allOpen() {
+        var list = $('cards').querySelectorAll('.card');
+        if (!list.length) { return false; }
+        for (var i = 0; i < list.length; i++) {
+            if (!isOpen(list[i])) { return false; }
+        }
+        return true;
+    }
+
+    function syncExpandLabel() {
+        $('btnExpand').textContent = allOpen() ? '收起全部' : '展开全部';
+        $('btnExpand').disabled = !$('cards').querySelectorAll('.card').length;
     }
 
     function render() {
@@ -131,21 +166,26 @@
         box.innerHTML = '';
         var model = state.model;
         if (!model || !model.columns.length) {
-            box.innerHTML = '<div class="empty">没有可处理的列</div>';
+            box.innerHTML = '<div class="empty">' +
+                '<div class="empty-t">还没有可处理的列</div>' +
+                '<div class="empty-d">在表格里选中要脱敏的区域，再点上方「刷新选区」。</div></div>';
+            syncExpandLabel();
             return;
         }
+        // 列少就全展开；列多先收起，让十列都能一眼扫到，需要改参数的再点开
+        var open = model.columns.length <= 3;
         for (var i = 0; i < model.columns.length; i++) {
             var card = document.createElement('div');
-            card.className = 'card';
+            card.className = 'card' + (open ? ' open' : '');
             card.setAttribute('data-i', String(i));
-            card.innerHTML = cardHtml(model.columns[i], i);
+            card.innerHTML = cardHtml(model.columns[i], i, open);
             box.appendChild(card);
         }
+        syncExpandLabel();
     }
 
     function renderCard(card, i) {
-        var col = state.model.columns[i];
-        card.innerHTML = cardHtml(col, i);
+        card.innerHTML = cardHtml(state.model.columns[i], i, isOpen(card));
     }
 
     /* ---------------- 界面 → 配置 ---------------- */
@@ -254,11 +294,19 @@
                 model.columns.length + ' 列 × ' + model.dataRows + ' 行' +
                 (model.hasHeader ? ' · 首行为字段名' : ' · 无表头');
             render();
+            $('btnMask').disabled = false;
+            $('btnRevert').disabled = false;
             setStatus(useRemember === false ? '已按数据类型重新识别（忽略上次设置）' : '', '');
         } catch (e) {
             state.model = null;
-            $('cards').innerHTML = '<div class="empty">' + esc(MaskErrText(e)) + '</div>';
+            $('cards').innerHTML = '<div class="empty">' +
+                '<div class="empty-t">读取选区失败</div>' +
+                '<div class="empty-d">调整选区后点上方「刷新选区」重试。</div></div>';
             $('selInfo').textContent = '未读取到选区';
+            // 没有选区时两个写入动作无处可去，直接置灰，比点下去再报错好
+            $('btnMask').disabled = true;
+            $('btnRevert').disabled = true;
+            $('btnExpand').disabled = true;
             setStatus(MaskErrText(e), 'err');
         }
     }
@@ -336,8 +384,9 @@
             '用法：',
             '1. 在工作表里选中要脱敏的区域（可以整列、整行或任意块）。',
             '2. 点「刷新选区」，面板会按字段名与数据自动判断每列映射成什么。',
-            '3. 逐列核对「映射为」与参数，右侧示例可先看一眼效果。',
-            '4. 点「映射并写入」，新值直接写回原区域。',
+            '3. 逐列核对「映射方式」与参数，示例可先看一眼效果。',
+            '4. 列多的时候参数默认收起，点这一行或行尾的箭头展开；也可以「展开全部 / 收起全部」。',
+            '5. 点「映射并写入」，新值直接写回原区域。',
             '',
             '已经映射过的单元格会被自动跳过，所以对着同一块区域反复点「映射」不会把数据映射两次。',
             '要基于映射后的值再映射一遍，先「反映射」，再映射。',
@@ -357,6 +406,30 @@
     /* ---------------- 事件绑定 ---------------- */
 
     var cards = $('cards');
+
+    cards.addEventListener('click', function (ev) {
+        var t = ev.target;
+        var tag = String(t.tagName || '').toUpperCase();
+        if (tag === 'SELECT' || tag === 'INPUT' || tag === 'OPTION' || tag === 'A' || tag === 'TEXTAREA') { return; }
+        var card = closestCard(t);
+        if (!card) { return; }
+        if (tag === 'BUTTON') {
+            setCardOpen(card, !isOpen(card));
+            syncExpandLabel();
+            return;
+        }
+        // 点整行都能展开：命中 .ch 这层再做，别让点击输入框也顺手折叠
+        var el = t;
+        while (el && el !== card) {
+            var cls = el.getAttribute ? (el.getAttribute('class') || '') : '';
+            if (/(^|\s)ch(\s|$)/.test(cls)) {
+                setCardOpen(card, !isOpen(card));
+                syncExpandLabel();
+                return;
+            }
+            el = el.parentNode;
+        }
+    });
 
     cards.addEventListener('change', function (ev) {
         var t = ev.target;
@@ -384,6 +457,12 @@
     });
 
     $('btnRefresh').addEventListener('click', function () { refresh(true); });
+    $('btnExpand').addEventListener('click', function () {
+        var open = !allOpen();
+        var list = $('cards').querySelectorAll('.card');
+        for (var i = 0; i < list.length; i++) { setCardOpen(list[i], open); }
+        syncExpandLabel();
+    });
     $('btnAuto').addEventListener('click', function () { refresh(false); });
     $('chkHeader').addEventListener('change', function () { refresh(true); });
     $('btnMask').addEventListener('click', doMask);

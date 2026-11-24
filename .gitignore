@@ -4,3 +4,8 @@ node_modules/
 # 测试工作簿与 WPS 锁文件：数据不进仓库
 test.xlsx
 ~$*.xlsx
+
+# 任务窗格离线预览与截图：由 tools/preview-pane.mjs 生成
+wps-mask-addon/wpsmask_1.0.0/taskpane/__preview.html
+wps-mask-addon/wpsmask_1.0.0/taskpane/__preview.js
+.shots/

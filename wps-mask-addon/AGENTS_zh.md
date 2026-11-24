@@ -13,3 +13,4 @@
 - **改行为就要跑测试。** 引擎靠 `node test/engine.test.js` 与 `node test/aes.test.js`；用户点得到的东西还要过 jsdom 面板测试。
 - **AES 密钥是混淆常量，不是凭据。** `KEY_TEXT` 就是个常量。要把它换成口令或环境变量，必须同时改存储格式。
 - **改这里，别改 `%APPDATA%` 下面。** `tools/link-addon.ps1` 把装好的 `jsaddons\wpsmask_1.0.0` 变成指向本目录的目录联接，两条路径就是同一份文件：在 `jsaddons` 那边改，等于改仓库。`-Rollback` 可以撤销，把当时存下的 `.bak-<时间戳>` 文件夹还原。
+- **界面改动要在真实渲染里看。** `node tools/preview-pane.mjs` 会用十列的假工作簿生成预览页；按 260、300、380 px 三个窗格宽度各截一张图。jsdom 测试证的是行为，不是版式。窗格里别用 flex 的 `gap`、CSS 变量和 grid：内嵌浏览器版本未知，这些是静默失效，不是报错。
