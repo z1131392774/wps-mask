@@ -62,6 +62,8 @@ function fire(el, type) {
     el.dispatchEvent(ev);
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 (async () => {
     const { dom, app, errors } = boot();
     await waitLoad(dom);
@@ -82,6 +84,8 @@ function fire(el, type) {
     ok(/均匀/.test(cards[2].querySelector('.dist').textContent), '数字列默认均匀分布');
     ok(!/个不同值/.test(doc.body.textContent), '卡片不再显示「本列 N 个不同值」（WPS 状态栏本身就会数）');
     ok(cards[2].querySelector('.samp').textContent !== '', '数字列有示例：' + cards[2].querySelector('.samp').textContent);
+    ok(doc.getElementById('bar').style.display !== 'none', '读到列之后工具栏才出现');
+    ok(doc.getElementById('btnAuto').style.display === 'none', '本文档没记过设置，「重新识别」不出现');
 
     console.log('\n[2] 参数联动');
     const distSel = cards[2].querySelector('.dist');
@@ -111,6 +115,8 @@ function fire(el, type) {
     ok(app.getCell('Sheet1', 2, 1) !== table[1][0], '姓名已被替换 → ' + app.getCell('Sheet1', 2, 1));
     ok(app.getCell('Sheet1', 4, 1) === app.getCell('Sheet1', 2, 1), '同名同映射（张三 两行一致）');
     ok(app.getCell('Sheet1', 2, 4) === '老客户', '「不处理」列保持原值');
+    ok(doc.getElementById('btnAuto').style.display !== 'none', '映射之后本文档有记忆了，「重新识别」出现');
+    ok(doc.querySelector('.card .samp').textContent !== '张三', '映射后示例跟着刷新成新值：' + doc.querySelector('.card .samp').textContent);
 
     console.log('\n[5] 反映射');
     doc.getElementById('btnRevert').click();
@@ -142,23 +148,33 @@ function fire(el, type) {
     ok(!app.sheets.some(s => s.Name === '脱敏映射表'), '清除后工作表已删除');
     ok(/已删除/.test(doc.getElementById('status').textContent), '状态栏：' + doc.getElementById('status').textContent);
 
-    console.log('\n[8] 无选区时的容错');
+    console.log('\n[8] 没有选区时的空态');
     app.Selection = null;
-    doc.getElementById('btnRefresh').click();
-    const s2 = doc.getElementById('status').textContent;
-    ok(/选中/.test(s2), '给出可读提示：' + s2);
+    await sleep(1900);   // 选区消失也要两拍确认，面板自己会发现
+    const emptyT = doc.querySelector('.empty-t');
+    ok(emptyT && /选一块区域/.test(emptyT.textContent), '空态标题：' + (emptyT && emptyT.textContent));
+    ok(!/读取选区失败/.test(doc.body.textContent), '没有选区时不说「读取失败」');
+    ok(doc.getElementById('status').textContent === '', '状态栏不重复报同一件事');
+    ok(doc.getElementById('bar').style.display === 'none', '空态下不显示表头/展开/重新识别');
+    ok(doc.getElementById('btnMask').disabled && doc.getElementById('btnRevert').disabled, '两个写入按钮置灰');
+
+    app.select('Sheet1', 1, 1, 1, 1);
+    await sleep(1900);
+    ok(/太少/.test(doc.querySelector('.empty-t').textContent),
+        '只选一格时说「太少」而不是「读取失败」：' + doc.querySelector('.empty-t').textContent);
 
 
     console.log('\n[9] 只映射部分列，再映射整个区域');
     app.select('Sheet1', 1, 1, table.length, 2);
-    doc.getElementById('btnRefresh').click();
+    await sleep(1900);
     doc.getElementById('btnMask').click();
     const nameOnce = app.getCell('Sheet1', 2, 1);
     const phoneOnce = app.getCell('Sheet1', 2, 2);
     ok(/已映射 2 列/.test(doc.getElementById('status').textContent), '先映射 2 列：' + doc.getElementById('status').textContent);
 
     app.select('Sheet1', 1, 1, table.length, 4);
-    doc.getElementById('btnRefresh').click();
+    await sleep(1900);
+    ok(doc.querySelectorAll('.card').length === 4, '换选区后自动读到 4 列，实际 ' + doc.querySelectorAll('.card').length);
     doc.getElementById('btnMask').click();
     const s9 = doc.getElementById('status').textContent;
     ok(app.getCell('Sheet1', 2, 1) === nameOnce, '姓名没有被二次映射，仍是 ' + nameOnce);

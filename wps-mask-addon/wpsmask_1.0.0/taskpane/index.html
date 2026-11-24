@@ -13,12 +13,11 @@
     <div class="hd">
         <div class="hd-top">
             <span class="ttl">数据脱敏映射</span>
-            <button id="btnRefresh" class="ghost" title="重新读取当前选区">刷新选区</button>
         </div>
         <div id="selInfo" class="sub">正在读取选区…</div>
     </div>
 
-    <div class="bar">
+    <div class="bar" id="bar" style="display:none">
         <label class="chk"><input type="checkbox" id="chkHeader"> 首行是表头</label>
         <span class="bar-r">
             <button id="btnExpand" class="ghost" title="展开或收起所有列的参数">展开全部</button>
@@ -30,8 +29,8 @@
 
     <div class="ft">
         <div class="btns">
-            <button id="btnMask" class="primary">映射并写入</button>
-            <button id="btnRevert">反映射回原值</button>
+            <button id="btnMask" class="primary" disabled>映射并写入</button>
+            <button id="btnRevert" disabled>反映射回原值</button>
         </div>
         <div id="status" class="status" role="status" aria-live="polite"></div>
         <div class="links">

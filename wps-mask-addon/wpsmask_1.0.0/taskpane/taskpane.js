@@ -169,10 +169,7 @@
         box.innerHTML = '';
         var model = state.model;
         if (!model || !model.columns.length) {
-            box.innerHTML = '<div class="empty">' +
-                '<div class="empty-t">还没有可处理的列</div>' +
-                '<div class="empty-d">在表格里选中要脱敏的区域，再点上方「刷新选区」。</div></div>';
-            syncExpandLabel();
+            showEmpty('blank');
             return;
         }
         // 列少就全展开；列多先收起，让十列都能一眼扫到，需要改参数的再点开
@@ -185,6 +182,43 @@
             box.appendChild(card);
         }
         syncExpandLabel();
+    }
+
+    /* ---------------- 空状态 ----------------
+     * 三种"没东西可看"要分开说，别用同一句"读取失败"糊过去：
+     * 还没选、选得太小是正常情况；取不到宿主对象是真出错。
+     * 空的时候整条工具栏都不该出现——没有列可展开、也没有可重新识别的对象。
+     */
+    var EMPTY = {
+        idle: ['在表格里选一块区域', '整列、整行或任意一块都行；选好后这里会自动列出每一列。'],
+        small: ['选中的格子太少', '至少要选两个单元格。勾了「首行是表头」时，第一行会当作字段名，数据从第二行算起。'],
+        blank: ['这块区域没有可处理的数据', '全是空格子，或者整块都是表头。换个区域试试。'],
+        nohost: ['未取到 WPS 应用对象', '这一版 WPS 没把应用对象交给面板。可以先用功能区的「快速映射」，它跑的是同一套逻辑。'],
+        error: ['读取选区失败', '']
+    };
+
+    function showEmpty(kind, detail) {
+        var t = EMPTY[kind] || EMPTY.error;
+        $('cards').innerHTML = '<div class="empty">' +
+            '<div class="empty-t">' + esc(t[0]) + '</div>' +
+            '<div class="empty-d">' + esc(detail || t[1]) + '</div></div>';
+        $('bar').style.display = 'none';
+        $('selInfo').textContent = '';
+        $('btnMask').disabled = true;
+        $('btnRevert').disabled = true;
+        $('btnExpand').disabled = true;
+        setStatus('', '');
+    }
+
+    function showTools(model) {
+        $('bar').style.display = '';
+        // 本文档没记过设置时，「重新识别」没有可忽略的东西，不显示
+        var saved = (state.vault && state.vault.settings) || {};
+        var remembered = 0;
+        for (var i = 0; i < model.columns.length; i++) {
+            if (saved[model.columns[i].header]) { remembered++; }
+        }
+        $('btnAuto').style.display = remembered ? '' : 'none';
     }
 
     function renderCard(card, i) {
@@ -336,20 +370,21 @@
                 model.columns.length + ' 列 × ' + model.dataRows + ' 行' +
                 (model.hasHeader ? ' · 首行为字段名' : ' · 无表头');
             render();
+            showTools(model);
             $('btnMask').disabled = false;
             $('btnRevert').disabled = false;
             setStatus(useRemember === false ? '已按数据类型重新识别（忽略上次设置）' : '', '');
         } catch (e) {
             state.model = null;
-            $('cards').innerHTML = '<div class="empty">' +
-                '<div class="empty-t">读取选区失败</div>' +
-                '<div class="empty-d">调整选区后点上方「刷新选区」重试。</div></div>';
-            $('selInfo').textContent = '未读取到选区';
-            // 没有选区时两个写入动作无处可去，直接置灰，比点下去再报错好
-            $('btnMask').disabled = true;
-            $('btnRevert').disabled = true;
-            $('btnExpand').disabled = true;
-            setStatus(MaskErrText(e), 'err');
+            // 三种原因分开说：还没选/选得太小是常态，取不到宿主对象才是真出错
+            var msg = String((e && e.message) || e || '');
+            var a2 = getApp();
+            var sig = null;
+            if (a2) { try { sig = selSignature(a2); } catch (e2) { sig = null; } }
+            if (!a2) { showEmpty('nohost'); }
+            else if (!sig) { showEmpty('idle'); }
+            else if (/至少两个单元格/.test(msg)) { showEmpty('small'); }
+            else { showEmpty('error', MaskErrText(e)); }
         }
     }
 
@@ -381,6 +416,10 @@
             var extra = stats.skipped > 0
                 ? ('，跳过 ' + stats.skipped + ' 格已映射（' + stats.skippedColumns.join('、') + '）')
                 : '';
+            // 写完把卡片重读一遍：示例要显示刚写进去的值，本文档也从这一刻起有了记忆，
+            // 「重新识别」才该出现。先刷新再报状态，否则状态会被刷新清掉。
+            state.vault = vault;
+            refresh(true);
             setStatus('已映射 ' + stats.columns + ' 列 / ' + stats.written + ' 格' + extra +
                 '；新建 ' + stats.created + ' 条映射，记得保存文档。', 'ok');
         } catch (e) {
@@ -400,6 +439,8 @@
                 setStatus('没有命中任何映射记录（' + stats.cells + ' 个单元格）。请确认选区与映射时一致。', 'err');
                 return;
             }
+            state.vault = vault;
+            refresh(true);
             setStatus('已还原 ' + stats.hit + ' 个单元格' +
                 (stats.miss > 0 ? ('，' + stats.miss + ' 个未命中已保持原样') : ''), 'ok');
         } catch (e) {
@@ -425,7 +466,7 @@
         var text = [
             '用法：',
             '1. 在工作表里选中要脱敏的区域（可以整列、整行或任意块）。',
-            '2. 面板会自己读取选区；之后换选区也会自动跟着更新，不用每次点「刷新选区」。',
+            '2. 面板会自己读取选区；换了地方也会自动跟着更新，没有需要点的刷新按钮。',
             '3. 逐列核对「映射方式」与参数，示例可先看一眼效果。',
             '4. 列多的时候参数默认收起，点这一行或行尾的箭头展开；也可以「展开全部 / 收起全部」。',
             '5. 点「映射并写入」，新值直接写回原区域。',
@@ -444,6 +485,11 @@
             '',
             '关于文本后缀：位数按本列要写的格子数自动给，只留 10% 余量。41 行客户名就是 2 位',
             '（如「姓名37」），够用又不会写成「姓名0037」那种看着像按条数编了号的长号；可以手改。',
+            '',
+            '关于表头：「首行是表头」是自动判断的，判错时手动勾上/勾掉即可。勾上时第一行不参与脱敏，',
+            '文本映射的前缀也从这一行取；勾掉就把第一行当数据。',
+            '',
+            '关于「重新识别」：只有这份文档记过上次的设置时才会出现，用来忽略记忆、按数据类型重判一遍。',
             '',
             '注意：本文档若被他人拿到，' +
             '对方可以用同一份加载项解开映射表（密钥内置在代码里，属混淆级保护）。'
@@ -504,7 +550,6 @@
         readCard(card);
     });
 
-    $('btnRefresh').addEventListener('click', function () { refresh(true); });
     $('btnExpand').addEventListener('click', function () {
         var open = !allOpen();
         var list = $('cards').querySelectorAll('.card');
@@ -520,10 +565,11 @@
 
     /* ---------------- 自动读取 ----------------
      * 两件事：
-     * 1. 面板一打开就自己识别，不用先点「刷新选区」。窗格刚打开时宿主对象
+     * 1. 面板一打开就自己识别，没有「刷新选区」这种按钮。窗格刚打开时宿主对象
      *    或选区可能还没就绪，所以先重试几拍再报错。
      * 2. 之后盯着选区，用户换地方就自动重新识别，已经改过的参数按字段名保留。
-     *    拖选时指纹每拍都在变，所以同一个指纹连续出现两次才真正重算。
+     *    拖选时指纹每拍都在变，所以同一个指纹连续出现两次才真正重算；选区整个
+     *    没了（点到图表、切走工作表）也一样要等两拍，免得中途闪一下空态。
      */
     var pollTimer = null;
     var pendingSig = null;
@@ -534,10 +580,15 @@
             var a = MaskGetApp();
             if (!a) { return; }
             var k = selSignature(a);
-            if (!k || k === state.selKey) { pendingSig = null; return; }
+            if (k === state.selKey) { pendingSig = null; return; }
             if (pendingSig !== k) { pendingSig = k; return; }
             pendingSig = null;
             state.selKey = k;
+            if (!k) {
+                state.model = null;
+                showEmpty('idle');
+                return;
+            }
             refresh(true, true);
         }, POLL_MS);
     }
