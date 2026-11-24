@@ -225,6 +225,18 @@ var MaskEngine = (function () {
         return n;
     }
 
+    // 后缀位数：够放下这一列的不同值就行，只留 1.1 倍余量。
+    // 按数量精确配平（刚好等于不同值个数）会让最后两条记录只剩互换的一格，
+    // 随机重试立刻退化成确定式枚举；写死 4 位（1 万个槽）又让「姓名37」变成「姓名0037」，
+    // 看着像按条数编过号。10% 的余量刚好够重试躲开自己的原值，又不至于多一位。
+    function suffixDigits(need) {
+        var n = Math.max(1, Math.ceil((Number(need) || 0) * 1.1));
+        for (var d = 1; d <= 8; d++) {
+            if (Math.pow(10, d) >= n) { return d; }
+        }
+        return 8;
+    }
+
     function defaultCfg(header, values) {
         var mode = guessMode(header, values);
         var h = header == null ? '' : String(header).trim();
@@ -232,7 +244,7 @@ var MaskEngine = (function () {
             return { mode: 'phone' };
         }
         if (mode === 'mixed') {
-            return { mode: 'mixed' };
+            return { mode: 'mixed', digits: suffixDigits(distinctCountOf(values)) };
         }
         if (mode === 'number') {
             var st = numericStats(values) || { min: 0, max: 100, mean: 50, sd: 15, dec: 0 };
@@ -262,7 +274,7 @@ var MaskEngine = (function () {
             mode: 'text',
             lang: 'zh',
             prefix: h || '文本',
-            digits: 4
+            digits: suffixDigits(distinctCountOf(values))
         };
     }
 
@@ -1125,6 +1137,7 @@ var MaskEngine = (function () {
         saveVault: saveVault,
         dropVault: dropVault,
         defaultCfg: defaultCfg,
+        suffixDigits: suffixDigits,
         guessMode: guessMode,
         sigOf: sigOf,
         enPrefixOf: enPrefixOf,
@@ -1137,6 +1150,7 @@ var MaskEngine = (function () {
             genMixed: genMixed,
             genSameShape: genSameShape,
             shapeOf: shapeOf,
+            suffixDigits: suffixDigits,
             looksLikeHeader: looksLikeHeader,
             buildIndex: buildIndex,
             numericStats: numericStats,

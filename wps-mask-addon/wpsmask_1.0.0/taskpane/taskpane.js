@@ -198,13 +198,15 @@
 
     function defaultForMode(mode, col) {
         var auto = E.defaultCfg(col.header, col.values);
-        if (mode === 'phone' || mode === 'keep' || mode === 'mixed') { return { mode: mode }; }
+        var digits = E.suffixDigits(col.distinctCount);
+        if (mode === 'phone' || mode === 'keep') { return { mode: mode }; }
+        if (mode === 'mixed') { return { mode: 'mixed', digits: digits }; }
         if (mode === 'number') {
             if (auto.mode === 'number') { return auto; }
             return { mode: 'number', dist: 'uniform', min: 0, max: 1000, dec: 0, mean: 500, sd: 150, lambda: 500 };
         }
         if (auto.mode === 'text') { return auto; }
-        return { mode: 'text', lang: 'zh', prefix: col.header || '文本', digits: 4 };
+        return { mode: 'text', lang: 'zh', prefix: col.header || '文本', digits: digits };
     }
 
     function applyDistVisibility(card, dist) {
@@ -442,6 +444,9 @@
             '',
             '关于整数区间：区间里可取的整数刚好等于这一列的不同值个数时，会把整列做一次错位换算',
             '（只用这批值本身，1 对 1、不会出现原值），因为这时本来就没有别的排法。',
+            '',
+            '关于文本后缀：位数按本列不同值个数自动给，只留 10% 余量。41 个客户名就是 2 位',
+            '（如「姓名37」），够用又不会写成「姓名0037」那种看着像按条数编了号的长号；可以手改。',
             '',
             '注意：本文档若被他人拿到，' +
             '对方可以用同一份加载项解开映射表（密钥内置在代码里，属混淆级保护）。'

@@ -58,7 +58,11 @@ const colVals = idx => {
 const newNames = colVals(1), newPhones = colVals(2), newAges = colVals(3), newNotes = colVals(4);
 
 ok(newNames.every((v, i) => v !== names[i]), '姓名字段全部被替换');
-ok(newNames.every(v => /^姓名\d{4}$/.test(v)), '姓名映射形态为「姓名 + 4 位数字」，如 ' + newNames[0]);
+// 后缀位数按本列不同值个数给（只留 10% 余量），这里跟着算，不写死 4 位
+const dName = Engine._internal.suffixDigits(new Set(names).size);
+const dNote = Engine._internal.suffixDigits(new Set(notes.filter(Boolean)).size);
+ok(newNames.every(v => new RegExp('^姓名\\d{' + dName + '}$').test(v)),
+    '姓名映射形态为「姓名 + ' + dName + ' 位数字」（7 个不同值），如 ' + newNames[0]);
 ok(newNames[0] === newNames[3] && newNames[3] === newNames[6], '同名同映射：张三 3 次映射一致 → ' + newNames[0]);
 ok(newPhones.every(v => /^1[3-9]\d{9}$/.test(v)), '手机号全部合法（11 位、1[3-9] 开头）');
 ok(newPhones[0] === newPhones[2], '同号同映射：13800138000 两次映射一致 → ' + newPhones[0]);
@@ -67,7 +71,8 @@ ok(newAges.every(v => typeof v === 'number' && v >= 19 && v <= 51), '年龄映�
 ok(newAges[0] === newAges[2], '同值同映射：28 两处映射一致 → ' + newAges[0]);
 ok(new Set(newAges).size === new Set(ages).size, '不同年龄映射到不同数值');
 ok(newNotes[1] === '' && newNotes[6] === '', '空单元格保持为空');
-ok(newNotes.filter(Boolean).every(v => /^备注\d{4}$/.test(v)), '备注默认前缀取字段名 → ' + newNotes[0]);
+ok(newNotes.filter(Boolean).every(v => new RegExp('^备注\\d{' + dNote + '}$').test(v)),
+    '备注默认前缀取字段名，' + dNote + ' 位后缀 → ' + newNotes[0]);
 
 /* ---------- 3. 反映射 ---------- */
 console.log('\n[3] 反映射（一键回到原值）');
@@ -187,7 +192,8 @@ console.log('\n[11] 区域内改值后再映射');
 app.setTable('Sheet1', 3, 4, [['临时改动']]);
 const s5 = Engine.applyMask(Engine.hydrate(Engine.analyze(app, {}), vault), vault, {});
 ok(s5.written === 1, '只写了改动的那 1 格，实际 ' + s5.written);
-ok(/^备注\d{4}$/.test(app.getCell('Sheet1', 3, 4)), '改动值被映射成 ' + app.getCell('Sheet1', 3, 4));
+ok(new RegExp('^备注\\d{' + dNote + '}$').test(app.getCell('Sheet1', 3, 4)),
+    '改动值被映射成 ' + app.getCell('Sheet1', 3, 4));
 ok(app.getCell('Sheet1', 2, 1) === nameAfter1, '同列其他格保持不动');
 
 /* ---------- 12. 表头识别不被空列带偏（线上报错的那一种） ---------- */
@@ -303,7 +309,7 @@ ok(/^010-\d{8}$/.test(mixOut[2]), '固话保留区号与位数：' + mixOut[2]);
 ok(/^[A-Za-z]{2}_\d{4}_\d{3}$/.test(mixOut[3]) && mixOut[3].length === mixOrig[3].length,
     '字母数字账号按原形态逐字替换：' + mixOut[3]);
 ok(/^0755-\d{8}$/.test(mixOut[4]) && /^021-\d{8}$/.test(mixOut[8]), '另外两个固话同样保形');
-ok(/^账号\d{4}$/.test(mixOut[7]), '中文值回落到「字段名+数字」：' + mixOut[7]);
+ok(/^账号\d{2}$/.test(mixOut[7]), '中文值回落到「字段名+数字」（10 个不同值 → 2 位）：' + mixOut[7]);
 ok(/@example\.org$/.test(mixOut[9]), '不同域名的邮箱各自保留自己的域名：' + mixOut[9]);
 const mixBack = Engine.revert(Engine.hydrate(Engine.analyze(mixApp, {}), mixVault), mixVault, {});
 ok(mixBack.hit === mixOrig.length, '反映射命中 ' + mixBack.hit + ' 格');
@@ -343,7 +349,7 @@ ok(Engine.guessMode('手机号', ['13800138000', '13912345678']) === 'phone', '�
 
 /* ---------- 20. 前导零是格式的一部分，不能丢 ---------- */
 console.log('\n[20] 纯数字账号的前导零原样留住');
-const gMix = v => Engine._internal.genMixed({ mode: 'mixed', prefix: '账号', suffixLen: 4 }, v, {});
+const gMix = v => Engine._internal.genMixed({ mode: 'mixed', prefix: '账号', digits: 2 }, v, {});
 let zeroBad = 0;
 for (let i = 0; i < 200; i++) {
     const out = gMix('000123');
@@ -355,7 +361,7 @@ ok(/^0{5}\d$/.test(allZero), '000000 仍是六位、仍以 0 开头：' + allZer
 const twoDigit = gMix('01');
 ok(/^0\d$/.test(twoDigit), '两位编码 01 仍给两位、仍以 0 开头：' + twoDigit);
 const oneDigit = gMix('0');
-ok(/^账号\d{4}$/.test(oneDigit), '单个数字太短，按文本兜底（已知取舍）：' + oneDigit);
+ok(/^账号\d{2}$/.test(oneDigit), '单个数字太短，按文本兜底（已知取舍）：' + oneDigit);
 ok(/^[1-9]\d{5}$/.test(gMix('123456')), '本来没有前导零的不会凭空长出前导零');
 
 const zipApp = new MockWPS();
@@ -374,6 +380,35 @@ Engine.revert(Engine.hydrate(Engine.analyze(zipApp, {}), zipVault), zipVault, {}
 let zipOk = true;
 for (let i = 0; i < 4; i++) { if (zipCel(i + 2) !== zipRows[i + 1][0]) { zipOk = false; } }
 ok(zipOk, '四个值（含前导零的那个）逐个还原');
+
+/* ---------- 21. 后缀位数按不同值个数给，留 1.1 倍余量 ---------- */
+console.log('\n[21] 后缀位数只按需要给');
+const sd = Engine.suffixDigits;
+ok(sd(0) === 1, '空列给 1 位，实际 ' + sd(0));
+ok(sd(7) === 1, '7 个不同值 → 1 位（10 个槽），实际 ' + sd(7));
+ok(sd(9) === 1, '9 个不同值 → 1 位，实际 ' + sd(9));
+ok(sd(10) === 2, '10 个不同值 → 2 位（1.1 倍后是 11，1 位装不下），实际 ' + sd(10));
+ok(sd(41) === 2, '41 个不同值 → 2 位，实际 ' + sd(41));
+ok(sd(90) === 2, '90 个不同值 → 2 位（99 仍在 100 以内），实际 ' + sd(90));
+ok(sd(100) === 3, '100 个不同值 → 3 位（1.1 倍后 110），实际 ' + sd(100));
+ok(sd(900) === 3, '900 个不同值 → 3 位（1.1 倍后 990），实际 ' + sd(900));
+ok(sd(909) === 3 && sd(910) === 4,
+    '909 个值还挤得进 3 位（999.9 取整正好 1000），910 就得让一位，实际 ' + sd(909) + ' / ' + sd(910));
+ok(sd(100000000) === 8, '一亿个不同值封顶 8 位，实际 ' + sd(100000000));
+
+const sfxApp = new MockWPS();
+const sfxRows = [['姓名']];
+for (let i = 0; i < 41; i++) { sfxRows.push(['客户' + i]); }
+sfxApp.setTable('Sheet1', 1, 1, sfxRows);
+sfxApp.select('Sheet1', 1, 1, sfxRows.length, 1);
+const sfxVault = Engine.loadVault(sfxApp);
+const sfxModel = Engine.hydrate(Engine.analyze(sfxApp, {}), sfxVault);
+ok(sfxModel.columns[0].cfg.digits === 2, '41 行的姓名列默认后缀就是 2 位，实际 ' + sfxModel.columns[0].cfg.digits);
+Engine.applyMask(sfxModel, sfxVault, {});
+const sfxOut = [];
+for (let r = 2; r <= sfxRows.length; r++) { sfxOut.push(sfxApp.getCell('Sheet1', r, 1)); }
+ok(sfxOut.every(v => /^姓名\d{2}$/.test(v)), '41 个值都写成「姓名 + 2 位数字」：' + sfxOut[0]);
+ok(new Set(sfxOut).size === 41, '41 个值仍然两两不同，实际 ' + new Set(sfxOut).size);
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
