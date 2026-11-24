@@ -11,7 +11,7 @@ var MaskEngine = (function () {
         (typeof require === 'function' ? require('./aes.js') : null);
 
     var VAULT_SHEET = '脱敏映射表';
-    var VAULT_VERSION = 1;
+    var VAULT_VERSION = 2;
     var CHUNK_SIZE = 20000;
 
     var XL_UP = -4162;
@@ -156,22 +156,6 @@ var MaskEngine = (function () {
         return 'text';
     }
 
-    var EN_DICT = {
-        '姓名': 'Name', '名字': 'Name', '客户': 'Customer', '客户名称': 'Customer', '公司': 'Company',
-        '公司名称': 'Company', '单位': 'Company', '地址': 'Address', '住址': 'Address', '城市': 'City',
-        '省份': 'Province', '部门': 'Dept', '职位': 'Title', '岗位': 'Title', '邮箱': 'Email',
-        '邮件': 'Email', '手机': 'Phone', '手机号': 'Phone', '电话': 'Phone', '备注': 'Note',
-        '订单号': 'Order', '订单': 'Order', '产品': 'Product', '商品': 'Product', '金额': 'Amount',
-        '身份证': 'ID', '身份证号': 'ID', '账号': 'Account', '编号': 'No', '标题': 'Title'
-    };
-
-    function enPrefixOf(header) {
-        var h = header == null ? '' : String(header).trim();
-        if (EN_DICT[h]) { return EN_DICT[h]; }
-        if (/^[A-Za-z][A-Za-z0-9 _-]*$/.test(h)) { return h.replace(/\s+/g, ''); }
-        return 'Text';
-    }
-
     /* ==================== 配置 ==================== */
 
     function numericStats(values) {
@@ -282,7 +266,6 @@ var MaskEngine = (function () {
         }
         return {
             mode: 'text',
-            lang: 'zh',
             prefix: h || '文本',
             digits: suffixDigits(areaCountOf(values))
         };
@@ -298,7 +281,7 @@ var MaskEngine = (function () {
                 '|' + cfg.mean + '|' + cfg.sd + '|' + cfg.lambda;
         }
         if (cfg.mode === 'text') {
-            return 'text|' + cfg.lang + '|' + cfg.prefix + '|' + cfg.digits;
+            return 'text|' + cfg.prefix + '|' + cfg.digits;
         }
         return 'keep';
     }
@@ -567,6 +550,47 @@ var MaskEngine = (function () {
         if (!obj || !obj.maps) { return emptyVault(); }
         obj.settings = obj.settings || {};
         obj.ranges = obj.ranges || [];
+        return migrateVault(obj);
+    }
+
+    // 文本桶的签名曾是 text|zh|前缀|位数，"语言"下拉删掉后变成 text|前缀|位数。
+    // 只改写桶名，桶里的记录、表格里的假值一个都不动：不迁移就等于把旧记录孤立，
+    // 同一批人在新区域会再拿一个假值，新旧两个桶位宽相同还会撞值，反映射随之指错人。
+    function migrateVault(obj) {
+        var moved = 0, dropped = 0;
+        for (var sig in obj.maps) {
+            if (!Object.prototype.hasOwnProperty.call(obj.maps, sig)) { continue; }
+            if (sig.indexOf('text|') !== 0) { continue; }
+            var bar = sig.indexOf('|', 5);
+            if (bar < 0) { continue; }
+            var seg = sig.substring(5, bar);
+            // 只认旧格式中间那段两位语言码：新签名这里放的是前缀，通常不是两个小写字母
+            if (!/^[a-z]{2}$/.test(seg)) { continue; }
+            var target = 'text|' + sig.substring(bar + 1);
+            if (!obj.maps[target]) { obj.maps[target] = {}; }
+            var from = obj.maps[sig], to = obj.maps[target];
+            var taken = {};
+            for (var tk in to) {
+                if (Object.prototype.hasOwnProperty.call(to, tk) && to[tk] != null) {
+                    taken[keyOf(to[tk])] = true;
+                }
+            }
+            for (var k in from) {
+                if (!Object.prototype.hasOwnProperty.call(from, k)) { continue; }
+                var mv = from[k];
+                // 目标桶已有同名键，或这个假值已被占用，就不搬：宁可丢一条记录，也不能造出二对一
+                if (Object.prototype.hasOwnProperty.call(to, k) || (mv != null && taken[keyOf(mv)])) {
+                    dropped++;
+                    continue;
+                }
+                to[k] = mv;
+                if (mv != null) { taken[keyOf(mv)] = true; }
+                moved++;
+            }
+            delete obj.maps[sig];
+        }
+        obj.v = VAULT_VERSION;
+        obj.migrated = moved || dropped ? { moved: moved, dropped: dropped } : undefined;
         return obj;
     }
 
@@ -954,7 +978,6 @@ var MaskEngine = (function () {
             // 混合列的"中文/其他文本"分支沿用文本模式的前缀与位数
             var textCfg = {
                 mode: 'text',
-                lang: cfg.lang || 'zh',
                 prefix: cfg.prefix || col.header || '文本',
                 digits: cfg.digits || 4
             };
@@ -1110,7 +1133,6 @@ var MaskEngine = (function () {
             if (cfg.mode === 'mixed') {
                 var tcfg = {
                     mode: 'text',
-                    lang: cfg.lang || 'zh',
                     prefix: col.header || '文本',
                     digits: cfg.digits || 4
                 };
@@ -1143,7 +1165,6 @@ var MaskEngine = (function () {
         suffixDigits: suffixDigits,
         guessMode: guessMode,
         sigOf: sigOf,
-        enPrefixOf: enPrefixOf,
         keyOf: keyOf,
         valueFromKey: valueFromKey,
         _internal: {

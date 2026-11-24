@@ -5,6 +5,8 @@
     "node": ">=20.11"
   },
   "scripts": {
-    "check": "node scripts/check-docs.mjs"
+    "check": "node scripts/check-docs.mjs",
+    "test": "node wps-mask-addon/test/engine.test.js && node wps-mask-addon/test/aes.test.js && node wps-mask-addon/test/taskpane.test.js && node wps-mask-addon/test/utils.test.js",
+    "icons": "node wps-mask-addon/tools/make-icons.mjs"
   }
 }

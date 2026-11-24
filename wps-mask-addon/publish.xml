@@ -11,5 +11,5 @@
     enable  enable_dev 会在功能区多出「打开JS调试器」入口；不想要调试入口可改成 enable
 -->
 <jsplugins>
-    <jsplugin name="wpsmask" type="et" url="wpsmask_1.0.0" version="1.0.0" enable="enable_dev" install="null" customDomain="" debug=""/>
+    <jsplugin name="wpsmask" type="et" url="wpsmask_1.0.0" version="1.0.0" enable="enable" install="null" customDomain="" debug=""/>
 </jsplugins>

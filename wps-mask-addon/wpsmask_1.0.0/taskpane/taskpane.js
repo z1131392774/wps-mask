@@ -104,15 +104,11 @@
                 '<span class="lbl">均值λ</span><input class="num f-lambda" type="text" value="' + esc(cfg.lambda) + '"></div>';
         }
         return '' +
-            '<div class="row"><span class="lbl">语言</span>' +
-            '<select class="lang" style="flex:1 1 auto">' +
-            '<option value="zh"' + (cfg.lang !== 'en' ? ' selected' : '') + '>中文前缀</option>' +
-            '<option value="en"' + (cfg.lang === 'en' ? ' selected' : '') + '>英文前缀</option>' +
-            '</select>' +
-            '<span class="lbl">后缀</span><input class="num f-digits" type="text" value="' + esc(num(cfg.digits, 4)) + '">' +
-            '<span class="sep">位</span></div>' +
             '<div class="row"><span class="lbl">前缀</span>' +
-            '<input class="grow f-prefix" type="text" value="' + esc(cfg.prefix) + '"></div>';
+            '<input class="grow f-prefix" type="text" value="' + esc(cfg.prefix) + '"></div>' +
+            '<div class="row"><span class="lbl">后缀</span>' +
+            '<input class="num f-digits" type="text" value="' + esc(num(cfg.digits, 4)) + '">' +
+            '<span class="sep">位</span></div>';
     }
 
     function cardHtml(col, i, open) {
@@ -232,7 +228,7 @@
             return { mode: 'number', dist: 'uniform', min: 0, max: 1000, dec: 0, mean: 500, sd: 150, lambda: 500 };
         }
         if (auto.mode === 'text') { return auto; }
-        return { mode: 'text', lang: 'zh', prefix: col.header || '文本', digits: digits };
+        return { mode: 'text', prefix: col.header || '文本', digits: digits };
     }
 
     function applyDistVisibility(card, dist) {
@@ -266,10 +262,8 @@
             };
             if (!(cfg.min < cfg.max)) { cfg.max = cfg.min + 1; }
         } else {
-            var langEl = card.querySelector('.lang');
             cfg = {
                 mode: 'text',
-                lang: langEl ? langEl.value : 'zh',
                 prefix: (card.querySelector('.f-prefix') || {}).value || '',
                 digits: Math.max(1, Math.min(8, Math.round(num((card.querySelector('.f-digits') || {}).value, 4))))
             };

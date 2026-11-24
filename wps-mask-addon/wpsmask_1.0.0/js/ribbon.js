@@ -35,6 +35,25 @@ function OnAction(control) {
     return true;
 }
 
+/* ---------- 功能区图标 ---------- */
+
+// WPS 不认 button 的 image 属性，图标只能由 getImage 回调给出（官方文档：返回图片 URL，
+// 相对路径的根是加载项 URL）。返回空字符串就是没有图标，宿主不会补占位图。
+var MASK_ICONS = {
+    btnMaskPane: 'images/panel.png',
+    btnMaskQuick: 'images/quick.png',
+    btnMaskRevert: 'images/revert.png'
+};
+
+function GetImage(control) {
+    var id = '';
+    try { id = control && (control.Id || control.id) || ''; } catch (e) { id = ''; }
+    var url = MASK_ICONS[id] || '';
+    // 图标只在功能区第一次显示时取一次，加载不出来就一直是占位图，留一行日志方便排查
+    try { console.log('GetImage ' + id + ' -> ' + url); } catch (e2) { }
+    return url;
+}
+
 /* ---------- 任务窗格 ---------- */
 
 function MaskTogglePane() {
@@ -80,17 +99,8 @@ function MaskQuickApply() {
         return;
     }
 
-    var detail = '';
-    for (var i = 0; i < model.columns.length; i++) {
-        var c = model.columns[i];
-        var modeName = { phone: '手机号', number: '数字', text: '文本', keep: '不处理' }[c.cfg.mode] || c.cfg.mode;
-        detail += '\n· ' + (c.header || ('第' + (c.index + 1) + '列')) + ' → ' + modeName;
-    }
-    var skipNote = stats.skipped > 0
-        ? ('\n本次跳过：' + stats.skippedColumns.join('、') + ' ' + stats.skipped + ' 格')
-        : '';
-    MaskAlert('已处理 ' + stats.columns + ' 列、' + stats.written + ' 个单元格。' + detail + skipNote +
-        '\n\n映射关系已加密写入本文档，记得保存。');
+    var skip = stats.skipped > 0 ? '，跳过 ' + stats.skipped + ' 格' : '';
+    MaskToast('已映射 ' + stats.written + ' 格' + skip);
 }
 
 function MaskQuickRevert() {
@@ -102,9 +112,9 @@ function MaskQuickRevert() {
     var stats = MaskEngine.revert(model, vault, {});
 
     if (stats.hit === 0) {
-        MaskAlert('这个区域没有对应的映射记录，请确认选区和映射时一致。');
+        MaskAlert('没有可还原的映射，选区要和映射时一致。');
         return;
     }
-    var tail = stats.miss > 0 ? ('，另有 ' + stats.miss + ' 个没有映射记录') : '';
-    MaskAlert('已还原 ' + stats.hit + ' 个单元格' + tail + '。');
+    var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有映射记录') : '';
+    MaskToast('已还原 ' + stats.hit + ' 格' + tail);
 }

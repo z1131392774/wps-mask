@@ -9,3 +9,6 @@ test.xlsx
 wps-mask-addon/wpsmask_1.0.0/taskpane/__preview.html
 wps-mask-addon/wpsmask_1.0.0/taskpane/__preview.js
 .shots/
+
+# 图标光栅化时的临时页面
+wps-mask-addon/assets/.icons-tmp/

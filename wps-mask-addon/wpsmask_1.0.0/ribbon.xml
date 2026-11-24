@@ -4,9 +4,12 @@
         <tabs>
             <tab id="tabMask" label="数据脱敏">
                 <group id="grpMask" label="区域映射">
-                    <button id="btnMaskPane" label="映射面板" onAction="OnAction" size="normal"/>
-                    <button id="btnMaskQuick" label="快速映射" onAction="OnAction" size="normal"/>
-                    <button id="btnMaskRevert" label="反映射" onAction="OnAction" size="normal"/>
+                    <!-- size="large" 才会横排并带图标；normal 会在组里竖着叠成三行。
+                         图标必须走 getImage 回调：WPS 不认 button 的 image 属性。
+                         PNG 由 tools/make-icons.mjs 从 assets/icons/ 的 SVG 生成。 -->
+                    <button id="btnMaskPane" label="映射面板" onAction="OnAction" getImage="GetImage" size="large"/>
+                    <button id="btnMaskQuick" label="快速映射" onAction="OnAction" getImage="GetImage" size="large"/>
+                    <button id="btnMaskRevert" label="反映射" onAction="OnAction" getImage="GetImage" size="large"/>
                 </group>
             </tab>
         </tabs>

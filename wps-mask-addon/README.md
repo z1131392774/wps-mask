@@ -13,7 +13,7 @@ Select a range and replace every value with realistic fake data; the originals a
 | Two kinds of mapped value: number and text | "Map to" dropdown per column: phone, number, text, mixed, leave alone |
 | Numbers take parameters, uniform by default | Uniform (default), normal (mean/sd, outliers folded back into the interval), exponential (λ sets the decay); bounds and decimal places editable |
 | Phone numbers must be valid | `1[3-9]` plus 9 digits drawn from the real prefix ranges (130–199), unique within the column and never equal to the original |
-| Text is a prefix plus a random numeric suffix | Chinese prefix (field name by default, e.g. 姓名37) or English prefix (built-in word list: 姓名→Name, 地址→Address, or type your own). Suffix digits default to the fewest that hold this column's non-blank cells with 10% headroom, so 41 customers get 姓名37, never 姓名0037; editable 1–8 |
+| Text is a prefix plus a random numeric suffix | Prefix defaults to the field name (e.g. 姓名37) and stays editable. Suffix digits default to the fewest that hold this column's non-blank cells with 10% headroom, so 41 customers get 姓名37, never 姓名0037; editable 1–8 |
 | Auto-detect the field name and type | Header matched against 手机/电话/phone/tel → phone; ≥60% of values shaped like a mobile number → phone; ≥80% numeric → number; everything else → text with the field name as prefix. Whole-column and whole-row selections resolve the field name correctly |
 | One-click reverse mapping, mapping stored encrypted | "反映射回原值" looks each cell up in the encrypted table and writes the original back, preserving number/text type and blanks; the table is AES-128-CBC ciphertext in a hidden worksheet |
 | Remember the last settings for this document | Per-field type, distribution, parameters, and prefix are stored in the same encrypted blob, keyed by field name; "重新识别" ignores them and re-detects |
@@ -28,7 +28,7 @@ The add-in directory is `%APPDATA%\kingsoft\wps\jsaddons` (`Win+R`, type `%appda
    - already present (another add-in is installed) → **do not overwrite**, add this line inside `<jsplugins>`:
 
    ```xml
-   <jsplugin name="wpsmask" type="et" url="wpsmask_1.0.0" version="1.0.0" enable="enable_dev" install="null" customDomain="" debug=""/>
+   <jsplugin name="wpsmask" type="et" url="wpsmask_1.0.0" version="1.0.0" enable="enable" install="null" customDomain="" debug=""/>
    ```
 3. Restart WPS; the "数据脱敏" tab appears. WPS may ask you to trust the add-in once.
 
@@ -71,7 +71,7 @@ A junction needs no admin rights or developer mode; a hard link cannot point at 
 
 **Repeated masking does not stack.** Cells already holding mapped values are skipped and the status line reports the count, so masking a part and then the whole never processes a cell twice. To map current values again, revert first.
 
-**Quick buttons.** "快速映射" uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. "反映射" reverses the selection directly.
+**Quick buttons.** "快速映射" uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. "反映射" reverses the selection directly. Successes appear in the status bar; only failures open a dialog.
 
 **Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers.
 
@@ -134,6 +134,10 @@ Ordered by importance; with these, the unverified items above become measured re
 cd wps-mask-addon
 node test/aes.test.js       # cipher against node:crypto
 node test/engine.test.js    # mapping, reverting, storage
-npm i jsdom --no-save       # needed by the panel test
+npm i jsdom --no-save       # needed by the panel and utility tests
 node test/taskpane.test.js  # the real panel page on a mock object model
+node test/utils.test.js     # success toast on the status bar, dialog fallback
+node tools/make-icons.mjs   # assets/icons/*.svg → wpsmask_1.0.0/images/*.png
 ```
+
+Icons need nothing but Edge: edit the SVGs, regenerate, never hand-edit a PNG.

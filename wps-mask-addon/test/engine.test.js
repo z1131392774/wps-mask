@@ -343,7 +343,7 @@ dupApp.setTable('Sheet1', 1, 1, dupRows);
 dupApp.select('Sheet1', 1, 1, dupRows.length, 1);
 const dupVault = Engine.loadVault(dupApp);
 const dupModel = Engine.hydrate(Engine.analyze(dupApp, {}), dupVault);
-dupModel.columns[0].cfg = { mode: 'text', lang: 'zh', prefix: 'X', digits: 2 };
+dupModel.columns[0].cfg = { mode: 'text', prefix: 'X', digits: 2 };
 Engine.applyMask(dupModel, dupVault, {});
 const dupOut = [];
 for (let r = 2; r <= dupRows.length; r++) { dupOut.push(dupApp.getCell('Sheet1', r, 1)); }
@@ -436,6 +436,74 @@ ok(Engine.defaultCfg('客户', repModel.columns[0].values).digits === 2,
 ok(Engine._internal.areaCountOf(['a', '', 0, null]) === 2 &&
     Engine._internal.areaCountOf(['a', '  ', 0, null]) === 3,
     '空串/null 不算格子，0 和纯空格算（映射时同样会被处理）');
+
+/* ---------- 22. 文本签名只由前缀和位数决定 ---------- */
+console.log('\n[22] 文本模式的签名');
+// 「语言」下拉已删除：它只参与签名、不影响生成，翻一下就把同一批值换到另一个桶，
+// 两桶假值空间相同会撞值，反映射随即指错人。签名必须只反映真正影响生成的东西。
+const sigA = Engine.sigOf({ mode: 'text', prefix: '姓名', digits: 2 });
+ok(sigA === 'text|姓名|2', '签名为「模式|前缀|位数」，实际 ' + sigA);
+ok(Engine.sigOf({ mode: 'text', lang: 'en', prefix: '姓名', digits: 2 }) === sigA,
+    '带 lang 字段的旧配置落到同一个桶，翻语言不会再分裂映射空间');
+// 生成只认前缀与位数：lang 残留给出完全一样的形态
+const shapeApp = new MockWPS();
+shapeApp.setTable('Sheet1', 1, 1, [['姓名'], ['张三'], ['李四']]);
+shapeApp.select('Sheet1', 1, 1, 3, 1);
+const shapeCol = Engine.analyze(shapeApp, {}).columns[0];
+const zhSamp = Engine.sample({ mode: 'text', prefix: '姓名', digits: 2 }, shapeCol);
+const enSamp = Engine.sample({ mode: 'text', lang: 'en', prefix: '姓名', digits: 2 }, shapeCol);
+ok(/^姓名\d{2}$/.test(zhSamp) && /^姓名\d{2}$/.test(enSamp),
+    '两种语言取样的形态一致：' + zhSamp + ' / ' + enSamp);
+
+/* ---------- 23. 旧签名的桶在加载时改成新键 ---------- */
+console.log('\n[23] 旧映射表的桶名迁移');
+// 旧文档的桶键是 text|zh|姓名|1；只改桶名，桶里的记录与表格里的假值都不动
+function legacyVaultApp() {
+    const a = new MockWPS();
+    a.ActiveWorkbook.addSheet('Sheet2');
+    a.setTable('Sheet1', 1, 1, [['姓名'], ['张三'], ['李四']]);
+    a.setTable('Sheet2', 1, 1, [['姓名'], ['张三'], ['李四'], ['王五']]);
+    a.setTable('Sheet1', 2, 1, [['姓名3']]);
+    a.setTable('Sheet1', 3, 1, [['姓名8']]);
+    const vv = Engine.loadVault(a);
+    vv.maps['text|zh|姓名|1'] = { 's:张三': '姓名3', 's:李四': '姓名8' };
+    vv.ranges.push({ s: 'Sheet1', r1: 2, c1: 1, r2: 3, c2: 1 });
+    Engine.saveVault(a, vv);
+    return a;
+}
+let legacyApp = legacyVaultApp();
+let legacyVault = Engine.loadVault(legacyApp);
+ok(!legacyVault.maps['text|zh|姓名|1'] && !!legacyVault.maps['text|姓名|1'],
+    '加载后旧桶已并到新键：' + Object.keys(legacyVault.maps).join(','));
+ok(legacyVault.maps['text|姓名|1']['s:张三'] === '姓名3', '桶里的记录原样搬过来');
+ok(legacyVault.migrated && legacyVault.migrated.moved === 2 && legacyVault.migrated.dropped === 0,
+    '迁移统计正确：' + JSON.stringify(legacyVault.migrated));
+// 旧区域照样能还原，内容没有被迁移碰到
+legacyApp.select('Sheet1', 1, 1, 3, 1);
+let lv = Engine.loadVault(legacyApp);
+Engine.revert(Engine.hydrate(Engine.analyze(legacyApp, {}), lv), lv);
+ok(legacyApp.getCell('Sheet1', 2, 1) === '张三' && legacyApp.getCell('Sheet1', 3, 1) === '李四',
+    '旧区域的假值仍可还原');
+// 换到新区域映射同一批人，沿用旧桶里的假值，而不是另起一套
+legacyApp = legacyVaultApp();
+legacyApp.select('Sheet2', 1, 1, 4, 1);
+lv = Engine.loadVault(legacyApp);
+Engine.applyMask(Engine.hydrate(Engine.analyze(legacyApp, {}), lv), lv, {});
+Engine.saveVault(legacyApp, lv);
+ok(legacyApp.getCell('Sheet2', 2, 1) === '姓名3',
+    '张三在新区域沿用旧假值，实际 ' + legacyApp.getCell('Sheet2', 2, 1));
+ok(Object.keys(Engine.loadVault(legacyApp).maps).length === 1, '迁移后只剩一个文本桶，不会新旧并存');
+// 两个旧桶合并时若假值冲突，宁丢一条也不造出二对一
+const clashApp = new MockWPS();
+clashApp.setTable('Sheet1', 1, 1, [['姓名'], ['张三']]);
+let cv = Engine.loadVault(clashApp);
+cv.maps['text|zh|姓名|1'] = { 's:张三': '姓名3' };
+cv.maps['text|en|姓名|1'] = { 's:李四': '姓名3' };
+Engine.saveVault(clashApp, cv);
+const merged = Engine.loadVault(clashApp);
+const mergedBucket = merged.maps['text|姓名|1'];
+ok(Object.keys(mergedBucket).length === 1 && merged.migrated.dropped === 1,
+    '撞值的第二条被丢弃，不产生二对一：' + JSON.stringify(mergedBucket) + ' ' + JSON.stringify(merged.migrated));
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
