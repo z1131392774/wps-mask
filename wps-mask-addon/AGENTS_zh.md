@@ -12,3 +12,4 @@
 - **`engine.js` 不依赖宿主。** 不碰 DOM、不碰 `window`、顶层不用 `require`：它得在任务窗格、加载项宿主页和 Node 测试里原样跑起来。`aes.js` 不用 `crypto`。
 - **改行为就要跑测试。** 引擎靠 `node test/engine.test.js` 与 `node test/aes.test.js`；用户点得到的东西还要过 jsdom 面板测试。
 - **AES 密钥是混淆常量，不是凭据。** `KEY_TEXT` 就是个常量。要把它换成口令或环境变量，必须同时改存储格式。
+- **改这里，别改 `%APPDATA%` 下面。** `tools/link-addon.ps1` 把装好的 `jsaddons\wpsmask_1.0.0` 变成指向本目录的目录联接，两条路径就是同一份文件：在 `jsaddons` 那边改，等于改仓库。`-Rollback` 可以撤销，把当时存下的 `.bak-<时间戳>` 文件夹还原。

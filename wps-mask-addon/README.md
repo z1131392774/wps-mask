@@ -30,7 +30,7 @@ The add-in directory is `%APPDATA%\kingsoft\wps\jsaddons` (`Win+R`, type `%appda
    ```xml
    <jsplugin name="wpsmask" type="et" url="wpsmask_1.0.0" version="1.0.0" enable="enable_dev" install="null" customDomain="" debug=""/>
    ```
-3. Restart WPS and open any spreadsheet; the "数据脱敏" tab appears. WPS may ask you to trust the add-in the first time.
+3. Restart WPS; the "数据脱敏" tab appears. WPS may ask you to trust the add-in once.
 
 Resulting tree:
 
@@ -38,21 +38,32 @@ Resulting tree:
 jsaddons\
 ├─ publish.xml
 └─ wpsmask_1.0.0\
-   ├─ index.html        entry page, loaded at WPS start
+   ├─ index.html        entry page
    ├─ main.js           script loader
    ├─ ribbon.xml        ribbon definition
    ├─ js\
    │   ├─ utils.js      host object, resource path
-   │   ├─ aes.js        AES-128-CBC in plain JS
-   │   ├─ engine.js     detection, generation, mapping table, storage
-   │   └─ ribbon.js     button callbacks, quick mask and revert
+   │   ├─ aes.js        AES-128-CBC, plain JS
+   │   ├─ engine.js     detection, generation, mapping, storage
+   │   └─ ribbon.js     button callbacks
    └─ taskpane\
        ├─ index.html    mapping panel
        ├─ taskpane.css
        └─ taskpane.js
 ```
 
-If `wpsjs` is already installed, its generated `publish.xml` works too: replace the files above by name, and `wpsjs debug` starts WPS with the add-in loaded for live editing.
+If `wpsjs` is installed, its generated `publish.xml` works too: replace the files above by name, and `wpsjs debug` starts WPS with the add-in loaded.
+
+### Develop without copying
+
+Editing a file here changes nothing until it lands in `jsaddons`. `tools/link-addon.ps1` swaps that folder for a junction onto this tree, leaving a restart as the only step:
+
+```powershell
+powershell -File tools/link-addon.ps1            # old folder kept as .bak-<timestamp>
+powershell -File tools/link-addon.ps1 -Rollback  # remove it, put the backup back
+```
+
+A junction needs no elevation, unlike a symlink; a hard link cannot point at a folder. Close WPS first — the rename fails while the add-in is loaded.
 
 ## Usage
 
@@ -60,14 +71,14 @@ If `wpsjs` is already installed, its generated `publish.xml` works too: replace 
 
 **Masking twice is safe.** A cell that already holds a value from the mapping table is skipped, and the status line names the columns it skipped. A partial mask followed by a whole-region mask therefore cannot map the same cells twice; to map the current values again, revert first.
 
-**Quick buttons.** "快速映射" processes the current selection using auto-detection or the remembered settings. It first probes whether the selection already matches the mapping table and stops to ask before masking twice. "反映射" reverses the current selection directly.
+**Quick buttons.** "快速映射" processes the current selection using auto-detection or the remembered settings. Already-mapped cells are skipped here too; when no new cell is left it says so and writes nothing. "反映射" reverses the current selection directly.
 
-**Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers. Cells that already hold a mapped value are left alone and reported, so re-running a mask over the same area is idempotent.
+**Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers.
 
 ## Where the mapping lives, and how far the encryption goes
 
 - **Location:** a hidden worksheet named "脱敏映射表". A1 is a notice, A2 onward holds ciphertext chunks of 20,000 characters.
-- **Algorithm:** AES-128-CBC, random IV, PKCS#7, Base64 behind an `M1:` prefix. Two saves of the same plaintext produce different ciphertext.
+- **Algorithm:** AES-128-CBC, random IV, PKCS#7, Base64 behind an `M1:` prefix. Two saves of one plaintext differ.
 - **Key:** `KEY_TEXT` at the top of `js/aes.js`, 16 bytes.
 - **Boundary, stated plainly:** the key ships with the code, so this is obfuscation. It stops someone opening the workbook and reading the originals; it does not stop someone holding this add-in from reversing it. Real protection means moving the key out of the document — derived from a local config or a passphrase.
 - **Cost of changing the key:** every existing document's table becomes undecryptable (the panel reports a decryption failure). Do not touch it while documents in the wild carry a table.
@@ -82,7 +93,7 @@ If `wpsjs` is already installed, its generated `publish.xml` works too: replace 
 - Panel: four cards rendered, distribution switch reveals its parameters, type switch rebuilds the card, mask, revert, header toggle, drop the table, and the no-selection error path.
 - Syntax check on every script, XML well-formedness of `ribbon.xml`.
 
-**Needs one run on a real device** — the local documentation set has no measured basis for these, so they follow official and community samples:
+**Needs one run on a real device** — nothing in the local documentation set measures these; they follow official and community samples:
 
 1. Whether this WPS build accepts the `publish.xml` fields and the `enable` value. Test: the "数据脱敏" tab appears.
 2. **Whether the task pane page receives `window.Application`.** If the panel reports "未取到 WPS 应用对象", this build does not inject the host object into the pane; the fallback is the ribbon buttons, which run the same engine from the host page.
