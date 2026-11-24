@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+    <ribbon startFromScratch="false">
+        <tabs>
+            <tab id="tabMask" label="数据脱敏">
+                <group id="grpMask" label="区域映射">
+                    <button id="btnMaskPane" label="映射面板" onAction="OnAction" size="normal"/>
+                    <button id="btnMaskQuick" label="快速映射" onAction="OnAction" size="normal"/>
+                    <button id="btnMaskRevert" label="反映射" onAction="OnAction" size="normal"/>
+                </group>
+            </tab>
+        </tabs>
+    </ribbon>
+</customUI>

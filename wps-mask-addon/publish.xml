@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  加载项注册清单。放到 %APPDATA%\kingsoft\wps\jsaddons\publish.xml。
+  若该文件已存在（装过别的加载项），不要覆盖：把 <jsplugin .../> 这一行加到 <jsplugins> 里面即可。
+
+  字段说明（按社区可用的手写样例）：
+    name    加载项名称，任意英文标识
+    type    组件类型：et=表格、wps=文字、wpp=演示
+    url     加载项目录。离线放置时写目录名；也可写 file://
+    version 版本号，需与目录名后缀 _1.0.0 一致
+    enable  enable_dev 会在功能区多出「打开JS调试器」入口；不想要调试入口可改成 enable
+-->
+<jsplugins>
+    <jsplugin name="wpsmask" type="et" url="wpsmask_1.0.0" version="1.0.0" enable="enable_dev" install="null" customDomain="" debug=""/>
+</jsplugins>

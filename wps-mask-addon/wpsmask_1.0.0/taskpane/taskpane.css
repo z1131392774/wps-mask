@@ -1,0 +1,258 @@
+/* 任务窗格样式：窄栏卡片布局，浅色 */
+* { box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    font-size: 12px;
+    color: #1f2328;
+    background: #ffffff;
+}
+
+.hd {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid #eceef1;
+    background: #fafbfc;
+    flex: 0 0 auto;
+}
+
+.hd-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.ttl {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .3px;
+}
+
+.sub {
+    margin-top: 4px;
+    color: #6b7280;
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-all;
+}
+
+.bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 12px;
+    border-bottom: 1px solid #eceef1;
+    background: #fff;
+    flex: 0 0 auto;
+}
+
+.chk {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: #3d4450;
+    cursor: pointer;
+    user-select: none;
+}
+
+.chk input { margin: 0; }
+
+button {
+    font-family: inherit;
+    font-size: 12px;
+    border: 1px solid #d5d9df;
+    background: #fff;
+    color: #1f2328;
+    border-radius: 5px;
+    padding: 5px 10px;
+    cursor: pointer;
+}
+
+button:hover { background: #f3f5f7; }
+button:active { background: #e9edf1; }
+
+button.primary {
+    background: #1f6feb;
+    border-color: #1f6feb;
+    color: #fff;
+    font-weight: 600;
+}
+
+button.primary:hover { background: #1a5fd0; }
+
+button.ghost {
+    border-color: transparent;
+    background: transparent;
+    color: #1f6feb;
+    padding: 4px 6px;
+}
+
+button.ghost:hover { background: #f0f5ff; }
+
+.cards {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 8px 10px 4px;
+}
+
+.card {
+    border: 1px solid #e6e9ee;
+    border-radius: 7px;
+    margin-bottom: 8px;
+    background: #fff;
+    overflow: hidden;
+}
+
+.card:hover { border-color: #d3dae3; }
+
+.ch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    background: #f7f8fa;
+    border-bottom: 1px solid #eef0f3;
+}
+
+.ref {
+    display: inline-block;
+    min-width: 16px;
+    text-align: center;
+    font-size: 10px;
+    color: #7a8290;
+    background: #e9edf2;
+    border-radius: 3px;
+    padding: 1px 3px;
+    font-family: Consolas, monospace;
+}
+
+.nm {
+    flex: 1 1 auto;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cb {
+    padding: 8px 9px 9px;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.row:last-child { margin-bottom: 0; }
+
+.lbl {
+    color: #6b7280;
+    flex: 0 0 auto;
+    min-width: 34px;
+}
+
+select, input[type="text"] {
+    font-family: inherit;
+    font-size: 12px;
+    border: 1px solid #d5d9df;
+    border-radius: 4px;
+    padding: 3px 5px;
+    color: #1f2328;
+    background: #fff;
+    min-width: 0;
+}
+
+select:focus, input[type="text"]:focus {
+    outline: none;
+    border-color: #1f6feb;
+    box-shadow: 0 0 0 2px rgba(31, 111, 235, .12);
+}
+
+.num {
+    width: 62px;
+    text-align: right;
+    font-family: Consolas, monospace;
+}
+
+.sep { color: #9aa3af; }
+
+.grow { flex: 1 1 auto; min-width: 40px; }
+
+.hint {
+    color: #6b7280;
+    line-height: 1.6;
+}
+
+.cs {
+    padding: 6px 9px;
+    border-top: 1px dashed #eef0f3;
+    color: #6b7280;
+    font-size: 11px;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+}
+
+.cs b {
+    color: #1f6feb;
+    font-family: Consolas, "Microsoft YaHei", monospace;
+    font-weight: 600;
+}
+
+.empty {
+    color: #8b93a1;
+    text-align: center;
+    padding: 28px 10px;
+    line-height: 1.8;
+}
+
+.ft {
+    flex: 0 0 auto;
+    border-top: 1px solid #eceef1;
+    padding: 9px 12px 10px;
+    background: #fafbfc;
+}
+
+.btns {
+    display: flex;
+    gap: 8px;
+}
+
+.btns button {
+    flex: 1 1 0;
+    padding: 7px 8px;
+}
+
+.status {
+    margin-top: 7px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #6b7280;
+    min-height: 15px;
+    word-break: break-all;
+}
+
+.status.ok { color: #13803c; }
+.status.err { color: #c02b2b; }
+
+.links {
+    margin-top: 6px;
+    display: flex;
+    gap: 14px;
+}
+
+.links a {
+    color: #8b93a1;
+    text-decoration: none;
+    font-size: 11px;
+}
+
+.links a:hover { color: #1f6feb; text-decoration: underline; }

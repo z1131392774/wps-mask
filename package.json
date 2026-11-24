@@ -1,0 +1,10 @@
+{
+  "name": "wps-mask-addon",
+  "private": true,
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "check": "node scripts/check-docs.mjs"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "zhMultiplier": 2,
+  "excludePairs": [],
+  "budgets": {
+    "AGENTS.md": 1200,
+    "README.md": 700,
+    "docs/AGENTS.md": 1300,
+    "docs/adopting.md": 900,
+    "docs/development.md": 900,
+    ".agents/notes/README.md": 900,
+    ".agents/skills/pre-push-checks/SKILL.md": 500,
+    ".agents/skills/pre-push-checks/references/check-selection.md": 600,
+    "scripts/AGENTS.md": 400,
+    "wps-mask-addon/AGENTS.md": 450,
+    "wps-mask-addon/README.md": 1600
+  },
+  "pendingTranslations": []
+}
