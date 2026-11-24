@@ -58,11 +58,11 @@ const colVals = idx => {
 const newNames = colVals(1), newPhones = colVals(2), newAges = colVals(3), newNotes = colVals(4);
 
 ok(newNames.every((v, i) => v !== names[i]), '姓名字段全部被替换');
-// 后缀位数按本列不同值个数给（只留 10% 余量），这里跟着算，不写死 4 位
-const dName = Engine._internal.suffixDigits(new Set(names).size);
-const dNote = Engine._internal.suffixDigits(new Set(notes.filter(Boolean)).size);
+// 后缀位数按本列要写的格子数给（只留 10% 余量），这里跟着算，不写死 4 位
+const dName = Engine.suffixDigits(names.length);
+const dNote = Engine.suffixDigits(notes.filter(Boolean).length);
 ok(newNames.every(v => new RegExp('^姓名\\d{' + dName + '}$').test(v)),
-    '姓名映射形态为「姓名 + ' + dName + ' 位数字」（7 个不同值），如 ' + newNames[0]);
+    '姓名映射形态为「姓名 + ' + dName + ' 位数字」（10 格 → ' + dName + ' 位），如 ' + newNames[0]);
 ok(newNames[0] === newNames[3] && newNames[3] === newNames[6], '同名同映射：张三 3 次映射一致 → ' + newNames[0]);
 ok(newPhones.every(v => /^1[3-9]\d{9}$/.test(v)), '手机号全部合法（11 位、1[3-9] 开头）');
 ok(newPhones[0] === newPhones[2], '同号同映射：13800138000 两次映射一致 → ' + newPhones[0]);
@@ -381,7 +381,7 @@ let zipOk = true;
 for (let i = 0; i < 4; i++) { if (zipCel(i + 2) !== zipRows[i + 1][0]) { zipOk = false; } }
 ok(zipOk, '四个值（含前导零的那个）逐个还原');
 
-/* ---------- 21. 后缀位数按不同值个数给，留 1.1 倍余量 ---------- */
+/* ---------- 21. 后缀位数按待写的格子数给，留 1.1 倍余量 ---------- */
 console.log('\n[21] 后缀位数只按需要给');
 const sd = Engine.suffixDigits;
 ok(sd(0) === 1, '空列给 1 位，实际 ' + sd(0));
@@ -409,6 +409,23 @@ const sfxOut = [];
 for (let r = 2; r <= sfxRows.length; r++) { sfxOut.push(sfxApp.getCell('Sheet1', r, 1)); }
 ok(sfxOut.every(v => /^姓名\d{2}$/.test(v)), '41 个值都写成「姓名 + 2 位数字」：' + sfxOut[0]);
 ok(new Set(sfxOut).size === 41, '41 个值仍然两两不同，实际 ' + new Set(sfxOut).size);
+
+// 按格子数、不按不同值：重复很多也照样按行数给位数，省掉一次去重统计
+ok(sfxModel.columns[0].distinctCount === 41, '这一列 41 个不同值（先确认前提）');
+const repApp = new MockWPS();
+const repRows = [['客户']];
+for (let i = 0; i < 41; i++) { repRows.push(['客户' + (i % 3)]); }
+repApp.setTable('Sheet1', 1, 1, repRows);
+repApp.select('Sheet1', 1, 1, repRows.length, 1);
+const repModel = Engine.analyze(repApp, {});
+ok(repModel.columns[0].distinctCount === 3 && repModel.columns[0].nonEmptyCount === 41,
+    '这一列只有 3 个不同值、41 个非空格');
+ok(Engine.defaultCfg('客户', repModel.columns[0].values).digits === 2,
+    '按格子数给到 2 位（按不同值只会给 1 位），实际 ' + Engine.defaultCfg('客户', repModel.columns[0].values).digits);
+// 与映射时的空白判定保持一致：空串和 null 不算格子，纯空格、0 都算值
+ok(Engine._internal.areaCountOf(['a', '', 0, null]) === 2 &&
+    Engine._internal.areaCountOf(['a', '  ', 0, null]) === 3,
+    '空串/null 不算格子，0 和纯空格算（映射时同样会被处理）');
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

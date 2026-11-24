@@ -225,10 +225,20 @@ var MaskEngine = (function () {
         return n;
     }
 
-    // 后缀位数：够放下这一列的不同值就行，只留 1.1 倍余量。
-    // 按数量精确配平（刚好等于不同值个数）会让最后两条记录只剩互换的一格，
-    // 随机重试立刻退化成确定式枚举；写死 4 位（1 万个槽）又让「姓名37」变成「姓名0037」，
-    // 看着像按条数编过号。10% 的余量刚好够重试躲开自己的原值，又不至于多一位。
+    function areaCountOf(values) {
+        var n = 0;
+        for (var i = 0; i < values.length; i++) {
+            if (!isBlank(values[i])) { n++; }
+        }
+        return n;
+    }
+
+    // 后缀位数：够放下这一列要写的格子数就行，只留 1.1 倍余量。
+    // 这里按"非空格子数"算，不去统计不同值：一对一映射要的唯一结果数最多就是格子数，
+    // 拿它当上界一定够，而 distinct 要额外去重一遍、碰到一万行就是建一个一万键的表。
+    // 精确配平（空间刚好等于个数）会让最后两条记录只剩互换的一格，随机重试立刻退化成
+    // 确定式枚举；写死 4 位（1 万个槽）又让「姓名37」变成「姓名0037」，看着像按条数编过号。
+    // 10% 的余量刚好够重试躲开自己的原值，又不至于多要一位。
     function suffixDigits(need) {
         var n = Math.max(1, Math.ceil((Number(need) || 0) * 1.1));
         for (var d = 1; d <= 8; d++) {
@@ -244,7 +254,7 @@ var MaskEngine = (function () {
             return { mode: 'phone' };
         }
         if (mode === 'mixed') {
-            return { mode: 'mixed', digits: suffixDigits(distinctCountOf(values)) };
+            return { mode: 'mixed', digits: suffixDigits(areaCountOf(values)) };
         }
         if (mode === 'number') {
             var st = numericStats(values) || { min: 0, max: 100, mean: 50, sd: 15, dec: 0 };
@@ -274,7 +284,7 @@ var MaskEngine = (function () {
             mode: 'text',
             lang: 'zh',
             prefix: h || '文本',
-            digits: suffixDigits(distinctCountOf(values))
+            digits: suffixDigits(areaCountOf(values))
         };
     }
 
@@ -1151,6 +1161,7 @@ var MaskEngine = (function () {
             genSameShape: genSameShape,
             shapeOf: shapeOf,
             suffixDigits: suffixDigits,
+            areaCountOf: areaCountOf,
             looksLikeHeader: looksLikeHeader,
             buildIndex: buildIndex,
             numericStats: numericStats,

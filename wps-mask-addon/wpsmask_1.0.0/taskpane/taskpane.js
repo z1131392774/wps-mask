@@ -198,7 +198,7 @@
 
     function defaultForMode(mode, col) {
         var auto = E.defaultCfg(col.header, col.values);
-        var digits = E.suffixDigits(col.distinctCount);
+        var digits = E.suffixDigits(col.nonEmptyCount);
         if (mode === 'phone' || mode === 'keep') { return { mode: mode }; }
         if (mode === 'mixed') { return { mode: 'mixed', digits: digits }; }
         if (mode === 'number') {
@@ -445,7 +445,7 @@
             '关于整数区间：区间里可取的整数刚好等于这一列的不同值个数时，会把整列做一次错位换算',
             '（只用这批值本身，1 对 1、不会出现原值），因为这时本来就没有别的排法。',
             '',
-            '关于文本后缀：位数按本列不同值个数自动给，只留 10% 余量。41 个客户名就是 2 位',
+            '关于文本后缀：位数按本列要写的格子数自动给，只留 10% 余量。41 行客户名就是 2 位',
             '（如「姓名37」），够用又不会写成「姓名0037」那种看着像按条数编了号的长号；可以手改。',
             '',
             '注意：本文档若被他人拿到，' +
