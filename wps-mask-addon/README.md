@@ -83,6 +83,7 @@ A junction needs no admin rights or developer mode; a hard link cannot point at 
 - **Algorithm:** AES-128-CBC, random IV, PKCS#7, Base64 behind an `M1:` prefix. Two saves of one plaintext differ.
 - **Key:** `KEY_TEXT` at the top of `js/aes.js`, 16 bytes.
 - **Protection limit:** the key ships with the code, so this is obfuscation only. It prevents reading the originals by simply opening the workbook; it cannot stop someone holding this add-in from decrypting the table. Real protection requires deriving the key from a local config or a passphrase, outside the document.
+- **What the fakes still reveal:** fakes are drawn at random from a range with 10% headroom past the data (20~43, not 20~40), so the column is not reshuffled — neither the sorted values nor the frequencies match. Still visible: the range's min and max, row count, blank positions, row order, and the shape of text and phone values.
 - **Cost of changing the key:** every existing document's table becomes undecryptable (the panel reports a decryption failure). Do not change it while existing documents still hold mapping tables.
 - **Save the file.** The table is saved with the workbook. Close without saving and the masked data stays while the mapping is lost; the originals cannot be recovered.
 

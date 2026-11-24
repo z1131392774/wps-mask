@@ -248,10 +248,14 @@ var MaskEngine = (function () {
             // 数值统计只计算数字，但不同值中可能混有 "无"、"N/A" 这类文本；
             // 区间容纳不下时把上界提高到刚好够用（1001~1040 差一个就调整为 1041），
             // 避免整次映射失败，也避免直接扩大到 9999 把"年龄"映射成七千岁。
+            // 另外要留出空槽：不同值个数一旦等于整数个数，就只能整列置换，
+            // 那等于把原列整体旋转（排序后一模一样，知道一个值就能反推全部）。
+            // 10% 余量与文本后缀同一把尺子，至少空一格。
             if (st.dec <= 0) {
                 var need = distinctCountOf(values);
+                var want = Math.max(need + 1, Math.ceil(need * 1.1));
                 var cap = Math.floor(hi) - Math.ceil(lo) + 1;
-                if (cap < need) { hi = Math.ceil(lo) + need - 1; }
+                if (cap < want) { hi = Math.ceil(lo) + want - 1; }
             }
             return {
                 mode: 'number',
@@ -361,13 +365,27 @@ var MaskEngine = (function () {
         if (!keys.length || nums.length !== slots.length || nums.length < 2) { return null; }
         nums.sort(function (a, b) { return a - b; });
         slots.sort(function (a, b) { return a - b; });
-        // slots 与 nums 是同一组数，错开 r 位（r 随机且不为 0）后既没有不动点，也不是恒定的 +1 映射
-        var r = rndInt(1, nums.length - 1);
+        // slots 与 nums 是同一组数，先随机洗牌再对号入座：洗完是一个"单环"置换，
+        // 天然没有不动点，也不会留下固定偏移。曾经用"错开 r 位"，那是把原列整体旋转——
+        // 排序后与原列一模一样，知道任何一个真实值就能把整列反推回来（工号 1~300 实测）。
+        sattolo(slots);
         var out = {};
         for (var j = 0; j < nums.length; j++) {
-            out['n:' + nums[j]] = slots[(j + r) % nums.length];
+            out['n:' + nums[j]] = slots[j];
         }
         return out;
+    }
+
+    // Sattolo 洗牌：与 Fisher-Yates 只差内层上界（i 而非 i+1），
+    // 结果是一个长度等于元素个数的单一循环置换，所以每个位置都换成了别的值。
+    function sattolo(a) {
+        for (var i = a.length - 1; i > 0; i--) {
+            var j = rndInt(0, i - 1);
+            var t = a[i];
+            a[i] = a[j];
+            a[j] = t;
+        }
+        return a;
     }
 
     function genText(cfg, orig, used) {

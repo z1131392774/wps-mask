@@ -267,13 +267,14 @@ mixed.select('Sheet1', 1, 1, mixedRows.length, 1);
 const mMixVault = Engine.loadVault(mixed);
 const mMix = Engine.hydrate(Engine.analyze(mixed, {}), mMixVault);
 const mCfg = Engine.defaultCfg(mMix.columns[0].header, mMix.columns[0].values);
-ok(mCfg.max === 1005, '上界抬到刚好够用的 ' + mCfg.max + '（原数据 1001~1004 + 一个文本值）');
+ok(mCfg.max === 1006, '上界抬到刚好够用还留一格空槽的 ' + mCfg.max + '（原数据 1001~1004 + 一个文本值）');
 const mStats = Engine.applyMask(mMix, mMixVault, {});
 ok(mStats.written === 5, '5 格全部映射成功，实际 ' + mStats.written);
 
-/* ---------- 16. 区间刚好够用：错位置换，不能随机失败 ---------- */
+/* ---------- 16. 区间刚好够用：置换要随机成环，不能是整体旋转 ---------- */
 console.log('\n[16] 区间刚好装满时的稳定性');
-let tightBad = 0;
+// 手动把区间收到与不同值个数相等（面板里改窄区间就是这样），逼出整列置换那条路
+let tightBad = 0, rotBad = 0;
 for (let round = 0; round < 8; round++) {
     const t = new MockWPS();
     const tRows = [['工号']];
@@ -281,7 +282,12 @@ for (let round = 0; round < 8; round++) {
     t.setTable('Sheet1', 1, 1, tRows);
     t.select('Sheet1', 1, 1, tRows.length, 1);
     const tv = Engine.loadVault(t);
-    const tm = Engine.hydrate(Engine.analyze(t, {}), tv);
+    const tm = Engine.analyze(t, {});
+    // 手动收窄：区间正好 40 个整数，装 40 个不同值
+    tm.columns[0].cfg = {
+        mode: 'number', dist: 'uniform', min: 1001, max: 1040, dec: 0,
+        mean: 1020, sd: 12, lambda: 1020
+    };
     try {
         const st = Engine.applyMask(tm, tv, {});
         const outs = [];
@@ -289,9 +295,13 @@ for (let round = 0; round < 8; round++) {
         const noFixed = outs.every((x, i) => x !== 1000 + i + 1);
         const unique = new Set(outs).size === outs.length;
         if (!(st.written === 40 && noFixed && unique)) { tightBad++; }
+        // 整体旋转的特征：每个假值在"原值排序表"里的位次减行号是同一个常数
+        const diffs = outs.map((x, i) => (x - 1001 - i + 40) % 40);
+        if (new Set(diffs).size === 1) { rotBad++; }
     } catch (e) { tightBad++; }
 }
 ok(tightBad === 0, '40 个值占满 40 个整数槽：8 轮全部成功、无不动点、列内不重复（失败 ' + tightBad + ' 轮）');
+ok(rotBad === 0, '都不是整体旋转，位次差不恒定（旋转 ' + rotBad + ' 轮）');
 
 /* ---------- 17. 混合账号列：手机 / 邮箱 / 固话 / 字母账号 / 中文 混在一列 ---------- */
 console.log('\n[17] 混合标识列按各自的形态映射');
@@ -528,14 +538,14 @@ Engine.applyMask(Engine.hydrate(Engine.analyze(ageApp, {}), av), av, {});
 Engine.saveVault(ageApp, av);
 const fakeOf28 = ageApp.getCell('Sheet1', 10, 1);
 ok(fakeOf28 !== 28 && typeof fakeOf28 === 'number', '第一批 28 → ' + fakeOf28);
-ok(Engine.loadVault(ageApp).settings['年龄'].max === 40,
-    '记住的区间就是这批数据的范围：' + JSON.stringify(Engine.loadVault(ageApp).settings['年龄']));
+ok(Engine.loadVault(ageApp).settings['年龄'].max === 43,
+    '记住的区间是数据范围再留出空槽：' + JSON.stringify(Engine.loadVault(ageApp).settings['年龄']));
 
-// 第二批：值域扩到 20~46，记忆里的 20~40 只有 21 个槽
+// 第二批：值域扩到 20~46，记忆里上限 43 也不够 27 个值用的 30 个槽
 ageApp.select('Sheet2', 1, 1, 28, 1);
 av = Engine.loadVault(ageApp);
 let am = Engine.hydrate(Engine.analyze(ageApp, {}), av);
-ok(am.columns[0].cfg.min === 20 && am.columns[0].cfg.max === 46,
+ok(am.columns[0].cfg.min === 20 && am.columns[0].cfg.max === 49,
     '区间并到本批数据范围：' + am.columns[0].cfg.min + '~' + am.columns[0].cfg.max);
 let aErr = null;
 try { Engine.applyMask(am, av, {}); } catch (e) { aErr = e.message; }
@@ -544,9 +554,9 @@ ok(ageApp.getCell('Sheet2', 10, 1) === fakeOf28,
     '28 在新 sheet 沿用第一批的假值：' + ageApp.getCell('Sheet2', 10, 1));
 Engine.saveVault(ageApp, av);
 const numSigs = Object.keys(Engine.loadVault(ageApp).maps).filter(s => s.indexOf('num|') === 0);
-ok(numSigs.length === 1 && numSigs[0].indexOf('|20|46|') > 0,
+ok(numSigs.length === 1 && numSigs[0].indexOf('|20|49|') > 0,
     '旧桶已并到新签名下，只剩一个：' + numSigs.join(','));
-ok(Engine.loadVault(ageApp).settings['年龄'].max === 46, '区间扩张后同步写回记忆');
+ok(Engine.loadVault(ageApp).settings['年龄'].max === 49, '区间扩张后同步写回记忆');
 
 // 第三批：数据更窄，区间不缩，已映射的原值不再新建记录
 ageApp.select('Sheet3', 1, 1, 7, 1);
@@ -575,7 +585,7 @@ moneyApp.ActiveWorkbook.addSheet('Sheet2');
 const ints = [];
 for (let v = 100; v <= 110; v++) { ints.push(v); }
 moneyApp.setTable('Sheet1', 1, 1, moneyRows(ints));
-moneyApp.setTable('Sheet2', 1, 1, moneyRows([100, 101, 102.5]));
+moneyApp.setTable('Sheet2', 1, 1, moneyRows([100, 100.5, 101, 101.5, 102, 102.5]));
 
 moneyApp.select('Sheet1', 1, 1, 12, 1);
 let mv = Engine.loadVault(moneyApp);
@@ -583,9 +593,9 @@ Engine.applyMask(Engine.hydrate(Engine.analyze(moneyApp, {}), mv), mv, {});
 Engine.saveVault(moneyApp, mv);
 const fake100 = moneyApp.getCell('Sheet1', 2, 1);
 ok(typeof fake100 === 'number' && fake100 !== 100, '第一批 100 → ' + fake100);
-ok(Engine.loadVault(moneyApp).settings['金额'].dec === 0, '记住的是整数区间，11 个槽全用满');
+ok(Engine.loadVault(moneyApp).settings['金额'].dec === 0, '记住的是整数区间');
 
-moneyApp.select('Sheet2', 1, 1, 4, 1);
+moneyApp.select('Sheet2', 1, 1, 7, 1);
 mv = Engine.loadVault(moneyApp);
 const m2b = Engine.hydrate(Engine.analyze(moneyApp, {}), mv);
 ok(m2b.columns[0].cfg.dec === 1, '没有空槽就恢复小数位，dec = ' + m2b.columns[0].cfg.dec);
@@ -594,7 +604,7 @@ try { Engine.applyMask(m2b, mv, {}); } catch (e) { mErr = e.message; }
 ok(mErr === null, '带小数的金额不再整列失败' + (mErr ? '，实际报错：' + mErr : ''));
 ok(moneyApp.getCell('Sheet2', 2, 1) === fake100, '100 在新 sheet 仍是同一个假值');
 const moneySigs = Object.keys(mv.maps);
-ok(moneySigs.length === 1 && /^num\|uniform\|100\|110\|1\|/.test(moneySigs[0]),
+ok(moneySigs.length === 1 && /^num\|uniform\|100\|112\|1\|/.test(moneySigs[0]),
     '整数桶并到带小数的签名下，只剩一个：' + moneySigs.join(','));
 
 // 整数区间还有空槽时不给整列添小数点：2.5 换成整数就够了
@@ -613,6 +623,36 @@ ok(u2.columns[0].cfg.dec === 0, '还有空槽就保持整数，dec = ' + u2.colu
 Engine.applyMask(u2, uv, {});
 ok(Number.isInteger(unitApp.getCell('Sheet2', 4, 1)),
     '102.5 换成整数：' + unitApp.getCell('Sheet2', 4, 1));
+
+/* ---------- 26. 默认区间留出空槽：结果不再是原列的多重集 ---------- */
+console.log('\n[26] 默认区间留空槽，避免"旋转式"泄露');
+// 铺满的整列置换等于把原列整体旋转：排序后一模一样，知道一个真实值就能反推整列。
+// 所以默认区间按不同值个数留 10% 余量（至少空一格），置换条件不再成立。
+const idRows = [['工号']];
+for (let i = 1; i <= 300; i++) { idRows.push([i]); }
+const idApp = new MockWPS();
+idApp.setTable('Sheet1', 1, 1, idRows);
+idApp.select('Sheet1', 1, 1, idRows.length, 1);
+const idVault = Engine.loadVault(idApp);
+const idModel = Engine.hydrate(Engine.analyze(idApp, {}), idVault);
+ok(idModel.columns[0].cfg.max === 330, '300 个值给 330 个槽：区间 1~' + idModel.columns[0].cfg.max);
+Engine.applyMask(idModel, idVault, {});
+const idOut = [];
+for (let r = 2; r <= idRows.length; r++) { idOut.push(idApp.getCell('Sheet1', r, 1)); }
+ok(new Set(idOut).size === 300, '假值两两不同，实际 ' + new Set(idOut).size + ' 个');
+ok(idOut.every((x, i) => x !== i + 1), '没有不动点');
+const idSorted = idOut.slice().sort((a, b) => a - b);
+const origSorted = idRows.slice(1).map(r => r[0]).sort((a, b) => a - b);
+ok(JSON.stringify(idSorted) !== JSON.stringify(origSorted),
+    '排序后与原列不同（多重集不再相同），假值 ' + idSorted[0] + '~' + idSorted[299]);
+const idDiffs = idOut.map((x, i) => (x - 1 - i + 300) % 300);
+ok(new Set(idDiffs).size > 1, '位次差不恒定，知道单个真实值也反推不出整列');
+// 值域本来就铺不满时不撑区间：这条规则只补空槽，不额外放大
+const wideAge = [];
+for (let a = 20; a <= 60; a += 4) { wideAge.push(a); }
+const wideCfg = Engine.defaultCfg('年龄', wideAge);
+ok(wideCfg.min === 20 && wideCfg.max === 60,
+    '11 个值铺不满 20~60 时区间不变：' + wideCfg.min + '~' + wideCfg.max);
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
