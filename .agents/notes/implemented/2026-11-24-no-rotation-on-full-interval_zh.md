@@ -1,4 +1,6 @@
-# 区间不再铺满，置换改成随机成环
+# 决策记录：区间不再铺满，置换改成随机成环
+
+Status: implemented
 
 *[English](2026-11-24-no-rotation-on-full-interval.md)*
 

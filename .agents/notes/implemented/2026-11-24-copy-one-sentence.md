@@ -1,4 +1,6 @@
-# Copy: one sentence per state, no explanatory tail
+# Note: Copy: one sentence per state, no explanatory tail
+
+Status: implemented
 
 *[中文](2026-11-24-copy-one-sentence_zh.md)*
 

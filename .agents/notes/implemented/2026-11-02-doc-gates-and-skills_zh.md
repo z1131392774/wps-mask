@@ -1,8 +1,8 @@
 # 决策记录：文档门禁的不变量与按需加载的操作步骤技能
 
-*[English](2026-11-02-doc-gates-and-skills.md)*
-
 Status: implemented
+
+*[English](2026-11-02-doc-gates-and-skills.md)*
 
 ## 问题
 
@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决定
 
-[`scripts/check-docs.mjs`](../../../scripts/check-docs.mjs) 强制机械不变量：词数预算、站内链接、标题锚点、行尾正好一个换行，以及语料非空。`npm run check` 跑它。词数上限放在 [`scripts/doc-budgets.json`](../../../scripts/doc-budgets.json)，它覆盖脚本自带的兜底值，数字因此有了一个机器可查的归属。[脚本规则](../../../scripts/AGENTS.md) 管脚本本身。
+[`scripts/check-docs.mjs`](../../../scripts/check-docs.mjs) 强制机械不变量：词数预算、站内链接、标题锚点、决策记录头部、行尾正好一个换行，以及语料非空。它还会拒绝解析后落到仓库之外的站内链接、按链接解析出的真实路径（而不是文件名）匹配孪生，并在清单指向的文件已不存在时失败——清单损坏或过期就让检查停下，绝不悄悄缩小检查范围。`npm run check` 跑它。词数上限放在 [`scripts/doc-budgets.json`](../../../scripts/doc-budgets.json)，它覆盖脚本自带的兜底值，数字因此有了一个机器可查的归属。[脚本规则](../../../scripts/AGENTS.md) 管脚本本身。
 
 只在一种情形下用得上的操作步骤，放进 `.agents/skills/<name>/SKILL.md`，配 YAML frontmatter 说明什么时候加载。第一份是 [pre-push-checks](../../../.agents/skills/pre-push-checks/SKILL.md)，它为待推送的 diff 挑出最小的检查集。
 
@@ -24,4 +24,4 @@ Status: implemented
 
 ## 后果
 
-两条规则脱掉了「建议」的身份，现在违反它们会让命令失败。代价是门禁依赖 Node；所以脚本只用标准库，不引入任何包，不用安装步骤就能跑。技能多了一条约定要学；描述匹配不上任务的技能，运行时不花钱，因为进上下文的只有描述。
+原本靠评审兜住的事——断链、孪生缺失或过期、超预算、决策记录头部走样——现在都会让命令失败。代价是门禁依赖 Node；所以脚本只用标准库，不引入任何包，不用安装步骤就能跑。技能多了一条约定要学；描述匹配不上任务的技能，运行时不花钱，因为进上下文的只有描述。

@@ -14,7 +14,7 @@ A WPS Spreadsheet add-in: replace the values in a selected range with realistic 
 | `docs/` | Standards: [instruction structure](docs/AGENTS.md), [how to make and verify a change](docs/development.md), [reusing this layout in another repository](docs/adopting.md) |
 | `.agents/notes/` | Decision records: why this option, what was rejected, what it cost |
 | `.agents/skills/` | Procedures loaded only when their description matches the task: [pre-push checks](.agents/skills/pre-push-checks/SKILL.md) |
-| `scripts/check-docs.mjs` | Documentation checks: word budgets, bilingual pairs, links, anchors, trailing newline |
+| `scripts/check-docs.mjs` | Documentation checks: word budgets, bilingual pairs, links, anchors, note headers, trailing newline |
 
 ## Checks and tests
 
@@ -22,11 +22,14 @@ A WPS Spreadsheet add-in: replace the values in a selected range with realistic 
 npm run check                              # documentation checks, no install needed
 node wps-mask-addon/test/engine.test.js    # mapping engine
 node wps-mask-addon/test/aes.test.js       # cipher, compared with node:crypto
-npm i jsdom --no-save                      # only for the panel test
+npm install                                # test dependency (jsdom), for the panel and helper tests
 node wps-mask-addon/test/taskpane.test.js  # task pane, driven through jsdom
+node wps-mask-addon/test/utils.test.js     # shared helpers: status bar, errors, host lookup
 ```
 
-To install the add-in itself, copy `wps-mask-addon/wpsmask_1.0.0/` and `publish.xml` into `%APPDATA%\kingsoft\wps\jsaddons`, then restart WPS. The [product manual](wps-mask-addon/README.md) has the install steps, the feature list, and the parts still unverified on a real device.
+`npm test` runs all four test files in that order.
+
+To install the add-in itself, copy `wps-mask-addon/wpsmask_1.0.0/` and `wps-mask-addon/publish.xml` into `%APPDATA%\kingsoft\wps\jsaddons`, then restart WPS. The [product manual](wps-mask-addon/README.md) has the install steps, the feature list, and the parts still unverified on a real device.
 
 ## Two setup details
 

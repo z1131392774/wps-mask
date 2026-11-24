@@ -1,4 +1,6 @@
-# Bilingual documentation
+# Note: Bilingual documentation
+
+Status: implemented
 
 *[中文](2026-11-10-bilingual-documents_zh.md)*
 
@@ -10,7 +12,7 @@ The team writes in Chinese and reads in Chinese, but every agent-facing document
 
 English stays the source, and each document is paired with a Chinese twin beside it: same stem, `_zh.md` suffix, both files linking to each other. `scripts/check-docs.mjs` fails when a twin is missing or when the pair no longer links, so a half-translated tree cannot be committed. A twin is measured in units — one per CJK character plus one per Latin word — against the English budget times `zhMultiplier`, because a faithful Chinese rendering is longer than the English it comes from.
 
-## Alternatives rejected
+## Alternatives considered
 
 - **Chinese first, English twin.** The agents that read `AGENTS.md` load an English preamble from their harness; keeping the source in the same language as the model's instructions removes a translation step from the layer that must never be wrong.
 - **One file with both languages.** Doubles every file's length and makes the budget meaningless; a reader also has to skip half of every document.

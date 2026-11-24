@@ -11,7 +11,7 @@
 ## 项目事实
 
 - Stack: JavaScript（ES5 写法、无打包器）+ WPS JSAPI；测试脚本用 Node 22；加载项本身不带任何依赖
-- Verify: `node wps-mask-addon/test/engine.test.js`、`node wps-mask-addon/test/aes.test.js`、`npm i jsdom` 后 `node wps-mask-addon/test/taskpane.test.js`；文档改动运行 `npm run check`。没有 lint，也没有 typecheck
+- Verify: `node wps-mask-addon/test/engine.test.js`、`node wps-mask-addon/test/aes.test.js`、`npm install` 后 `node wps-mask-addon/test/taskpane.test.js`、`node wps-mask-addon/test/utils.test.js`（或 `npm test` 一次跑完四个）；文档改动运行 `npm run check`。没有 lint，也没有 typecheck
 - Build: 无——加载项是纯文件，复制到 `%APPDATA%\kingsoft\wps\jsaddons` 即生效
 
 ## 动手之前

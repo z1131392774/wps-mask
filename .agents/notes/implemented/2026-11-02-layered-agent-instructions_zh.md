@@ -1,8 +1,8 @@
 # 决策记录：分层组织 agent 指令，决策写进记录
 
-*[English](2026-11-02-layered-agent-instructions.md)*
-
 Status: implemented
+
+*[English](2026-11-02-layered-agent-instructions.md)*
 
 ## 问题
 

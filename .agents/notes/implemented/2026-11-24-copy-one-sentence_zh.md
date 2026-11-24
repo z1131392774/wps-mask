@@ -1,4 +1,6 @@
-# 文案：一句话说完，不挂补充说明
+# 决策记录：文案：一句话说完，不挂补充说明
+
+Status: implemented
 
 *[English](2026-11-24-copy-one-sentence.md)*
 

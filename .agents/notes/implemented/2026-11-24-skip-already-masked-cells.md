@@ -1,4 +1,6 @@
-# Skipping cells that were already masked
+# Note: Skipping cells that were already masked
+
+Status: implemented
 
 *[中文](2026-11-24-skip-already-masked-cells_zh.md)*
 
@@ -8,7 +10,7 @@ Masking a selection that was only partly masked before maps the already-masked c
 
 ## Decision
 
-Decide per cell, not per selection. Before writing, a cell is skipped when both hold: it sits inside a rectangle this add-in recorded as written, and its current value reverse-maps to some original. The recorded rectangles live in the encrypted vault as `ranges`; revert deletes the rectangles it covers, so restored data can be masked again.
+Decide per cell, not per selection. Before writing, a cell is skipped when both hold: it sits inside a rectangle this add-in recorded as written, and its current value reverse-maps to some original. The recorded rectangles live in the encrypted vault as `ranges`; revert subtracts the restored parts from the rectangles it covers, so restored data can be masked again and a second revert is a no-op ([scoped revert](2026-11-24-revert-scoped-to-recorded-ranges.md)).
 
 ## Alternatives considered
 
@@ -20,4 +22,4 @@ Decide per cell, not per selection. Before writing, a cell is skipped when both 
 
 ## Consequences
 
-The vault gained a field. Documents whose vault was written before `ranges` existed carry no rectangles, so their masked areas are not protected until they are reverted and masked again; the manual says so. The list keeps the most recent 200 rectangles and drops the oldest, which is enough for a workbook edited by hand and bounded enough to stay small inside a cell-limited ciphertext.
+The vault gained a field. Documents whose vault was written before `ranges` existed carry no rectangles, so their masked areas are not protected until they are reverted and masked again. The list keeps the most recent 200 rectangles and drops the oldest, which is enough for a workbook edited by hand and bounded enough to stay small inside a cell-limited ciphertext.

@@ -1,4 +1,6 @@
-# English source for the product manual
+# Note: English source for the product manual
+
+Status: implemented
 
 *[中文](2026-11-24-english-source-for-product-docs_zh.md)*
 

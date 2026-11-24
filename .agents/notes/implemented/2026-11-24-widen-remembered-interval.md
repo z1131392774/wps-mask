@@ -1,4 +1,6 @@
-# A remembered numeric interval may only grow
+# Note: A remembered numeric interval may only grow
+
+Status: implemented
 
 *[中文](2026-11-24-widen-remembered-interval_zh.md)*
 
@@ -9,7 +11,7 @@ Auto-mapping stopped with a modal: "A 列（年龄）的区间只有 21 个整�
 Two mechanisms were stacked:
 
 - Quick mask goes through `hydrate()`: it computes a default config from the current data, then overwrites it wholesale with the config remembered in the vault — `min`/`max` included. So the second run still uses the range of the **previous** batch.
-- The first batch, 20~40, is 21 integers and used all 21 slots (`defaultCfg` widens to `hi = ceil(lo) + need - 1`, so capacity equals need exactly, no headroom). The same-named column in another sheet of the same workbook runs 20~46 — 27 distinct values — one more than the old interval holds.
+- The first batch, 20~40, is 21 integers and, under the sizing then in force, used all 21 slots (`hi = ceil(lo) + need - 1`: capacity equal to need, no headroom). Today's default leaves spare slots ([the interval never fills up](2026-11-24-no-rotation-on-full-interval.md)). The same-named column in another sheet of the same workbook runs 20~46 — 27 distinct values — one more than the old interval holds.
 
 Measured on a 「年龄」 column: first batch 20~40 stores 20/40; second batch 20~46 still resolves to 20~40 and throws; with the same data and no remembered settings the interval comes out 20~46 and passes.
 
@@ -30,7 +32,7 @@ Grow only, never shrink. This batch always fits its own default interval, and th
 
 The interval is part of `sigOf()`, so growing it means a different bucket. `hydrate()` therefore calls `absorbBucket(vault.maps, oldSig, newSig)` right after widening, carrying records over under their original keys, and writes the widened config back to `vault.settings`. Skipping the move would repeat the `lang` removal accident: the same person gets two different fakes in two areas.
 
-The move reuses the existing collision rules (drop a record when the target already has that key, or when its fake is already taken) through the same `absorbBucket()` the bucket-name migration now uses. Dropped records do not hurt reversion — lookups go through the global index.
+The move reuses the existing collision rules (drop a record when the target already has that key, or when its fake is already taken) through the same `absorbBucket()` the bucket-name migration now uses. The old bucket is kept when a recorded range still references its signature, so that area can still revert from the bucket it was written under; a recorded signature with no bucket at all no longer falls back to the global index (that guessed another bucket's original) — `revert()` reports those cells as ambiguous instead. Once no recorded area references a bucket any more, the next `saveVault()` drops it (`pruneUnusedBuckets`), so repeated widenings cannot grow the mapping table without bound.
 
 Widening was at first limited to `dec <= 0`, on the grounds that fractional intervals have no capacity constraint. That was wrong: a fractional interval has (width ÷ step) slots, so 20.1~20.3 holds three of them. A later change unions both kinds and counts slots the same way — see the next note.
 
@@ -47,7 +49,7 @@ Two quieter holes sit in the same layer, both closed:
 
 **Keep the error and tell people to widen it in the pane.** Rejected: the point of quick mask is not opening the pane, and a purely data-driven quantity should not need manual upkeep.
 
-**Add 10% headroom to the interval, like text suffixes.** Not done: text headroom exists so random retries can dodge the original, while number mode already has the whole-column permutation; with headroom the `assignExact` condition (equal counts) fails and it falls back to per-value random anyway.
+**Add 10% headroom to the interval, like text suffixes.** Not done here: headroom alone does not stop a hand-narrowed interval from filling exactly. A later change added both spare slots and a random-cycle permutation ([the interval never fills up](2026-11-24-no-rotation-on-full-interval.md)).
 
 ## Consequences
 
@@ -58,6 +60,6 @@ The pane side needed two fixes, both the same disease in another place:
 1. `doMask()` reloads the vault and then applies the pane's configs. A widened cfg against a vault whose bucket was not moved means handing out fakes from a new signature into an empty bucket — the same 28 comes back different in another sheet. It now runs `hydrate()` before applying the pane's configs.
 2. The `refresh(true, true)` snapshot copied every column's cfg by header from the **previous selection**, overwriting the union `hydrate()` had just computed: switching sheets brought the narrow interval back. The snapshot now carries only columns the user actually touched (`state.edited`, set in `readCard` and the type dropdown) and is cleared when `keepEdits` is false. Untouched columns must take whatever `hydrate()` computes.
 
-Test group [24] pins the rule with three sheets in one workbook: 20~40 is mapped first (storing 20/40); the 20~46 batch no longer throws and the interval becomes 20~46; 28 gets the same fake in both sheets; only one bucket remains under the new signature; a narrower third batch neither shrinks the interval nor creates records, and 28 keeps its fake; the old area still reverts to 28. Group [25] covers cents: after 100~110 fill all 11 integer slots, 100/101/102.5 restore `dec = 1` and 100 keeps its fake; a column that still has a spare slot keeps `dec = 0` and 102.5 becomes an integer. `taskpane.test.js` group [12] drives the same scenario through the pane's buttons for the UI-side regression.
+Test group [24] pins the rule with three sheets in one workbook: 20~40 is mapped first (storing 20/40); the 20~46 batch no longer throws and the interval becomes 20~46; 28 gets the same fake in both sheets; the new-signature bucket is created while the old one stays because sheet 1's recorded range still references it; a narrower third batch neither shrinks the interval nor creates records, and 28 keeps its fake; the old area still reverts to 28. Group [25] covers cents: after 100~110 fill all 11 integer slots, 100/101/102.5 restore `dec = 1` and 100 keeps its fake; a column that still has a spare slot keeps `dec = 0` and 102.5 becomes an integer. `taskpane.test.js` group [12] drives the same scenario through the pane's buttons for the UI-side regression.
 
-The previous note ended with "number mode still balances its interval exactly against the distinct count; changing that needs its own pass". This change is about **memory and the interval**, not the balancing (`hi = ceil(lo) + need - 1` is untouched) — balancing now only sets the starting point on first detection.
+The previous note ended with "number mode still balances its interval exactly against the distinct count; changing that needs its own pass". That pass has since happened: the default interval now leaves spare slots and permutes as a random cycle ([the interval never fills up](2026-11-24-no-rotation-on-full-interval.md)), so balancing no longer sets the interval exactly. What this note changed is where the interval comes from — remembered settings only grow, unioned with the current batch, and records move when the widened interval changes the signature.
