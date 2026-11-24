@@ -1,4 +1,6 @@
-# The interval never fills up, and permutations are random cycles
+# Note: The interval never fills up, and permutations are random cycles
+
+Status: implemented
 
 *[中文](2026-11-24-no-rotation-on-full-interval_zh.md)*
 

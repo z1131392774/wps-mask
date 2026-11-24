@@ -1,8 +1,8 @@
 # Note: Gate documentation invariants and add conditional-procedure skills
 
-*[中文](2026-11-02-doc-gates-and-skills_zh.md)*
-
 Status: implemented
+
+*[中文](2026-11-02-doc-gates-and-skills_zh.md)*
 
 ## Problem
 
@@ -10,7 +10,7 @@ The instruction standard states rules that nothing enforced. It also puts every 
 
 ## Decision
 
-[`scripts/check-docs.mjs`](../../../scripts/check-docs.mjs) enforces the mechanical invariants: word budgets, local links, heading anchors, one trailing newline, and a non-empty corpus. `npm run check` runs it. Word ceilings live in [`scripts/doc-budgets.json`](../../../scripts/doc-budgets.json), which overrides the fallbacks the script carries, so the numbers have one machine-checkable home. The [gate rules](../../../scripts/AGENTS.md) govern the script itself.
+[`scripts/check-docs.mjs`](../../../scripts/check-docs.mjs) enforces the mechanical invariants: word budgets, local links, heading anchors, note headers, one trailing newline, and a non-empty corpus. It rejects a local link that resolves outside the repository, matches a twin link by the path it resolves to rather than by its file name, and fails when the manifest names a file that no longer exists — a malformed or stale manifest stops the check instead of silently shrinking it. `npm run check` runs it. Word ceilings live in [`scripts/doc-budgets.json`](../../../scripts/doc-budgets.json), which overrides the fallbacks the script carries, so the numbers have one machine-checkable home. The [gate rules](../../../scripts/AGENTS.md) govern the script itself.
 
 Procedures that apply only in one situation live in `.agents/skills/<name>/SKILL.md`, with YAML frontmatter describing when to load it. The first is [pre-push-checks](../../../.agents/skills/pre-push-checks/SKILL.md), which selects the smallest checks covering an outgoing diff.
 
@@ -24,4 +24,4 @@ Procedures that apply only in one situation live in `.agents/skills/<name>/SKILL
 
 ## Consequences
 
-Two rules lost their "advice" status and now fail a command. The cost is a Node dependency for the gate, which is why the script imports nothing outside the standard library and runs with no install step. Skills add one convention to learn; a skill whose description does not match the task costs nothing at runtime, because only the description enters context.
+What used to be review advice — a broken link, a missing stale twin, an overrun budget, a note header that drifted — now fails a command. The cost is a Node dependency for the gate, which is why the script imports nothing outside the standard library and runs with no install step. Skills add one convention to learn; a skill whose description does not match the task costs nothing at runtime, because only the description enters context.

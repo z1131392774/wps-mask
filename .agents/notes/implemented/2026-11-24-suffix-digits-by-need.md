@@ -1,4 +1,6 @@
-# Text suffixes sized by need, not by a round number
+# Note: Text suffixes sized by need, not by a round number
+
+Status: implemented
 
 *[中文](2026-11-24-suffix-digits-by-need_zh.md)*
 
@@ -49,4 +51,4 @@ The card no longer reports "本列 N 个不同值，M 个非空" — the user po
 
 Section [21] of `engine.test.js` walks the integer boundaries of the rule (0/7/9/10/41/90/100/900/909/910/one hundred million), masks a 41-row name column asserting 姓名 plus two digits and forty-one distinct results, and pins the cells-not-distinct choice with a 41-row column of three repeated names that still gets two digits.
 
-The number mode still sizes its interval exactly to the distinct count (`hi = ceil(lo) + need - 1`). That sizing is welded to the derangement assignment, so adding headroom there would weaken the "forty values into forty integer slots" guarantee; it needs its own change and its own probe.
+Number mode has since moved in the same direction: the default interval now leaves spare slots and permutes them as a random cycle ([the interval never fills up](2026-11-24-no-rotation-on-full-interval.md)), so the exact `ceil(lo) + need - 1` sizing only survives when someone narrows the interval by hand. Text mode's cell-count rule here is unchanged.

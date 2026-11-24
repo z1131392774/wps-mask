@@ -1,4 +1,6 @@
-# 产品手册以英文为源稿
+# 决策记录：产品手册以英文为源稿
+
+Status: implemented
 
 *[English](2026-11-24-english-source-for-product-docs.md)*
 

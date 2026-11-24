@@ -1,4 +1,6 @@
-# 用目录联接代替复制加载项
+# 决策记录：用目录联接代替复制加载项
+
+Status: implemented
 
 *[English](2026-11-24-junction-for-the-installed-addon.md)*
 

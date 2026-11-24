@@ -28,7 +28,7 @@ Budgets, counted in words:
 | Subtree `AGENTS.md` | 400 |
 | Each document in `docs/` | 1,200 |
 
-Budgets exist to stop growth, not to be filled. The manifest [`scripts/doc-budgets.json`](../scripts/doc-budgets.json) is authoritative and overrides the fallbacks above; `npm run check` reads it, counts words, resolves every local link and heading anchor, and requires exactly one trailing newline. When a file goes over, relocate content to its proper home first, condense second, and raise the ceiling last, in a change that explains why the words are needed. A file permanently at its ceiling is no longer a summary. Notes are unbudgeted: one decision per file, and a note grows only when the decision needs more explanation.
+Budgets exist to stop growth, not to be filled. The manifest [`scripts/doc-budgets.json`](../scripts/doc-budgets.json) is authoritative and overrides the fallbacks above; `npm run check` reads it: word budgets, bilingual pairs, links and heading anchors, the fixed note header, one trailing newline, and no link leaving the repository. When a file goes over, relocate content to its proper home first, condense second, and raise the ceiling last, in a change that explains why the words are needed. A file permanently at its ceiling is no longer a summary. Notes are unbudgeted: one decision per file, and a note grows only when the decision needs more explanation.
 
 The test for the root file: if an agent skipped the rule, would it plausibly do the wrong thing? If the answer is "only when working on X", the rule belongs in X's subtree file, not here.
 

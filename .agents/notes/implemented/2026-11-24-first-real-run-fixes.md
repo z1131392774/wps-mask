@@ -1,4 +1,6 @@
-# What the first real run taught us
+# Note: What the first real run taught us
+
+Status: implemented
 
 *[中文](2026-11-24-first-real-run-fixes_zh.md)*
 
@@ -16,7 +18,7 @@ Fix each cause at its own level rather than adding guards around them.
 
 Empty cells no longer vote in header detection, and no longer veto it: a row whose non-empty cells are mostly text with a field-name keyword is a header, whatever sits in the gaps. Columns that are entirely blank inside the selection are dropped from the model, so an over-wide selection stops producing empty cards.
 
-When the interval holds exactly as many integers as the column has distinct values, the column is assigned as a whole: keys and slots sorted, then offset by a random amount between 1 and n−1. That is a permutation with no fixed point, it always exists when n ≥ 2, and the random offset keeps it from being a visible +1 shift.
+When the interval holds exactly as many integers as the column has distinct values, the column is assigned as a whole: keys and slots sorted, then the slots permuted by `sattolo()`, a single random cycle. It has no fixed point for n ≥ 2 and no constant offset. A later change left spare slots in the automatic interval, so the exact-fit case no longer arises on that path and now only belongs to a hand-narrowed interval ([the interval never fills up](2026-11-24-no-rotation-on-full-interval.md)).
 
 Capacity messages name the column the way the user sees it — `G 列（工号）` — and say what to do: widen the interval, or set the column to 不处理.
 

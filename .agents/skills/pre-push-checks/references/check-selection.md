@@ -10,7 +10,7 @@ You changed one function in `src/parse.ts` and added a case to `tests/parse.test
 
 - The focused test covers the new branch and the old ones.
 - The package suite adds coverage only if another test imports that function. Check with a search; do not assume.
-- The typecheck adds coverage only if the signature changed. A body-only change cannot fail it.
+- In a repository that has a typecheck, it adds coverage only if the signature changed. A body-only change cannot fail it. This repository has neither a linter nor a typechecker, so there is no such step to select.
 
 That is one command, not three. Running the suite as well is not diligence; it is a claim you did not need to verify.
 
@@ -24,7 +24,7 @@ That is one command, not three. Running the suite as well is not diligence; it i
 
 ## Widen to the full suite when
 
-- The change is repository-wide: a lint rule, a test harness, a shared fixture, a build script.
+- The change is repository-wide: a lint rule (in a repository that has one), a test harness, a shared fixture, a build script.
 - CI failed and you are reproducing it.
 - The user asked for it.
 

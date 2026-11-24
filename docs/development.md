@@ -26,7 +26,7 @@ Run the cheapest check that would catch your mistake, and widen only when the ch
 
 1. **The focused test** for the changed function or file.
 2. **The package or module suite** when you changed a shared helper or a public behavior.
-3. **Lint and typecheck** when you changed signatures, config, or anything the compiler can see.
+3. **The documentation gate** when you changed Markdown, `scripts/check-docs.mjs`, or `scripts/doc-budgets.json`: `npm run check`. This repository has no linter or typechecker; do not invent a step for one.
 4. **The full suite** only for repository-wide changes, CI debugging, or when the user asks. CI owns exhaustive coverage; repeating a passing full run locally spends time without adding evidence.
 5. **The built artifact or a manual run** when the change affects something users actually execute.
 

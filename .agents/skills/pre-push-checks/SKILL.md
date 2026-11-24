@@ -26,7 +26,7 @@ Include staged, unstaged, and committed work that the base does not have. A chec
 | --- | --- |
 | Any `*.md`, `AGENTS.md`, `.agents/notes/**` | `node scripts/check-docs.mjs` |
 | One source file and its test | The focused test for that file |
-| A shared helper, public signature, config key, or serialization format | The package suite, plus the typecheck |
+| A shared helper, public signature, config key, or serialization format | The package suite. This repository has no linter or typechecker, so no lint or typecheck step exists |
 | Dependency manifests, build config, entrypoints | The build, then one manual run of the built artifact |
 | Nothing at all | No check. Say so instead of inventing one. |
 

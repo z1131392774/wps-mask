@@ -34,7 +34,9 @@ The first three lines are fixed:
 Status: <proposed | implemented | rejected — one-line reason>
 ```
 
-The status must agree with the folder. It carries no dates or parentheticals.
+The status must agree with the folder. It carries no dates or parentheticals. The line reads `Status: implemented`, or `Status: implemented — <one-line reason>`; the body starts after it.
+
+`npm run check` enforces those three lines: a note whose title does not start `# Note: `, whose third line is not `Status: <folder>`, or whose header sits at another offset fails the gate. The Chinese twin titles itself `# 决策记录：<title>` and keeps the same second and third lines.
 
 The body opens with `## Problem`, written so it stands without the solution. What follows depends on the lifecycle.
 

@@ -34,7 +34,9 @@
 Status: <proposed | implemented | rejected — one-line reason>
 ```
 
-状态和文件夹一致，不带日期，不带括号补充。
+状态和文件夹一致，不带日期，不带括号补充。这一行写成 `Status: implemented`，或 `Status: implemented —— 一句理由`；正文从它后面开始。
+
+`npm run check` 会检查这三行：标题不以 `# Note: ` 开头、第三行不是 `Status: <文件夹>`，或头部跑到别的行号，都过不了门禁。中文孪生把标题写成 `# 决策记录：<标题>`，第二、三行保持不变。
 
 正文用 `## Problem` 开头，写成不依赖解法也读得懂。之后按生命周期定。
 

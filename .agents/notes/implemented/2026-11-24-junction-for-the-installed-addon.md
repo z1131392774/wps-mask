@@ -1,4 +1,6 @@
-# A junction instead of copying the add-in
+# Note: A junction instead of copying the add-in
+
+Status: implemented
 
 *[中文](2026-11-24-junction-for-the-installed-addon_zh.md)*
 

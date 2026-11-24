@@ -1,4 +1,6 @@
-# The pane loses its refresh button, and its empty state says one thing
+# Note: The pane loses its refresh button, and its empty state says one thing
+
+Status: implemented
 
 *[中文](2026-11-24-pane-empty-state_zh.md)*
 
@@ -14,7 +16,7 @@ The user then asked five questions about that screenshot: what 刷新选区 is f
 
 Stated cost: editing cells inside the same rectangle does not refresh the samples, because the fingerprint only tracks position. The written result is unaffected — `doMask` re-analyzes before writing, so it always writes the current values — only the sample line can go stale. A content hash every 800 ms is not worth that.
 
-**Four empty states, one sentence each.** Nothing selected → "在表格里选一块区域". One cell → "选中的格子太少", plus a note that with a header the first row counts as field names. All blank → "这块区域没有可处理的数据". No host object → the only real error, "未取到 WPS 应用对象", pointing at the ribbon's quick mask. None of the four writes to the status bar: that line is for the result of an action.
+**Four empty states, one sentence each.** Nothing selected → "在表格里选中要脱敏的区域". One cell, or fewer than two cells → "至少选中两个单元格". All blank → "这块区域没有数据". No host object → "面板取不到 WPS 应用对象，请用功能区的「快速映射」", the only real error. None of the four writes to the status bar: that line is for the result of an action; a genuine read failure is its own sentence, "读取选区失败". A later pass shortened these strings again ([one sentence per state](2026-11-24-copy-one-sentence.md)).
 
 **No toolbar without a selection.** Nothing to expand, nothing to re-detect. The header checkbox is part of that bar for the same reason: it acts on the current region, and there is no region yet.
 

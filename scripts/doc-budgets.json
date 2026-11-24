@@ -11,8 +11,12 @@
     ".agents/skills/pre-push-checks/SKILL.md": 500,
     ".agents/skills/pre-push-checks/references/check-selection.md": 600,
     "scripts/AGENTS.md": 400,
-    "wps-mask-addon/AGENTS.md": 580,
-    "wps-mask-addon/README.md": 1900
+    "wps-mask-addon/AGENTS.md": 620,
+    "wps-mask-addon/README.md": 3600
   },
-  "pendingTranslations": []
+  "pendingTranslations": [],
+  "_budgetReasons": {
+    "wps-mask-addon/AGENTS.md": "Raised from 580 to 620 for the bucket-retention / recorded-signature fallback rule that came with the absorb and revert fixes: a bucket that recorded ranges still reference must be kept, and a recorded signature with no bucket must not fall back to the global index. No existing line grew.",
+    "wps-mask-addon/README.md": "Raised from 2600 to 3500 for task-6 user-visible behavior the manual must state: revert only touches recorded areas and a second click is a no-op, the header-auto warning, the save-then-write order and atomic save/backup/recovery of the mapping table, the 200-recorded-area cap, missing pre-flight checks on protected/merged cells, and the executable `npm install` + `npm test` verification commands. Redundant prose was condensed; no verified fact was deleted. Raised again to 3600 for two disclosures: saving drops signature buckets no recorded area references any more, and v1 documents whose upgrade dropped records leave their pre-signature areas untouched and counted ambiguous."
+  }
 }

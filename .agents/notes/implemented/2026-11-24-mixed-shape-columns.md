@@ -1,4 +1,6 @@
-# Masking a column that is not one kind of thing
+# Note: Masking a column that is not one kind of thing
+
+Status: implemented
 
 *[中文](2026-11-24-mixed-shape-columns_zh.md)*
 
@@ -23,7 +25,7 @@ Add a fifth mode, 混合 (mixed), where the shape is decided per cell instead of
 
 One-to-one is unaffected, and that is the point of keeping the mapping keyed by original rather than by shape: the table stores `原值 → 新值`, so reverting never needs to know which generator produced a value. A column can therefore mix six shapes and still revert in one click.
 
-`guessMode()` returns `mixed` when no single shape covers at least 60% of the non-empty values and at least two shapes are present. The card shows the mode and a per-shape sentence, and the snapshot/edit machinery treats `mixed` like any other mode.
+`guessMode()` falls back to `mixed` when any value is an email or a landline, or when at least two of the mobile/digits/alnum/text families are present; a header matched to a phone field, a ≥60% mobile majority, or ≥80% numbers still wins as phone or number first. The card shows the mode and a per-shape sentence, and the snapshot/edit machinery treats `mixed` like any other mode.
 
 ## The defect this uncovered
 
