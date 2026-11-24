@@ -754,14 +754,9 @@ var MaskEngine = (function () {
             for (var ri = firstDataRow; ri < rows; ri++) {
                 values.push(data[ri][ci]);
             }
-            var distinct = {};
-            var distinctCount = 0;
             var nonEmptyCount = 0;
             for (var vi = 0; vi < values.length; vi++) {
-                if (isBlank(values[vi])) { continue; }
-                nonEmptyCount++;
-                var kk = keyOf(values[vi]);
-                if (!distinct[kk]) { distinct[kk] = true; distinctCount++; }
+                if (!isBlank(values[vi])) { nonEmptyCount++; }
             }
             // 整列空白（选区多带了一列空的）没有可处理的内容，别在面板里占一张卡片
             if (nonEmptyCount === 0) { continue; }
@@ -771,7 +766,6 @@ var MaskEngine = (function () {
                 header: header == null ? '' : String(header),
                 headerIsAuto: !hasHeader,
                 values: values,
-                distinctCount: distinctCount,
                 nonEmptyCount: nonEmptyCount
             });
         }

@@ -9,6 +9,16 @@ function ok(cond, msg) {
     else { fail++; console.log('  ✗ ' + msg); }
 }
 
+// 模型里不再统计不同值（面板不显示、映射自己会数），需要前提断言时在这儿就地数
+function distinctOf(values) {
+    var seen = {};
+    values.forEach(function (v) {
+        if (v === '' || v == null) { return; }
+        seen[typeof v + ':' + String(v)] = true;
+    });
+    return Object.keys(seen).length;
+}
+
 /* ---------- 造数据 ---------- */
 const header = ['姓名', '手机号', '年龄', '备注'];
 const names = ['张三', '李四', '王五', '张三', '赵六', '李四', '张三', '钱七', '孙八', '周九'];
@@ -214,7 +224,7 @@ const wModel = Engine.analyze(wide, {});
 ok(wModel.hasHeader === true, '首行仍识别为表头');
 ok(wModel.columns.length === 10, '空白 K 列不占卡片，实际 ' + wModel.columns.length + ' 列');
 const idCol = wModel.columns.filter(c => c.header === '工号')[0];
-ok(idCol && idCol.distinctCount === 40, '工号 40 个不同值，实际 ' + (idCol && idCol.distinctCount));
+ok(idCol && distinctOf(idCol.values) === 40, '工号 40 个不同值，实际 ' + (idCol && distinctOf(idCol.values)));
 const wVault = Engine.loadVault(wide);
 const wStats = Engine.applyMask(Engine.hydrate(wModel, wVault), wVault, {});
 ok(wStats.written === 374, '十列 374 格全部映射成功（备注有 26 个空格子），实际 ' + wStats.written);
@@ -411,14 +421,14 @@ ok(sfxOut.every(v => /^姓名\d{2}$/.test(v)), '41 个值都写成「姓名 + 2 
 ok(new Set(sfxOut).size === 41, '41 个值仍然两两不同，实际 ' + new Set(sfxOut).size);
 
 // 按格子数、不按不同值：重复很多也照样按行数给位数，省掉一次去重统计
-ok(sfxModel.columns[0].distinctCount === 41, '这一列 41 个不同值（先确认前提）');
+ok(distinctOf(sfxModel.columns[0].values) === 41, '这一列 41 个不同值（先确认前提）');
 const repApp = new MockWPS();
 const repRows = [['客户']];
 for (let i = 0; i < 41; i++) { repRows.push(['客户' + (i % 3)]); }
 repApp.setTable('Sheet1', 1, 1, repRows);
 repApp.select('Sheet1', 1, 1, repRows.length, 1);
 const repModel = Engine.analyze(repApp, {});
-ok(repModel.columns[0].distinctCount === 3 && repModel.columns[0].nonEmptyCount === 41,
+ok(distinctOf(repModel.columns[0].values) === 3 && repModel.columns[0].nonEmptyCount === 41,
     '这一列只有 3 个不同值、41 个非空格');
 ok(Engine.defaultCfg('客户', repModel.columns[0].values).digits === 2,
     '按格子数给到 2 位（按不同值只会给 1 位），实际 ' + Engine.defaultCfg('客户', repModel.columns[0].values).digits);

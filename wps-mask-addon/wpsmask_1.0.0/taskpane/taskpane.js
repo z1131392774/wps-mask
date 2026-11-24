@@ -134,10 +134,7 @@
             '</div>' +
             '<div class="ch-sub"><span class="k">示例</span><b class="samp">' + esc(samp) + '</b></div>' +
             '</div>' +
-            '<div class="cb" id="cb' + i + '">' + bodyHtml(cfg) +
-            '<div class="hint colstat">本列 ' + col.distinctCount + ' 个不同值，' +
-            col.nonEmptyCount + ' 个非空</div>' +
-            '</div>';
+            '<div class="cb" id="cb' + i + '">' + bodyHtml(cfg) + '</div>';
     }
 
     function isOpen(card) {

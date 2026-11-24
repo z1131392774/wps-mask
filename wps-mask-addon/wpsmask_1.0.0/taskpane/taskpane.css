@@ -311,8 +311,6 @@ select:focus, input[type="text"]:focus {
     line-height: 1.6;
 }
 
-.colstat { margin-top: 6px; color: #5f6672; }
-
 /* ---------------- 空态 ---------------- */
 .empty {
     margin: auto;

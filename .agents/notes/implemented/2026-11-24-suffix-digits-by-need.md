@@ -35,7 +35,7 @@ Switching a column's mode by hand uses the same rule (`defaultForMode` calls `E.
 
 **Size exactly, no headroom.** Rejected: the last few records thrash in the retry loop — the integer interval already taught that lesson.
 
-**Count distinct values instead of cells.** Rejected: it needs a pass that keys every value into a set, and the only thing it buys is one digit on heavily duplicated columns. The document already shows the distinct count in the card; the suffix does not need it.
+**Count distinct values instead of cells.** Rejected: it needs a pass that keys every value into a set — a ten-thousand-key table for a ten-thousand-row sheet — and buys one digit at most on duplicated columns.
 
 **Leave 1.5× or 2× headroom.** Rejected: ten values would jump to three digits and a hundred to four, buying nothing. Uniqueness is per column, not a defence against collision attacks.
 
@@ -44,6 +44,8 @@ Switching a column's mode by hand uses the same rule (`defaultForMode` calls `E.
 ## Consequences
 
 `defaultCfg` now carries the computed `digits` on both the text and mixed branches, so a mixed column's Chinese fallback shortens too. Documents that already stored settings keep the digits recorded in their table.
+
+The card no longer reports "本列 N 个不同值，M 个非空" — the user pointed out that WPS's own status bar already counts a selection, so the line was duplicating the host. With the display gone, `analyze` stopped building a per-column distinct set as well: nothing consumed `distinctCount`, and it was one `keyOf` call per cell on every analysis. `nonEmptyCount` stayed, because the suffix width needs it. Tests that used the field as a premise now count the fixture themselves.
 
 Section [21] of `engine.test.js` walks the integer boundaries of the rule (0/7/9/10/41/90/100/900/909/910/one hundred million), masks a 41-row name column asserting 姓名 plus two digits and forty-one distinct results, and pins the cells-not-distinct choice with a 41-row column of three repeated names that still gets two digits.
 
