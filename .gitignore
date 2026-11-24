@@ -1,2 +1,6 @@
 node_modules/
 .DS_Store
+
+# 测试工作簿与 WPS 锁文件：数据不进仓库
+test.xlsx
+~$*.xlsx
