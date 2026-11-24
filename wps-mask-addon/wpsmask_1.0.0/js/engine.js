@@ -13,6 +13,13 @@ var MaskEngine = (function () {
     var VAULT_SHEET = '脱敏映射表';
     var VAULT_VERSION = 2;
     var CHUNK_SIZE = 20000;
+    // 映射表布局：A 列是当前密文，B 列是上一份密文备份（保存时先备份、写完读回校验，
+    // 失败时靠它恢复）。第 1 行是标记，密文从第 2 行起按 CHUNK_SIZE 分片。
+    var VAULT_MARKER = '本表由「数据脱敏映射」加载项维护，存放加密后的映射关系，请勿编辑或删除。';
+    var BACKUP_MARKER = '本表由「数据脱敏映射」加载项维护，存放上一份加密映射的备份，请勿编辑或删除。';
+    var BACKUP_COL = 2;
+    // 一次性整段置换最多物化这么多槽位；再大就退回逐个生成，避免枚举十亿级区间卡死
+    var ASSIGN_MAX_SPAN = 1000000;
 
     var XL_UP = -4162;
     var XL_TO_LEFT = -4159;
@@ -54,6 +61,10 @@ var MaskEngine = (function () {
 
     function isDate(v) {
         return Object.prototype.toString.call(v) === '[object Date]';
+    }
+
+    function hasOwn(obj, key) {
+        return Object.prototype.hasOwnProperty.call(obj, key);
     }
 
     /* ==================== 值 <-> 键 ==================== */
@@ -352,19 +363,44 @@ var MaskEngine = (function () {
 
     // 区间刚好容纳所有不同值时，逐个随机取值会失败：最后一个单元格只剩它自身的值，只能报"容量不足"。
     // 这种情况下整列执行一次错位置换 —— 随机错开 r 格，保证 1 对 1、无不动点、每个槽位只使用一次。
+    // 关键：先按跨度做 O(1) 判断再决定是否物化槽位。区间可能是 13 亿宽（单值编号列会被
+    // defaultCfg 撑成 [值, 2*值]），枚举一遍就是卡死；跨度对不上或太大时直接返回 null 走逐个生成。
     function assignExact(cfg, keys, used) {
-        var lo = Math.ceil(Number(cfg.min)), hi = Math.floor(Number(cfg.max));
+        var minV = Number(cfg.min), maxV = Number(cfg.max);
+        if (!isFinite(minV) || !isFinite(maxV)) {
+            throw new Error('数值区间不是有限数（' + cfg.min + '~' + cfg.max + '），请修正区间');
+        }
+        var lo = Math.ceil(minV), hi = Math.floor(maxV);
+        var span = hi - lo + 1;
+        if (!(span > 0) || span > ASSIGN_MAX_SPAN) { return null; }
+        if (!keys || !keys.length) { return null; }
+        var nums = [];
+        for (var i = 0; i < keys.length; i++) {
+            if (String(keys[i]).indexOf('n:') !== 0) { return null; }   // 混着文本值，交给逐个生成
+            var num = Number(String(keys[i]).substring(2));
+            if (!isFinite(num) || Math.floor(num) !== num) { return null; }
+            // 待分配的原值本身被当作槽位占用时不能整段置换，否则会撞出重复/不动点
+            if (num < lo || num > hi || used['n:' + num]) { return null; }
+            nums.push(num);
+        }
+        if (nums.length < 2 || nums.length > span) { return null; }
+        nums.sort(function (a, b) { return a - b; });
+        for (var d = 1; d < nums.length; d++) {
+            if (nums[d] === nums[d - 1]) { return null; }
+        }
+        // 统计区间内已被占用的整数槽位；只有"恰好每个待分配值一槽"时才值得整段置换
+        var occupied = 0;
+        for (var uk in used) {
+            if (!hasOwn(used, uk) || String(uk).indexOf('n:') !== 0) { continue; }
+            var uv = Number(String(uk).substring(2));
+            if (isFinite(uv) && uv >= lo && uv <= hi && Math.floor(uv) === uv) { occupied++; }
+        }
+        if (span - occupied !== nums.length) { return null; }
         var slots = [];
         for (var v = lo; v <= hi; v++) {
             if (!used['n:' + v]) { slots.push(v); }
         }
-        var nums = [];
-        for (var i = 0; i < keys.length; i++) {
-            if (String(keys[i]).indexOf('n:') !== 0) { return null; }   // 混着文本值，交给逐个生成
-            nums.push(Number(String(keys[i]).substring(2)));
-        }
-        if (!keys.length || nums.length !== slots.length || nums.length < 2) { return null; }
-        nums.sort(function (a, b) { return a - b; });
+        if (slots.length !== nums.length) { return null; }   // 双保险，理论上不会发生
         slots.sort(function (a, b) { return a - b; });
         // slots 与 nums 是同一组数，先随机洗牌再对号入座：洗完是一个"单环"置换，
         // 天然没有不动点，也不会留下固定偏移。曾经用"错开 r 位"，那是把原列整体旋转——
@@ -528,18 +564,28 @@ var MaskEngine = (function () {
         // 先切回原来的工作表，再隐藏新表 —— 活动表不允许隐藏，顺序反过来就无法隐藏。
         if (prev) { try { prev.Activate(); } catch (e2) {} }
         try { ws.Visible = 2; } catch (e3) { try { ws.Visible = false; } catch (e4) {} }
-        try { ws.Cells.Item(1, 1).Value2 = '本表由「数据脱敏映射」加载项维护，存放加密后的映射关系，请勿编辑或删除。'; } catch (e5) {}
+        try { ws.Cells.Item(1, 1).Value2 = VAULT_MARKER; } catch (e5) {}
         return ws;
     }
 
-    function readCipherText(ws) {
-        var last = ws.Cells.Item(ws.Rows.Count, 1).End(XL_UP).Row;
+    function readCellText(ws, row, col) {
+        var v = ws.Cells.Item(row, col).Value2;
+        return v == null ? '' : String(v);
+    }
+
+    function lastRowInColumn(ws, col) {
+        return ws.Cells.Item(ws.Rows.Count, col).End(XL_UP).Row;
+    }
+
+    // 整列密文：按行拼接，空行跳过；第 1 行是标记，从第 2 行开始才是密文。
+    function readColumnText(ws, col) {
+        var last = lastRowInColumn(ws, col);
         if (last < 2) { return ''; }
         var arr;
         if (last === 2) {
-            arr = [[ws.Cells.Item(2, 1).Value2]];
+            arr = [[ws.Cells.Item(2, col).Value2]];
         } else {
-            arr = ws.Range(ws.Cells.Item(2, 1), ws.Cells.Item(last, 1)).Value2;
+            arr = ws.Range(ws.Cells.Item(2, col), ws.Cells.Item(last, col)).Value2;
         }
         if (!arr || !arr.length) { return ''; }
         var parts = [];
@@ -551,31 +597,102 @@ var MaskEngine = (function () {
         return parts.join('');
     }
 
+    function splitChunks(text) {
+        var chunks = [];
+        for (var off = 0; off < text.length; off += CHUNK_SIZE) {
+            chunks.push(text.substring(off, off + CHUNK_SIZE));
+        }
+        return chunks;
+    }
+
+    // 整列写密文：先把超出本次片数的旧内容清掉，再逐片写。
+    // 密文只有 base64 字符，列格式设为文本，避免宿主把长数字串转成科学计数法。
+    function writeColumnText(ws, col, text) {
+        try { ws.Columns.Item(col).NumberFormat = '@'; } catch (eFmt) {
+            // 列格式设置失败不致命：写完后会读回校验，宿主若转成数字或日期会被发现
+        }
+        var chunks = splitChunks(text);
+        var last = lastRowInColumn(ws, col);
+        var lastNeeded = chunks.length + 1;
+        if (last > lastNeeded) {
+            ws.Range(ws.Cells.Item(lastNeeded + 1, col), ws.Cells.Item(last, col)).ClearContents();
+        }
+        for (var i = 0; i < chunks.length; i++) {
+            ws.Cells.Item(2 + i, col).Value2 = chunks[i];
+        }
+    }
+
+    // 解密 + 解析 + 迁移。失败时带回 reason，调用方据此给出明确错误：
+    // empty（没有密文）/ decrypt（密钥不对或被改动）/ json（内容不是 JSON）/ shape（缺 maps）。
+    function tryParseVault(cipher) {
+        if (!cipher) { return { ok: false, reason: 'empty' }; }
+        var text;
+        try {
+            text = Cipher.decrypt(cipher);
+        } catch (eDecrypt) {
+            return { ok: false, reason: 'decrypt', error: eDecrypt };
+        }
+        var obj;
+        try {
+            obj = JSON.parse(text);
+        } catch (eJson) {
+            return { ok: false, reason: 'json', error: eJson };
+        }
+        if (!obj || typeof obj !== 'object' || !obj.maps || typeof obj.maps !== 'object' || isArr(obj.maps)) {
+            return { ok: false, reason: 'shape' };
+        }
+        obj.settings = obj.settings || {};
+        if (!isArr(obj.ranges)) { obj.ranges = []; }
+        return { ok: true, vault: migrateVault(obj) };
+    }
+
+    function vaultParseError(reason, error) {
+        if (reason === 'decrypt') {
+            return new Error('映射表解密失败（可能被改动过，或密钥已更换）：' + error.message);
+        }
+        if (reason === 'json') { return new Error('映射表内容损坏，无法解析'); }
+        if (reason === 'shape') { return new Error('映射表内容损坏：缺少 maps 结构'); }
+        return new Error('映射表密文为空');
+    }
+
+    // 从备份区恢复时带一个不可枚举的标记：不写进文档，只让界面知道"这一份是旧的"。
+    function markRecovered(vault) {
+        try {
+            Object.defineProperty(vault, 'recovered', { value: true, enumerable: false, configurable: true });
+        } catch (eDef) {
+            // 宿主不支持 defineProperty 时宁可不带标记，也绝不把标记写进映射表文件
+        }
+        return vault;
+    }
+
     function loadVault(app) {
         var wb = app.ActiveWorkbook;
         if (!wb) { return emptyVault(); }
         var ws = findSheet(wb, VAULT_SHEET);
         if (!ws) { return emptyVault(); }
-        var cipher = readCipherText(ws);
-        if (!cipher) { return emptyVault(); }
-        var text;
-        try {
-            text = Cipher.decrypt(cipher);
-        } catch (e) {
-            throw new Error('映射表解密失败（可能被改动过，或密钥已更换）：' + e.message);
+        var marker = readCellText(ws, 1, 1);
+        var cipherA = readColumnText(ws, 1);
+        var hasBackup = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER;
+        var cipherB = hasBackup ? readColumnText(ws, BACKUP_COL) : '';
+        var a = tryParseVault(cipherA);
+        if (a.ok) { return a.vault; }
+        // 主密文坏了/空了但备份完整：返回上一份完整映射，绝不静默返回空表
+        if (hasBackup) {
+            var b = tryParseVault(cipherB);
+            if (b.ok) { return markRecovered(b.vault); }
         }
-        var obj;
-        try { obj = JSON.parse(text); } catch (e2) { throw new Error('映射表内容损坏，无法解析'); }
-        if (!obj || !obj.maps) { return emptyVault(); }
-        obj.settings = obj.settings || {};
-        obj.ranges = obj.ranges || [];
-        return migrateVault(obj);
+        // 既没有密文也没有本加载项的标记：这不是本加载项维护过的表（新文档）
+        if (!cipherA && !marker) { return emptyVault(); }
+        if (!cipherA) {
+            throw new Error('映射表密文为空，为保护数据不返回空映射表（如果这是新建的映射表，请用「删除映射表」重建）');
+        }
+        throw vaultParseError(a.reason, a.error);
     }
 
     // 把一个桶的记录搬到另一个桶名下，然后删掉来源桶。
     // 目标桶已有同名键、或这个假值已被占用，就不搬：宁可丢一条记录，也不能让两个原值指向同一个假值。
     // 丢掉的记录不影响反映射——反查走的是全局索引，旧假值仍在别的桶里找得到原值。
-    function absorbBucket(maps, fromSig, toSig) {
+    function absorbBucket(maps, fromSig, toSig, keepFrom) {
         if (fromSig === toSig || !maps[fromSig]) { return { moved: 0, dropped: 0 }; }
         if (!maps[toSig]) { maps[toSig] = {}; }
         var from = maps[fromSig], to = maps[toSig];
@@ -596,14 +713,21 @@ var MaskEngine = (function () {
             if (mv != null) { taken[keyOf(mv)] = true; }
             moved++;
         }
-        delete maps[fromSig];
-        return { moved: moved, dropped: dropped };
+        // 区域记录仍引用旧签名时不能删旧桶：否则那片单元格反映射时找不到自己的桶，
+        // 只能掉进全局兜底猜原值（同值域置换下几乎必然猜错人）。桶里都是原值→假值
+        // 的固定记录，留着只占几十个键，旧区域还原完自然不再被引用。
+        if (!keepFrom) { delete maps[fromSig]; }
+        return { moved: moved, dropped: dropped, kept: !!keepFrom };
     }
 
     // 文本桶的签名曾是 text|zh|前缀|位数，"语言"下拉删掉后变成 text|前缀|位数。
     // 只改写桶名，桶里的记录、表格里的假值一个都不动：不迁移就等于把旧记录孤立，
     // 同一批人在新区域会再拿一个假值，新旧两个桶位宽相同还会撞值，反映射随之指错人。
     function migrateVault(obj) {
+        if (!obj) { return obj; }
+        // 已经是当前格式：桶名一个都不改。text|id|4 这种新签名中间段也是两个字母，
+        // 和旧格式 text|zh|... 长得一样，只能靠版本字段区分，否则会把新桶错误改名。
+        if (obj.v != null && Number(obj.v) >= VAULT_VERSION) { return obj; }
         var moved = 0, dropped = 0;
         var sigs = [];
         for (var s0 in obj.maps) {
@@ -626,20 +750,113 @@ var MaskEngine = (function () {
         return obj;
     }
 
+    function ensureVaultMarker(ws) {
+        if (readCellText(ws, 1, 1) === VAULT_MARKER) { return; }
+        ws.Cells.Item(1, 1).Value2 = VAULT_MARKER;
+        if (readCellText(ws, 1, 1) !== VAULT_MARKER) {
+            throw new Error('映射表标记写入失败（工作表可能被保护），未改动原数据');
+        }
+    }
+
+    // 回滚：有上一份密文就整列回写并校验；从未保存成功过就把 A 区清空、去掉标记，
+    // 让 loadVault 按"新文档没有映射表"处理（这是唯一允许返回空表的情况）。
+    function rollbackVault(ws, backup) {
+        var result = { ok: false, error: null, hadBackup: !!backup };
+        try {
+            if (backup) {
+                writeColumnText(ws, 1, backup);
+                if (readColumnText(ws, 1) !== backup) { throw new Error('旧密文回写后读回不一致'); }
+            } else {
+                writeColumnText(ws, 1, '');
+                ws.Cells.Item(1, 1).Value2 = '';
+            }
+            result.ok = true;
+        } catch (eRollback) {
+            result.error = eRollback;
+        }
+        return result;
+    }
+
+    function vaultSaveFailure(what, cause, rollback) {
+        var msg = '映射表保存失败：' + what + '（' + cause.message + '）';
+        if (rollback.ok && rollback.hadBackup) {
+            msg += '；已回滚到上一份映射表';
+        } else if (rollback.ok) {
+            msg += '；已清空本次未完成写入（此前没有可用映射表）';
+        } else {
+            msg += '；回滚未完成（' + rollback.error.message + '），备份区保留上一份密文，重新读取时会自动恢复';
+        }
+        var err = new Error(msg);
+        err.cause = cause;
+        err.rollback = { ok: rollback.ok, hadBackup: rollback.hadBackup, error: rollback.error };
+        return err;
+    }
+
+    // 保存不是原子的（单元格只能一格一格写）：先把旧密文备份到 B 列并读回校验，
+    // 这一步成功之前绝不动 A 列；然后写新密文、读回并解密比对，失败就回滚。
     function saveVault(app, vault) {
         var wb = app.ActiveWorkbook;
         if (!wb) { throw new Error('当前没有打开的工作簿'); }
-        var ws = getVaultSheet(app);
-        var cipher = Cipher.encrypt(JSON.stringify(vault));
-        var oldLast = ws.Cells.Item(ws.Rows.Count, 1).End(XL_UP).Row;
-        if (oldLast >= 2) {
-            ws.Range(ws.Cells.Item(2, 1), ws.Cells.Item(oldLast, 1)).ClearContents();
+        pruneUnusedBuckets(vault);
+        var json;
+        try {
+            json = JSON.stringify(vault);
+        } catch (eJson) {
+            throw new Error('映射表内容无法序列化：' + eJson.message);
         }
-        try { ws.Columns.Item(1).NumberFormat = '@'; } catch (e) {}
-        var idx = 0;
-        for (var off = 0; off < cipher.length; off += CHUNK_SIZE) {
-            idx++;
-            ws.Cells.Item(1 + idx, 1).Value2 = cipher.substring(off, off + CHUNK_SIZE);
+        var cipher;
+        try {
+            cipher = Cipher.encrypt(json);
+        } catch (eEnc) {
+            throw new Error('映射表加密失败：' + eEnc.message);
+        }
+        var ws;
+        try {
+            ws = getVaultSheet(app);
+        } catch (eSheet) {
+            throw new Error('无法创建映射表工作表：' + eSheet.message);
+        }
+        ensureVaultMarker(ws);
+
+        var oldA = readColumnText(ws, 1);
+        var oldB = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER ? readColumnText(ws, BACKUP_COL) : '';
+        // 备份哪一份：优先当前可读的 A 区；A 区已坏但备份可读时保留可读的那份，
+        // 不要用坏数据覆盖备份。都坏时保留 A 区原始字节，至少不丢现场。
+        var backup = '';
+        if (tryParseVault(oldA).ok) { backup = oldA; }
+        else if (tryParseVault(oldB).ok) { backup = oldB; }
+        else if (oldA) { backup = oldA; }
+
+        // 1. 备份旧密文并读回校验；失败就停在这里，A 区一个字节都不动
+        if (backup && backup !== oldB) {
+            try {
+                writeColumnText(ws, BACKUP_COL, backup);
+                if (readColumnText(ws, BACKUP_COL) !== backup) {
+                    throw new Error('备份写入后读回不一致');
+                }
+                ws.Cells.Item(1, BACKUP_COL).Value2 = BACKUP_MARKER;
+                if (readCellText(ws, 1, BACKUP_COL) !== BACKUP_MARKER) {
+                    throw new Error('备份标记写入后读回不一致');
+                }
+            } catch (eBackup) {
+                throw new Error('映射表保存失败：旧映射表备份未成功（' + eBackup.message + '），原数据未改动');
+            }
+        }
+
+        // 2. 写新密文
+        try {
+            writeColumnText(ws, 1, cipher);
+        } catch (eWrite) {
+            throw vaultSaveFailure('写入新密文失败', eWrite, rollbackVault(ws, backup));
+        }
+
+        // 3. 读回校验：先比字符串，再解密比对 JSON —— 宿主可能悄悄吞掉赋值或转换内容
+        try {
+            var back = readColumnText(ws, 1);
+            if (back !== cipher) { throw new Error('读回内容与写入内容不一致'); }
+            if (Cipher.decrypt(back) !== json) { throw new Error('读回内容解密后与要保存的数据不一致'); }
+        } catch (eVerify) {
+            throw vaultSaveFailure('写入后校验未通过', eVerify, rollbackVault(ws, backup));
         }
         return ws;
     }
@@ -668,7 +885,9 @@ var MaskEngine = (function () {
     /* ==================== 反向索引 ==================== */
 
     function buildIndex(vault) {
-        var bySig = {}, global = { typed: {}, loose: {} };
+        // global 记录"某个假值在全部桶里唯一对应哪个原值"；同一个假值被不同原值占用时
+        // 记进 typedConflict/looseConflict —— 跨桶反查有歧义，revert 宁可不动也不能猜错人。
+        var bySig = {}, global = { typed: {}, loose: {}, typedConflict: {}, looseConflict: {} };
         for (var sig in vault.maps) {
             if (!Object.prototype.hasOwnProperty.call(vault.maps, sig)) { continue; }
             var bucket = vault.maps[sig];
@@ -678,15 +897,34 @@ var MaskEngine = (function () {
                 var mv = bucket[k];
                 if (mv == null) { continue; }
                 var mk = keyOf(mv);
-                if (!(mk in entry.typed)) { entry.typed[mk] = k; }
+                if (!hasOwn(entry.typed, mk)) { entry.typed[mk] = k; }
                 var lk = looseOf(mv);
-                if (!(lk in entry.loose)) { entry.loose[lk] = k; }
-                if (!(mk in global.typed)) { global.typed[mk] = k; }
-                if (!(lk in global.loose)) { global.loose[lk] = k; }
+                if (!hasOwn(entry.loose, lk)) { entry.loose[lk] = k; }
+                if (!hasOwn(global.typed, mk)) { global.typed[mk] = k; }
+                else if (global.typed[mk] !== k) { global.typedConflict[mk] = true; }
+                if (!hasOwn(global.loose, lk)) { global.loose[lk] = k; }
+                else if (global.loose[lk] !== k) { global.looseConflict[lk] = true; }
             }
             bySig[sig] = entry;
         }
         return { bySig: bySig, global: global };
+    }
+
+    // 全局反查：只在该假值唯一对应一个原值时返回；跨桶冲突返回 ambiguous。
+    // 旧实现"先到先得"会安静地把 A 列的假值还原成 B 列的原值。
+    function uniqueGlobalKey(idx, value) {
+        var g = idx.global;
+        var mk = keyOf(value);
+        if (hasOwn(g.typed, mk)) {
+            if (g.typedConflict[mk]) { return { key: null, ambiguous: true }; }
+            return { key: g.typed[mk], ambiguous: false };
+        }
+        var lk = looseOf(value);
+        if (hasOwn(g.loose, lk)) {
+            if (g.looseConflict[lk]) { return { key: null, ambiguous: true }; }
+            return { key: g.loose[lk], ambiguous: false };
+        }
+        return { key: null, ambiguous: false };
     }
 
     /* ==================== 选区分析 ==================== */
@@ -792,11 +1030,15 @@ var MaskEngine = (function () {
         var rng = sheet.Cells.Item(top, left).Resize(rows, cols);
         var data = to2D(rng.Value2, rows, cols);
 
-        var hasHeader;
+        // headerAuto：表头是猜出来的还是用户明确指定的。面板据此提示"已自动识别表头"，
+        // 但 hasHeader 的判定规则本身不变。
+        var hasHeader, headerAuto;
         if (opts.hasHeader === true || opts.hasHeader === false) {
             hasHeader = opts.hasHeader;
+            headerAuto = false;
         } else {
             hasHeader = rows > 1 && looksLikeHeader(data[0], data[1] || null, top);
+            headerAuto = true;
         }
         if (hasHeader && rows < 2) { hasHeader = false; }
 
@@ -834,6 +1076,7 @@ var MaskEngine = (function () {
             rows: rows,
             cols: cols,
             hasHeader: hasHeader,
+            headerAuto: headerAuto,
             dataRows: rows - firstDataRow,
             firstDataRow: firstDataRow,
             columns: columns
@@ -854,7 +1097,7 @@ var MaskEngine = (function () {
             // 区间也是签名的一部分：扩了就等于换了映射空间，必须把旧记录一起搬过去，
             // 否则同一批人在新旧区域会各拿一套假值。记录只增不减，旧假值都还在。
             if (after !== before) {
-                absorbBucket(vault.maps, before, after);
+                absorbBucket(vault.maps, before, after, rangeUsesSig(vault, before));
                 vault.settings[col.header] = copyCfg(col.cfg);
             }
         }
@@ -974,20 +1217,119 @@ var MaskEngine = (function () {
         return false;
     }
 
-    function recordRange(vault, sheetName, r1, c1, r2, c2) {
-        if (!vault.ranges) { vault.ranges = []; }
-        vault.ranges.push({ s: sheetName, r1: r1, c1: c1, r2: r2, c2: c2 });
-        if (vault.ranges.length > 200) { vault.ranges.splice(0, vault.ranges.length - 200); }
+    function rangeSigs(rec) {
+        return (rec && rec.sigs && typeof rec.sigs === 'object' && !isArr(rec.sigs)) ? rec.sigs : null;
     }
 
+    // 还有区域记录引用这个签名吗（跨工作表看，签名是桶级、不区分 sheet）
+    function rangeUsesSig(vault, sig) {
+        var list = vault.ranges || [];
+        for (var i = 0; i < list.length; i++) {
+            var sigs = rangeSigs(list[i]);
+            if (!sigs) { continue; }
+            for (var k in sigs) {
+                if (Object.prototype.hasOwnProperty.call(sigs, k) && sigs[k] === sig) { return true; }
+            }
+        }
+        return false;
+    }
+
+    // 保存前回收"不再被任何区域记录引用"的签名桶：搬桶时为了可还原性保留的旧桶，
+    // 等引用它的区域都还原完就没用了，留着只会让隐藏表随放宽次数越滚越大。
+    // 旧格式区域没有 sigs，无法判断它引用哪个桶，整份不动（宁可体积大，也不丢映射）。
+    function pruneUnusedBuckets(vault) {
+        if (!vault || !vault.maps) { return 0; }
+        var ranges = vault.ranges || [];
+        if (!ranges.length) { return 0; }
+        var used = {}, i, k, sigs;
+        for (i = 0; i < ranges.length; i++) {
+            sigs = rangeSigs(ranges[i]);
+            if (!sigs) { return 0; }
+            for (k in sigs) {
+                if (Object.prototype.hasOwnProperty.call(sigs, k) && sigs[k] != null) {
+                    used[String(sigs[k])] = true;
+                }
+            }
+        }
+        var removed = 0;
+        for (var sig in vault.maps) {
+            if (!Object.prototype.hasOwnProperty.call(vault.maps, sig)) { continue; }
+            if (!hasOwn(used, sig)) { delete vault.maps[sig]; removed++; }
+        }
+        return removed;
+    }
+
+    function rangeSigAt(rec, col) {
+        var sigs = rangeSigs(rec);
+        if (!sigs) { return null; }
+        var k = String(col);
+        if (!hasOwn(sigs, k)) { return null; }
+        var sig = sigs[k];
+        return sig == null ? null : String(sig);
+    }
+
+    // 截出一块子矩形，只保留落在其中的列签名
+    function clipRange(rec, r1, c1, r2, c2) {
+        var out = { s: rec.s, r1: r1, c1: c1, r2: r2, c2: c2 };
+        var sigs = rangeSigs(rec);
+        if (sigs) {
+            var sub = {};
+            for (var col = c1; col <= c2; col++) {
+                var k = String(col);
+                if (hasOwn(sigs, k)) { sub[k] = sigs[k]; }
+            }
+            out.sigs = sub;
+        }
+        return out;
+    }
+
+    // 记录一块"写过假值"的矩形，并带每列签名：revert 靠它找对桶，不再凭当前值猜全局索引。
+    // 同列同签名、行相邻或重叠的记录直接合并；已被同一条记录完全覆盖的矩形不重复记。
+    function recordRange(vault, sheetName, r1, c1, r2, c2, sig) {
+        if (!vault.ranges) { vault.ranges = []; }
+        if (r1 > r2 || c1 > c2) { return; }
+        var list = vault.ranges;
+        for (var i = 0; i < list.length; i++) {
+            var it = list[i];
+            if (!it || it.s !== sheetName || it.c1 !== c1 || it.c2 !== c2) { continue; }
+            if (rangeSigAt(it, c1) !== sig) { continue; }
+            if (it.r1 <= r1 && it.r2 >= r2) { return; }
+            if (r1 <= it.r2 + 1 && r2 + 1 >= it.r1) {
+                it.r1 = Math.min(it.r1, r1);
+                it.r2 = Math.max(it.r2, r2);
+                return;
+            }
+        }
+        var rec = { s: sheetName, r1: r1, c1: c1, r2: r2, c2: c2 };
+        if (sig != null) {
+            var sigs = {};
+            sigs[String(c1)] = sig;
+            rec.sigs = sigs;
+        }
+        list.push(rec);
+        if (list.length > 200) { list.splice(0, list.length - 200); }
+    }
+
+    // 把 rec 拆成"rec 减去 (r1,c1,r2,c2)"后的至多 4 块
+    function subtractRange(rec, r1, c1, r2, c2, out) {
+        var ir1 = Math.max(rec.r1, r1), ir2 = Math.min(rec.r2, r2);
+        var ic1 = Math.max(rec.c1, c1), ic2 = Math.min(rec.c2, c2);
+        if (rec.r1 < ir1) { out.push(clipRange(rec, rec.r1, rec.c1, ir1 - 1, rec.c2)); }
+        if (rec.r2 > ir2) { out.push(clipRange(rec, ir2 + 1, rec.c1, rec.r2, rec.c2)); }
+        if (ic1 > rec.c1) { out.push(clipRange(rec, ir1, rec.c1, ir2, ic1 - 1)); }
+        if (ic2 < rec.c2) { out.push(clipRange(rec, ir1, ic2 + 1, ir2, rec.c2)); }
+    }
+
+    // 只从"已映射区域"里扣掉一块矩形（矩形差集），而不是把整条记录删掉：
+    // revert 只还原了选区覆盖的行/列，没覆盖的部分仍然需要记录。
     function forgetRanges(vault, sheetName, r1, c1, r2, c2) {
-        if (!vault.ranges) { return; }
+        if (!vault.ranges || !vault.ranges.length) { return; }
         var probe = { r1: r1, c1: c1, r2: r2, c2: c2 };
         var keep = [];
         for (var i = 0; i < vault.ranges.length; i++) {
             var it = vault.ranges[i];
-            if (it.s === sheetName && rectOverlaps(it, probe)) { continue; }
-            keep.push(it);
+            if (!it || it.s !== sheetName || !rectOverlaps(it, probe)) { keep.push(it); continue; }
+            subtractRange(it, r1, c1, r2, c2, keep);
         }
         vault.ranges = keep;
     }
@@ -997,23 +1339,29 @@ var MaskEngine = (function () {
         var mk = keyOf(value), lk = looseOf(value);
         var pref = idx.bySig[sig];
         if (pref) {
-            if (mk in pref.typed) { return true; }
-            if (lk in pref.loose) { return true; }
+            if (hasOwn(pref.typed, mk)) { return true; }
+            if (hasOwn(pref.loose, lk)) { return true; }
         }
-        if (mk in idx.global.typed) { return true; }
-        if (lk in idx.global.loose) { return true; }
+        if (hasOwn(idx.global.typed, mk)) { return true; }
+        if (hasOwn(idx.global.loose, lk)) { return true; }
         return false;
     }
 
-    function applyMask(model, vault, opts) {
-        opts = opts || {};
+    // 第一阶段：只建映射，不动表格。返回给 writeMask 的写入计划。
+    // plan.columns 是真正要写的列（每列带新值数组），plan.ranges 是写成功后要登记的区域，
+    // plan.stats 与旧 applyMask 的返回值完全一致（preview 也指向 plan.columns）。
+    function prepareMask(model, vault) {
         var stats = {
             cells: 0, columns: 0, created: 0, kept: 0,
             written: 0, skipped: 0, skippedColumns: []
         };
         var outputs = [];
+        var ranges = [];
         // 跳过判定只看"本轮开始之前"就存在的映射，本轮刚建的记录不该被当成本来就有
         var preIndex = buildIndex(vault);
+        // 阶段一会把区域记录写进 vault（面板要先保存映射表再写单元格）；写单元格失败时
+        // 用这份快照撤销本轮记录，避免"表格没写、区域却记着"让重试误跳过本该映射的单元格
+        var baseRanges = isArr(vault.ranges) ? JSON.parse(JSON.stringify(vault.ranges)) : [];
 
         for (var i = 0; i < model.columns.length; i++) {
             var col = model.columns[i];
@@ -1125,23 +1473,97 @@ var MaskEngine = (function () {
 
             if (wrote > 0) {
                 outputs.push({ col: col, values: newVals, wrote: wrote });
+                var startRow = model.top + model.firstDataRow;
+                var endRow = startRow + newVals.length - 1;
+                ranges.push({
+                    s: model.sheetName,
+                    r1: startRow, c1: col.col,
+                    r2: endRow, c2: col.col,
+                    sig: sig
+                });
+                // 区域记录在阶段一就落库，因为面板按 prepareMask → saveVault → writeMask 调用：
+                // 先保存映射表再写单元格，文档里才有可 revert 的区域；writeMask 失败时单元格
+                // 已回滚，这些多出来的区域在下次 revert 里只会 miss，不会改错数据。
+                recordRange(vault, model.sheetName, startRow, col.col, endRow, col.col, sig);
                 stats.columns++;
                 stats.written += wrote;
             }
         }
 
-        if (!opts.dryRun) {
-            for (var oi = 0; oi < outputs.length; oi++) {
-                var oc = outputs[oi];
-                writeColumn(model, oc.col, oc.values);
-                recordRange(vault, model.sheetName,
-                    model.top + model.firstDataRow, oc.col.col,
-                    model.top + model.firstDataRow + oc.values.length - 1, oc.col.col);
-            }
-            rememberSettings(vault, model);
-        }
+        // 区间记忆也一并写进 vault：面板先保存后写单元格，记忆不能等第二阶段才落库
+        rememberSettings(vault, model);
         stats.preview = outputs;
-        return stats;
+        return {
+            model: model, vault: vault, columns: outputs, ranges: ranges,
+            baseRanges: baseRanges, stats: stats
+        };
+    }
+
+    // 第二阶段：只写表格。任何一列写失败都把已写的列按原值回滚，然后原样抛出。
+    // 区域记录与区间记忆已在阶段一落库（面板要先保存映射表再写单元格），失败时
+    // vault 里会留下这些记录：下次 revert 对未真正写入的单元格只会 miss，不会改错数据。
+    function writeMask(plan) {
+        if (!plan || !plan.model || !plan.vault || !isArr(plan.columns) || !isArr(plan.ranges)) {
+            throw new Error('写入计划无效：请把 prepareMask 的返回值交给 writeMask');
+        }
+        var model = plan.model;
+        var tried = [];
+        try {
+            for (var i = 0; i < plan.columns.length; i++) {
+                tried.push(plan.columns[i]);
+                writeColumn(model, plan.columns[i].col, plan.columns[i].values);
+            }
+        } catch (eWrite) {
+            var rollbackErrors = [];
+            for (var k = tried.length - 1; k >= 0; k--) {
+                try {
+                    writeColumn(model, tried[k].col, tried[k].col.values);
+                } catch (eRollback) {
+                    rollbackErrors.push('第 ' + tried[k].col.col + ' 列回滚失败：' + eRollback.message);
+                }
+            }
+            var err = new Error('写入单元格失败：' + eWrite.message +
+                (rollbackErrors.length
+                    ? '；回滚未完成（' + rollbackErrors.join('；') + '）'
+                    : '；已回滚已写入的单元格'));
+            // 撤销阶段一登记的这几块区域（表格已恢复原值），否则重试会把"看起来像假值"的
+            // 原值当成本来就映射过而跳过
+            if (plan.baseRanges) { plan.vault.ranges = plan.baseRanges; }
+            err.cause = eWrite;
+            err.rollback = {
+                ok: rollbackErrors.length === 0, columns: tried.length,
+                errors: rollbackErrors, rangesReset: !!plan.baseRanges
+            };
+            throw err;
+        }
+        // 区域记录与区间记忆已在 prepareMask 落库；这里只写单元格，失败时不留下"写到一半"的表格
+        return plan.stats;
+    }
+
+    // 旧入口：先建映射再写表。dryRun 只建映射、不写表；区域记录随 prepareMask 落库
+    // （旧实现 dryRun 不记录区域，但仓库内没有调用方依赖这一点）。
+    function applyMask(model, vault, opts) {
+        opts = opts || {};
+        var plan = prepareMask(model, vault);
+        if (opts.dryRun) { return plan.stats; }
+        return writeMask(plan);
+    }
+
+    // 宿主可能悄悄吞掉赋值（保护/筛选/合并等）：写完必须读回核对，不能假设表格接受了值。
+    // 用宽松形态比较，容忍宿主把数字写成数字、把 "123" 写成 123 这类格式转换。
+    function checkWritten(model, col, startRow, expected) {
+        var n = expected.length;
+        if (!n) { return; }
+        var rng = model.sheet.Cells.Item(model.top + model.firstDataRow + startRow, col.col).Resize(n, 1);
+        var grid = to2D(rng.Value2, n, 1);
+        for (var i = 0; i < n; i++) {
+            var got = (grid[i] && grid[i].length) ? grid[i][0] : null;
+            if (looseOf(got) !== looseOf(expected[i])) {
+                throw new Error('写入后读回不一致：' + model.sheetName + '!' +
+                    (model.top + model.firstDataRow + startRow + i) + ',' + col.col +
+                    '，期望「' + looseOf(expected[i]) + '」，实际「' + looseOf(got) + '」');
+            }
+        }
     }
 
     function writeColumn(model, col, values) {
@@ -1150,39 +1572,109 @@ var MaskEngine = (function () {
         if (!arr.length) { return; }
         var rng = model.sheet.Cells.Item(model.top + model.firstDataRow, col.col).Resize(arr.length, 1);
         rng.Value2 = arr;
+        checkWritten(model, col, 0, values);
     }
 
+    // 只写给的连续行段，选区里没被映射过的行一个单元格都不碰
+    function writeColumnParts(model, col, values, parts) {
+        for (var i = 0; i < parts.length; i++) {
+            var start = parts[i].start, end = parts[i].end;
+            if (end < start || start < 0) { continue; }
+            var arr = [];
+            for (var r = start; r <= end; r++) { arr.push([values[r]]); }
+            if (!arr.length) { continue; }
+            var rng = model.sheet.Cells.Item(model.top + model.firstDataRow + start, col.col).Resize(arr.length, 1);
+            rng.Value2 = arr;
+            checkWritten(model, col, start, values.slice(start, end + 1));
+        }
+    }
+
+    function coveringRanges(ranges, sheetName, col) {
+        var out = [];
+        for (var i = 0; i < ranges.length; i++) {
+            var it = ranges[i];
+            if (!it || it.s !== sheetName) { continue; }
+            if (col < it.c1 || col > it.c2) { continue; }
+            if (it.r1 > it.r2 || it.c1 > it.c2) { continue; }
+            out.push(it);
+        }
+        return out;
+    }
+
+    // 还原：只处理 vault.ranges 登记过的矩形。每个单元格用"登记该矩形时记下的签名"找桶，
+    // 不依赖当前选区重新猜配置（hasHeader=false、只选数据行时猜出来的配置往往是错的）。
+    // 只有记录里没有签名（旧格式）时才退到全局索引，且只在该假值全局唯一时使用。
     function revert(model, vault, opts) {
         opts = opts || {};
         var idx = buildIndex(vault);
-        var stats = { cells: 0, hit: 0, miss: 0, columns: 0 };
+        var stats = { cells: 0, hit: 0, miss: 0, columns: 0, ambiguous: 0 };
         var outputs = [];
+        var trims = [];
+        var ranges = vault.ranges || [];
+        var base = model.top + model.firstDataRow;
 
         for (var i = 0; i < model.columns.length; i++) {
             var col = model.columns[i];
-            var preferSig = col.cfg ? sigOf(col.cfg) : null;
+            var covering = coveringRanges(ranges, model.sheetName, col.col);
+            if (!covering.length) { continue; }   // 没登记过的列不碰
             var newVals = [];
-            var any = false;
-            var colMiss = 0;
+            var parts = [];      // 选区里落在登记区域内的连续行段（0 基）
+            var runStart = -1;
+            var any = false, colMiss = 0;
 
             for (var r = 0; r < col.values.length; r++) {
+                var absRow = base + r;
+                var matched = [];
+                for (var ci = 0; ci < covering.length; ci++) {
+                    if (absRow >= covering[ci].r1 && absRow <= covering[ci].r2) {
+                        matched.push(covering[ci]);
+                    }
+                }
+                if (!matched.length) {
+                    if (runStart >= 0) { parts.push({ start: runStart, end: r - 1 }); runStart = -1; }
+                    newVals.push(col.values[r]);
+                    continue;
+                }
+                if (runStart < 0) { runStart = r; }
                 var v = col.values[r];
                 if (isBlank(v)) { newVals.push(v); continue; }
                 stats.cells++;
 
+                // 最近登记（最后一条）的签名优先：同一格被多次登记时，当前假值来自最后一次映射
+                var sig = null;
+                for (var si = matched.length - 1; si >= 0; si--) {
+                    var rs = rangeSigAt(matched[si], col.col);
+                    if (rs != null) { sig = rs; break; }
+                }
                 var orig = null, found = false;
-                var mk = keyOf(v), lk = looseOf(v);
-
-                if (preferSig && idx.bySig[preferSig]) {
-                    var pref = idx.bySig[preferSig];
-                    if (mk in pref.typed) { orig = pref.typed[mk]; found = true; }
-                    else if (lk in pref.loose) { orig = pref.loose[lk]; found = true; }
+                if (sig != null && idx.bySig[sig]) {
+                    var pref = idx.bySig[sig];
+                    var pmk = keyOf(v), plk = looseOf(v);
+                    if (hasOwn(pref.typed, pmk)) { orig = pref.typed[pmk]; found = true; }
+                    else if (hasOwn(pref.loose, plk)) { orig = pref.loose[plk]; found = true; }
                 }
                 if (!found) {
-                    if (mk in idx.global.typed) { orig = idx.global.typed[mk]; found = true; }
-                    else if (lk in idx.global.loose) { orig = idx.global.loose[lk]; found = true; }
+                    if (sig == null) {
+                        // 旧格式区域没有签名，只能靠全局索引：仅在唯一映射时使用，冲突计入 ambiguous。
+                        // 旧文档迁移时若搬桶撞值丢过记录，唯一映射也可能缺了真正的原值，
+                        // 这时全局兜底不再可信：宁可不动、报歧义，也绝不猜一个别人的原值写回去。
+                        if (vault && vault.migrated && vault.migrated.dropped > 0) {
+                            stats.ambiguous++;
+                        } else {
+                            var uniq = uniqueGlobalKey(idx, v);
+                            if (uniq.ambiguous) {
+                                stats.ambiguous++;
+                            } else if (uniq.key != null) {
+                                orig = uniq.key;
+                                found = true;
+                            }
+                        }
+                    } else if (!idx.bySig[sig]) {
+                        // 登记时的桶已不存在（区间被搬走/记录被丢弃）：全局兜底会跨桶猜人，
+                        // 宁可不动并把这条区域标成歧义，让人工核对，也绝不写错原值。
+                        stats.ambiguous++;
+                    }
                 }
-
                 if (found) {
                     newVals.push(valueFromKey(orig));
                     stats.hit++;
@@ -1192,10 +1684,12 @@ var MaskEngine = (function () {
                     colMiss++;
                 }
             }
+            if (runStart >= 0) { parts.push({ start: runStart, end: col.values.length - 1 }); }
+            if (parts.length) { trims.push({ col: col, parts: parts }); }
             if (any) {
                 // 只有这一列确实还原了值时，才把未命中的单元格计入提示，
                 // 否则「不处理」列会被误报为"未命中"
-                outputs.push({ col: col, values: newVals });
+                outputs.push({ col: col, values: newVals, parts: parts });
                 stats.columns++;
                 stats.miss += colMiss;
             }
@@ -1204,11 +1698,16 @@ var MaskEngine = (function () {
         if (!opts.dryRun) {
             for (var oi = 0; oi < outputs.length; oi++) {
                 var oc = outputs[oi];
-                writeColumn(model, oc.col, oc.values);
-                // 还原过的区域不再是"已映射"，否则再映射时会被误跳过
-                forgetRanges(vault, model.sheetName,
-                    model.top + model.firstDataRow, oc.col.col,
-                    model.top + model.firstDataRow + oc.values.length - 1, oc.col.col);
+                writeColumnParts(model, oc.col, oc.values, oc.parts);
+            }
+            // 处理过的行不再是"已映射"：从区域记录里按矩形差集扣掉，第二次 revert 才会是 no-op
+            for (var ti = 0; ti < trims.length; ti++) {
+                var tc = trims[ti];
+                for (var pi = 0; pi < tc.parts.length; pi++) {
+                    var part = tc.parts[pi];
+                    forgetRanges(vault, model.sheetName,
+                        base + part.start, tc.col.col, base + part.end, tc.col.col);
+                }
             }
         }
         stats.preview = outputs;
@@ -1250,6 +1749,8 @@ var MaskEngine = (function () {
         VAULT_SHEET: VAULT_SHEET,
         analyze: analyze,
         hydrate: hydrate,
+        prepareMask: prepareMask,
+        writeMask: writeMask,
         applyMask: applyMask,
         revert: revert,
         sample: sample,
@@ -1263,6 +1764,10 @@ var MaskEngine = (function () {
         keyOf: keyOf,
         valueFromKey: valueFromKey,
         _internal: {
+            assignExact: assignExact,
+            recordRange: recordRange,
+            forgetRanges: forgetRanges,
+            buildIndex: buildIndex,
             genPhone: genPhone,
             genNumber: genNumber,
             genText: genText,
@@ -1272,7 +1777,6 @@ var MaskEngine = (function () {
             suffixDigits: suffixDigits,
             areaCountOf: areaCountOf,
             looksLikeHeader: looksLikeHeader,
-            buildIndex: buildIndex,
             numericStats: numericStats,
             to2D: to2D
         }
