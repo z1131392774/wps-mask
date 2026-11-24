@@ -87,20 +87,38 @@ function MaskQuickApply() {
     var vault = MaskEngine.loadVault(app);
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
 
-    var stats = MaskEngine.applyMask(model, vault, {});
-    if (stats.written === 0) {
+    // 两阶段：先建映射并把区域记录写进 vault，保存成功之后才写单元格
+    var plan = MaskEngine.prepareMask(model, vault);
+    if (plan.stats.written === 0) {
         MaskAlert('这个区域已经映射过，先执行「反映射」再映射。');
         return;
     }
     try {
-        MaskEngine.saveVault(app, vault);
+        MaskEngine.saveVault(app, plan.vault);
     } catch (saveErr) {
-        MaskAlert('映射表保存失败：' + MaskErrText(saveErr) + '，请立刻撤销。');
+        MaskAlert('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，请重新映射。');
+        return;
+    }
+    try {
+        MaskEngine.writeMask(plan);
+    } catch (writeErr) {
+        // 引擎已按原值回滚；把内存里恢复好的区域记录写回磁盘，失败要 loud
+        var tail = (writeErr && writeErr.rollback && writeErr.rollback.ok === false)
+            ? '；回滚未完成，请检查表格后重新映射。'
+            : '；已回滚，请重新映射。';
+        var fail = '写入失败：' + MaskErrText(writeErr) + tail;
+        try {
+            MaskEngine.saveVault(app, vault);
+        } catch (resaveErr) {
+            fail = '写入失败：' + MaskErrText(writeErr) + '；映射表写回失败：' +
+                MaskErrText(resaveErr) + '，请勿关闭文档，重新映射前先检查映射表。';
+        }
+        MaskAlert(fail);
         return;
     }
 
-    var skip = stats.skipped > 0 ? '，跳过 ' + stats.skipped + ' 格' : '';
-    MaskToast('已映射 ' + stats.written + ' 格' + skip);
+    var skip = plan.stats.skipped > 0 ? '，跳过 ' + plan.stats.skipped + ' 格' : '';
+    MaskToast('已映射 ' + plan.stats.written + ' 格' + skip + '，记得保存文档。');
 }
 
 function MaskQuickRevert() {
@@ -111,10 +129,20 @@ function MaskQuickRevert() {
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
     var stats = MaskEngine.revert(model, vault, {});
 
-    if (stats.hit === 0) {
+    // 二次点击 hit/ambiguous 都是 0：no-op，不写单元格也不重复保存
+    if (stats.hit === 0 && stats.ambiguous === 0) {
         MaskAlert('没有可还原的映射，选区要和映射时一致。');
         return;
     }
+    // 区域记录被裁剪过，必须落盘；保存失败要 loud，不能让用户以为已经保存
+    try {
+        MaskEngine.saveVault(app, vault);
+    } catch (saveErr) {
+        MaskAlert('映射表未保存：' + MaskErrText(saveErr) +
+            '，请勿关闭文档，重新映射前先检查映射表。');
+        return;
+    }
     var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有映射记录') : '';
+    if (stats.ambiguous > 0) { tail += '，' + stats.ambiguous + ' 格有歧义未还原'; }
     MaskToast('已还原 ' + stats.hit + ' 格' + tail);
 }
