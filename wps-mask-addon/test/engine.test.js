@@ -561,5 +561,58 @@ av = Engine.loadVault(ageApp);
 Engine.revert(Engine.hydrate(Engine.analyze(ageApp, {}), av), av);
 ok(ageApp.getCell('Sheet1', 10, 1) === 28, '第一批区域还原成 28，实际 ' + ageApp.getCell('Sheet1', 10, 1));
 
+/* ---------- 25. 记忆的整数区间遇到小数 ---------- */
+console.log('\n[25] 记忆的整数区间遇到小数');
+// 上一批金额是整数，记忆里 dec 就是 0；这一批带小数，而上一批正好把整数区间用满。
+// 光按数据范围算容量会漏掉"已经发出去的假值占着槽位"，这一列就会卡住。
+function moneyRows(values, header) {
+    const rows = [[header || '金额']];
+    values.forEach(v => rows.push([v]));
+    return rows;
+}
+const moneyApp = new MockWPS();
+moneyApp.ActiveWorkbook.addSheet('Sheet2');
+const ints = [];
+for (let v = 100; v <= 110; v++) { ints.push(v); }
+moneyApp.setTable('Sheet1', 1, 1, moneyRows(ints));
+moneyApp.setTable('Sheet2', 1, 1, moneyRows([100, 101, 102.5]));
+
+moneyApp.select('Sheet1', 1, 1, 12, 1);
+let mv = Engine.loadVault(moneyApp);
+Engine.applyMask(Engine.hydrate(Engine.analyze(moneyApp, {}), mv), mv, {});
+Engine.saveVault(moneyApp, mv);
+const fake100 = moneyApp.getCell('Sheet1', 2, 1);
+ok(typeof fake100 === 'number' && fake100 !== 100, '第一批 100 → ' + fake100);
+ok(Engine.loadVault(moneyApp).settings['金额'].dec === 0, '记住的是整数区间，11 个槽全用满');
+
+moneyApp.select('Sheet2', 1, 1, 4, 1);
+mv = Engine.loadVault(moneyApp);
+const m2b = Engine.hydrate(Engine.analyze(moneyApp, {}), mv);
+ok(m2b.columns[0].cfg.dec === 1, '没有空槽就恢复小数位，dec = ' + m2b.columns[0].cfg.dec);
+let mErr = null;
+try { Engine.applyMask(m2b, mv, {}); } catch (e) { mErr = e.message; }
+ok(mErr === null, '带小数的金额不再整列失败' + (mErr ? '，实际报错：' + mErr : ''));
+ok(moneyApp.getCell('Sheet2', 2, 1) === fake100, '100 在新 sheet 仍是同一个假值');
+const moneySigs = Object.keys(mv.maps);
+ok(moneySigs.length === 1 && /^num\|uniform\|100\|110\|1\|/.test(moneySigs[0]),
+    '整数桶并到带小数的签名下，只剩一个：' + moneySigs.join(','));
+
+// 整数区间还有空槽时不给整列添小数点：2.5 换成整数就够了
+const unitApp = new MockWPS();
+unitApp.ActiveWorkbook.addSheet('Sheet2');
+unitApp.setTable('Sheet1', 1, 1, moneyRows([100, 102], '单价'));
+unitApp.setTable('Sheet2', 1, 1, moneyRows([100, 102, 102.5], '单价'));
+unitApp.select('Sheet1', 1, 1, 3, 1);
+let uv = Engine.loadVault(unitApp);
+Engine.applyMask(Engine.hydrate(Engine.analyze(unitApp, {}), uv), uv, {});
+Engine.saveVault(unitApp, uv);
+unitApp.select('Sheet2', 1, 1, 4, 1);
+uv = Engine.loadVault(unitApp);
+const u2 = Engine.hydrate(Engine.analyze(unitApp, {}), uv);
+ok(u2.columns[0].cfg.dec === 0, '还有空槽就保持整数，dec = ' + u2.columns[0].cfg.dec);
+Engine.applyMask(u2, uv, {});
+ok(Number.isInteger(unitApp.getCell('Sheet2', 4, 1)),
+    '102.5 换成整数：' + unitApp.getCell('Sheet2', 4, 1));
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

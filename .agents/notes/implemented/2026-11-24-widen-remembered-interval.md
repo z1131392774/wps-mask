@@ -34,6 +34,11 @@ The move reuses the existing collision rules (drop a record when the target alre
 
 Widening only happens when `dec <= 0` and both sides are number mode: fractional intervals have no capacity constraint, and touching them would only change the signature for nothing.
 
+Two quieter holes sit in the same layer, both closed:
+
+- **Capacity must count the fakes already handed out.** Once 21 values fill 20~40, no integer slot is left; a new value still looks fine against the data range alone, yet `genNumber` runs out of slots and throws "数值区间不够用". The check now uses occupied slots plus the new distinct values.
+- **Digits are the previous batch's shape too.** If last time the amounts were whole numbers, the remembered `dec` is 0; a batch with cents then cannot be mapped as integers at all. The rule: keep integers while slots remain (a few `.0` should not put a decimal point on the whole column), and restore `dec` only when the integer slots run out. `dec` is in the signature as well, so it goes through `absorbBucket()` too.
+
 ## Alternatives considered
 
 **Widen to "just enough" when the error fires.** Rejected: it fixes this batch and breaks on the next extra value, and it changes the signature without moving records, splitting fakes across sheets.
@@ -53,6 +58,6 @@ The pane side needed two fixes, both the same disease in another place:
 1. `doMask()` reloads the vault and then applies the pane's configs. A widened cfg against a vault whose bucket was not moved means handing out fakes from a new signature into an empty bucket — the same 28 comes back different in another sheet. It now runs `hydrate()` before applying the pane's configs.
 2. The `refresh(true, true)` snapshot copied every column's cfg by header from the **previous selection**, overwriting the union `hydrate()` had just computed: switching sheets brought the narrow interval back. The snapshot now carries only columns the user actually touched (`state.edited`, set in `readCard` and the type dropdown) and is cleared when `keepEdits` is false. Untouched columns must take whatever `hydrate()` computes.
 
-Test group [24] pins the rule with three sheets in one workbook: 20~40 is mapped first (storing 20/40); the 20~46 batch no longer throws and the interval becomes 20~46; 28 gets the same fake in both sheets; only one bucket remains under the new signature; a narrower third batch neither shrinks the interval nor creates records, and 28 keeps its fake; the old area still reverts to 28. `taskpane.test.js` group [12] drives the same scenario through the pane's buttons for the UI-side regression.
+Test group [24] pins the rule with three sheets in one workbook: 20~40 is mapped first (storing 20/40); the 20~46 batch no longer throws and the interval becomes 20~46; 28 gets the same fake in both sheets; only one bucket remains under the new signature; a narrower third batch neither shrinks the interval nor creates records, and 28 keeps its fake; the old area still reverts to 28. Group [25] covers cents: after 100~110 fill all 11 integer slots, 100/101/102.5 restore `dec = 1` and 100 keeps its fake; a column that still has a spare slot keeps `dec = 0` and 102.5 becomes an integer. `taskpane.test.js` group [12] drives the same scenario through the pane's buttons for the UI-side regression.
 
 The previous note ended with "number mode still balances its interval exactly against the distinct count; changing that needs its own pass". This change is about **memory and the interval**, not the balancing (`hi = ceil(lo) + need - 1` is untouched) — balancing now only sets the starting point on first detection.

@@ -830,7 +830,7 @@ var MaskEngine = (function () {
             if (!saved) { col.cfg = base; continue; }
             col.cfg = mergeCfg(saved, base);
             var before = sigOf(col.cfg);
-            widenInterval(col.cfg, base);
+            widenInterval(col.cfg, base, col, vault, before);
             var after = sigOf(col.cfg);
             // 区间也是签名的一部分：扩了就等于换了映射空间，必须把旧记录一起搬过去，
             // 否则同一批人在新旧区域会各拿一套假值。记录只增不减，旧假值都还在。
@@ -860,16 +860,36 @@ var MaskEngine = (function () {
     // 同一个工作簿里另一个 sheet 同名列值域更宽、或者补了行，都必然触发。
     // 所以取并集：上次区间 ∪ 本批数据范围，只扩不缩。本批数据装得下，容量就一定够，
     // 旧的假值也都落在旧的子区间里，扩完照样有效。
-    function widenInterval(cfg, base) {
+    function widenInterval(cfg, base, col, vault, beforeSig) {
         if (!cfg || cfg.mode !== 'number' || base.mode !== 'number') { return; }
-        if ((cfg.dec || 0) > 0 || (base.dec || 0) > 0) { return; }
+        // 小数区间没有容量约束，也没有装不下的问题，不必动它
+        if ((cfg.dec || 0) > 0) { return; }
         var lo = Number(cfg.min), hi = Number(cfg.max);
         if (!isFinite(lo) || !isFinite(hi)) { return; }
-        var nlo = Math.min(lo, Number(base.min)), nhi = Math.max(hi, Number(base.max));
-        if (nlo !== lo || nhi !== hi) {
-            cfg.min = nlo;
-            cfg.max = nhi;
+        cfg.min = Math.min(lo, Number(base.min));
+        cfg.max = Math.max(hi, Number(base.max));
+
+        // 光看数据范围还不够：已经发出去的假值占着槽位，新值只能进剩下的。
+        // 上一批正好把区间用满时（21 个值占满 20~40），再多一个不同值也没有空位。
+        var bucket = (vault && vault.maps && vault.maps[beforeSig]) || {};
+        var occupied = 0;
+        for (var k in bucket) { if (Object.prototype.hasOwnProperty.call(bucket, k)) { occupied++; } }
+        var pending = 0, seen = {};
+        for (var i = 0; i < col.values.length; i++) {
+            var v = col.values[i];
+            if (isBlank(v)) { continue; }
+            var vk = keyOf(v);
+            if (seen[vk] || Object.prototype.hasOwnProperty.call(bucket, vk)) { continue; }
+            seen[vk] = true;
+            pending++;
         }
+        var required = occupied + pending;
+        var cap = Math.floor(cfg.max) - Math.ceil(cfg.min) + 1;
+        if (cap >= required) { return; }
+        // 上一批没有小数（dec 记成 0），这一批有：恢复小数位，槽位立刻多得多。
+        // 如果数据本来就是整数，就按需要的个数把上界撑开，宁可区间宽一点也不失败。
+        if ((base.dec || 0) > 0) { cfg.dec = base.dec; }
+        else { cfg.max = Math.ceil(cfg.min) + required - 1; }
     }
 
     function rememberSettings(vault, model) {
