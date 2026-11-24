@@ -1,7 +1,7 @@
 /*
  * 加载项通用工具：取应用对象、算资源根路径、轻量提示。
  * 加载项环境里全局 Application 与 wps.WpsApplication() 都指向同一个宿主对象，
- * 两处都拿不到时给出明确错误，而不是静默失败。
+ * 两处都获取不到时返回 null，由调用方给出错误提示。
  */
 function MaskGetApp() {
     var app = null;

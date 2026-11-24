@@ -2,9 +2,9 @@
  * AES-128-CBC + PKCS#7，纯 JS 实现（无 crypto / require 依赖）
  * 供 WPS 加载项（任务窗格网页、加载项宿主页）与 JS 宏共用。
  *
- * 设计取舍：密钥内置在代码里，属于"混淆级"保护——能挡住别人直接打开文档看明文，
- * 挡不住拿到代码后反解。要真正防住，密钥不能随文档走（改 KEY 常量即可换成外部注入）。
- * 改动 KEY 后，旧文档里的映射表将解不开，表现为"映射表损坏"。
+ * 设计取舍：密钥内置在代码中，属于"混淆级"保护——能防止直接打开文档查看明文，
+ * 无法防止持有代码后反向解密。如果需要真正的保密，密钥不能随文档分发（修改 KEY 常量即可改为外部注入）。
+ * 修改 KEY 后，旧文档中的映射表将无法解密，表现为"映射表损坏"。
  */
 var WPSCipher = (function () {
     var KEY_TEXT = 'WpsMask#2026!Et1';   // 16 字节，AES-128
@@ -33,7 +33,7 @@ var WPSCipher = (function () {
         return ((x << n) | (x >>> (8 - n))) & 0xff;
     }
 
-    /* ---------- S 盒：按定义现场生成，不手抄常量表 ---------- */
+    /* ---------- S 盒：按定义在运行时生成，不手抄常量表 ---------- */
     var SBOX = new Array(256);
     var INV_SBOX = new Array(256);
     (function () {
@@ -232,7 +232,7 @@ var WPSCipher = (function () {
         for (var i = 0; i < n; i++) {
             out.push(Math.floor(Math.random() * 256));
         }
-        // 掺入时间与计数，避免同一毫秒内两次调用取到相近序列
+        // 混入时间与计数，避免同一毫秒内两次调用得到相近序列
         var t = (typeof Date !== 'undefined') ? Date.now() : 0;
         for (var j = 0; j < n; j++) {
             out[j] = (out[j] ^ ((t >>> ((j % 4) * 8)) & 0xff)) & 0xff;

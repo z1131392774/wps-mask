@@ -4,12 +4,12 @@
 
 Rules for the add-in itself. Standing orders are in the [root file](../AGENTS.md); the product manual is [README.md](README.md).
 
-- **Reach the host only through `MaskGetApp()`.** No bare `Range("A1")` exists in an add-in: every object hangs off what that helper returns.
+- **Reach the host only through `MaskGetApp()`.** No bare `Range("A1")` exists in an add-in: every object comes from what that helper returns.
 - **Judge arrays with `Array.isArray`.** Host values cross a realm boundary: `instanceof Array` is false and a 2D range collapses to one cell. This broke `analyze` once.
 - **Move whole blocks through `Value2`.** Read into a 2D array, transform in JS, write back in one assignment. A per-cell loop is an order slower and leaves partial state when it fails.
 - **Keep the mapping one-to-one — through `keyOf()` — or throw.** Two originals sharing a mapped value make reverse mapping ambiguous. The table is keyed `n:`/`s:`/`b:`, so a generator probing `used[rawValue]` never sees a collision; `genPhone`/`genText` did that and one run in sixteen reverted to the wrong original. Probe `used[keyOf(candidate)]`. When an interval only just holds the distinct values, assign a whole-column offset permutation: generating value by value forces the last one onto its own value and fails at random. When it cannot hold them, fail naming the column by letter and header.
 - **A mixed column is classified per cell.** `shapeOf()` returns mobile/email/landline/digits/alnum/text; `genMixed` dispatches to a generator that keeps that shape, else `genText`. A new shape needs a `shapeOf` branch, a generator, and a test for what must survive: domain, area code, digits, leading zero.
-- **The vault is a file format.** `M1:`, `sigOf()` and `KEY_TEXT` are read by documents in the wild; change one and old tables are garbage — add a version field and a migration.
+- **The vault is a file format.** `M1:`, `sigOf()` and `KEY_TEXT` are read by existing documents; change one and old tables become unreadable — add a version field and a migration in the same change.
 - **`engine.js` stays host-agnostic.** No DOM, no `window`, no top-level `require`: it must run unchanged in the pane, the host page and Node. `aes.js` uses no `crypto`.
 - **Behaviour changes run the tests.** `node test/engine.test.js` and `node test/aes.test.js` cover the engine; anything clickable also goes through the jsdom panel test.
 - **The AES key is obfuscation, not a credential.** `KEY_TEXT` is a constant; moving it into a passphrase or env var means changing the storage format in the same change.

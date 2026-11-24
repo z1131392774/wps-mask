@@ -6,7 +6,7 @@
 var MaskEngine = (function () {
     'use strict';
 
-    // 浏览器/webview 里由 aes.js 提供全局；node 测试里走 require
+    // 浏览器/webview 中由 aes.js 提供全局对象；node 测试中使用 require
     var Cipher = (typeof WPSCipher !== 'undefined') ? WPSCipher :
         (typeof require === 'function' ? require('./aes.js') : null);
 
@@ -109,7 +109,7 @@ var MaskEngine = (function () {
         return MOBILE_BODY.test(String(s).replace(/\s|-/g, ''));
     }
 
-    // 一个值属于哪一类标识。混合列按它自己的形态生成，别把一个邮箱换成手机号。
+    // 判断单个值属于哪一类标识。混合列按各值自身的形态生成，不要把邮箱替换成手机号。
     function shapeOf(v) {
         if (isBlank(v)) { return 'blank'; }
         if (typeof v === 'number') { return 'digits'; }
@@ -140,7 +140,7 @@ var MaskEngine = (function () {
         var st = shapeStats(samples);
         if (!st.total) { return PHONE_HEADER.test(h) ? 'phone' : 'text'; }
         var ratio = function (n) { return n / st.total; };
-        // 邮箱和固话没有"整列一种生成器"的说法，只能按形态来
+        // 邮箱和固话不能使用整列统一的生成器，只能按形态分别处理
         if (st.email || st.landline) { return 'mixed'; }
         if (PHONE_HEADER.test(h) && ratio(st.mobile) >= 0.5) { return 'phone'; }
         if (ratio(st.mobile) >= 0.6) { return 'phone'; }
@@ -208,7 +208,7 @@ var MaskEngine = (function () {
         return s || '?';
     }
 
-    // 报错里报列：字母是用户眼睛看到的那个，字段名是他认得出的那个
+    // 报错信息中的列定位：列字母用于在表格中定位，字段名用于让用户识别
     function colLabel(col) {
         var letter = colLetter(col.col);
         var head = (col.header == null) ? '' : String(col.header).trim();
@@ -233,12 +233,12 @@ var MaskEngine = (function () {
         return n;
     }
 
-    // 后缀位数：够放下这一列要写的格子数就行，只留 1.1 倍余量。
-    // 这里按"非空格子数"算，不去统计不同值：一对一映射要的唯一结果数最多就是格子数，
-    // 拿它当上界一定够，而 distinct 要额外去重一遍、碰到一万行就是建一个一万键的表。
-    // 精确配平（空间刚好等于个数）会让最后两条记录只剩互换的一格，随机重试立刻退化成
-    // 确定式枚举；写死 4 位（1 万个槽）又让「姓名37」变成「姓名0037」，看着像按条数编过号。
-    // 10% 的余量刚好够重试躲开自己的原值，又不至于多要一位。
+    // 后缀位数：能容纳本列待写入单元格数即可，只留 1.1 倍余量。
+    // 按"非空单元格数"计算，不统计不同值：一对一映射所需的唯一结果数最多等于单元格数，
+    // 用它作上界一定足够，而统计 distinct 需要额外去重，一万行就要建一个一万键的表。
+    // 空间刚好等于个数时，最后两条记录只剩互换的一格，随机重试会退化为确定性枚举；
+    // 写死 4 位（1 万个槽位）又会让「姓名37」变成「姓名0037」，看起来像按行号编号。
+    // 10% 的余量足够让重试避开原值，也不会多占一位。
     function suffixDigits(need) {
         var n = Math.max(1, Math.ceil((Number(need) || 0) * 1.1));
         for (var d = 1; d <= 8; d++) {
@@ -261,9 +261,9 @@ var MaskEngine = (function () {
             var span = st.max - st.min;
             var lo = st.min, hi = st.max;
             if (span === 0) { lo = st.min; hi = st.min === 0 ? 100 : st.min * 2; }
-            // 数值统计只看数字，但不同值里可能混着 "无"、"N/A" 这类文本；
-            // 区间装不下时把上界抬到刚好够用为止（1001~1040 差一个就 1041），
-            // 而不是让整次映射失败，也不是一把拉到 9999 把"年龄"变成七千岁。
+            // 数值统计只计算数字，但不同值中可能混有 "无"、"N/A" 这类文本；
+            // 区间容纳不下时把上界提高到刚好够用（1001~1040 差一个就调整为 1041），
+            // 避免整次映射失败，也避免直接扩大到 9999 把"年龄"映射成七千岁。
             if (st.dec <= 0) {
                 var need = distinctCountOf(values);
                 var cap = Math.floor(hi) - Math.ceil(lo) + 1;
@@ -312,7 +312,7 @@ var MaskEngine = (function () {
         for (var i = 0; i < 500; i++) {
             var s = PHONE_PREFIX[rndInt(0, PHONE_PREFIX.length - 1)];
             for (var k = 0; k < 8; k++) { s += rndInt(0, 9); }
-            // used 里的键一律是 keyOf() 形态（"s:值"）；这里必须同样查，否则占位等于没登记
+            // used 中的键一律采用 keyOf() 形式（"s:值"）；此处必须用同样的键查询，否则占位不会生效
             if (s === orig || used[keyOf(s)]) { continue; }
             return s;
         }
@@ -349,7 +349,7 @@ var MaskEngine = (function () {
             if (used['n:' + out]) { continue; }
             return out;
         }
-        // 随机反复撞车时，退化为在区间内按随机起点顺序找空位（保证唯一、可反映射）
+        // 随机生成反复碰撞时，退化为在区间内按随机起点顺序查找空位（保证唯一、可反映射）
         var step = Math.pow(10, -dec);
         var cap = Math.floor((hi - lo) / step) + 1;
         if (cap > 2000000) { cap = 2000000; }
@@ -362,8 +362,8 @@ var MaskEngine = (function () {
         throw new Error('数值区间不够用，请扩大取值范围');
     }
 
-    // 区间刚好够用时，逐个随机取会走进死胡同：最后一格只剩它自己的值，只能报"容量不足"。
-    // 这种情况下整列做一次错位置换 —— 随机错开 r 格，1 对 1、无不动点、且每个槽只用一次。
+    // 区间刚好容纳所有不同值时，逐个随机取值会失败：最后一个单元格只剩它自身的值，只能报"容量不足"。
+    // 这种情况下整列执行一次错位置换 —— 随机错开 r 格，保证 1 对 1、无不动点、每个槽位只使用一次。
     function assignExact(cfg, keys, used) {
         var lo = Math.ceil(Number(cfg.min)), hi = Math.floor(Number(cfg.max));
         var slots = [];
@@ -378,7 +378,7 @@ var MaskEngine = (function () {
         if (!keys.length || nums.length !== slots.length || nums.length < 2) { return null; }
         nums.sort(function (a, b) { return a - b; });
         slots.sort(function (a, b) { return a - b; });
-        // slots 与 nums 是同一组数，错开 r 位（r 随机且不为 0）就既没有不动点、也不是恒定的 +1
+        // slots 与 nums 是同一组数，错开 r 位（r 随机且不为 0）后既没有不动点，也不是恒定的 +1 映射
         var r = rndInt(1, nums.length - 1);
         var out = {};
         for (var j = 0; j < nums.length; j++) {
@@ -410,7 +410,7 @@ var MaskEngine = (function () {
 
     function randChar(pool) { return pool.charAt(rndInt(0, pool.length - 1)); }
 
-    // 邮箱：保留域名（它本来就在数据里，不算新增泄露），只换本地部分
+    // 邮箱：保留域名（域名原本就在数据中，不构成新增泄露），只替换本地部分
     function genEmail(orig, used) {
         var s = String(orig).trim();
         var at = s.lastIndexOf('@');
@@ -426,7 +426,7 @@ var MaskEngine = (function () {
         throw new Error('邮箱地址已经用满');
     }
 
-    // 固话：区号、分隔符、位数都照旧，只换后面的号码
+    // 固话：区号、分隔符、位数保持不变，只替换后面的号码
     function genLandline(orig, used) {
         var m = LANDLINE_RE.exec(String(orig).trim());
         if (!m) { return null; }
@@ -445,11 +445,11 @@ var MaskEngine = (function () {
         throw new Error('固话号码已经用满');
     }
 
-    // 纯数字账号：等长随机数字，0 开头的把前导零原样留住
+    // 纯数字账号：替换为等长随机数字，0 开头的保留前导零
     function genDigits(orig, used) {
         var s = String(orig).trim(), len = s.length;
-        // 前导零是编码格式的一部分（工号 000123），必须留着。只把区间放宽到含 0 是不够的：
-        // 那样只有十分之一的概率刚好撞出 0 开头，其余都变成不等宽的样子。
+        // 前导零是编码格式的一部分（工号 000123），必须保留。仅把区间放宽到包含 0 并不够：
+        // 那样只有十分之一的概率生成 0 开头的值，其余都会变成不等宽的格式。
         var zeros = 0;
         while (zeros < len && s.charAt(zeros) === '0') { zeros++; }
         if (zeros >= len) { zeros = len - 1; }
@@ -469,7 +469,7 @@ var MaskEngine = (function () {
         throw new Error('数字账号已经用满');
     }
 
-    // 字母数字账号：逐字符换，数字换数字、字母换字母、符号原样留着
+    // 字母数字账号：逐字符替换，数字换成数字、字母换成字母、符号保持不变
     function genSameShape(orig, used) {
         var s = String(orig).trim();
         for (var i = 0; i < 300; i++) {
@@ -499,7 +499,7 @@ var MaskEngine = (function () {
         return genText(textCfg, String(orig), used);
     }
 
-    /* ==================== 映射表（保险箱） ==================== */
+    /* ==================== 映射表（加密存储） ==================== */
 
     function emptyVault() {
         return { v: VAULT_VERSION, settings: {}, maps: {}, ranges: [] };
@@ -522,8 +522,8 @@ var MaskEngine = (function () {
         try { prev = app.ActiveSheet; } catch (e) { prev = null; }
         ws = wb.Worksheets.Add(undefined, wb.Worksheets.Item(wb.Worksheets.Count));
         ws.Name = VAULT_SHEET;
-        // 新建工作表会成为活动表：用户什么都没做，视图却跳到别处（越隐藏越像"跑到了 sheet3"）。
-        // 先切回原来那张，再把它藏起来 —— 活动表不允许隐藏，顺序反过来就藏不住。
+        // 新建工作表会成为活动表：用户没有操作，视图却切换到别处（隐藏后更像"跳到了 sheet3"）。
+        // 先切回原来的工作表，再隐藏新表 —— 活动表不允许隐藏，顺序反过来就无法隐藏。
         if (prev) { try { prev.Activate(); } catch (e2) {} }
         try { ws.Visible = 2; } catch (e3) { try { ws.Visible = false; } catch (e4) {} }
         try { ws.Cells.Item(1, 1).Value2 = '本表由「数据脱敏映射」加载项维护，存放加密后的映射关系，请勿编辑或删除。'; } catch (e5) {}
@@ -602,7 +602,7 @@ var MaskEngine = (function () {
         } finally {
             try { app.DisplayAlerts = oldAlerts; } catch (e2) {}
         }
-        // 删掉的若是活动表，WPS 会自己换一张；这里把用户原来的那张还回去
+        // 如果删除的是活动表，WPS 会自动切换一张；这里把用户原来的工作表恢复为活动表
         if (prev && prev !== ws && prev.Name !== undefined) {
             try { prev.Activate(); } catch (e3) {}
         }
@@ -657,7 +657,7 @@ var MaskEngine = (function () {
     }
 
     function looksLikeHeader(row0, row1, top) {
-        // 空单元格不投票也不否决：选区多带一列空列，不该让整张表的表头识别翻车
+        // 空单元格不参与表头判断：选区多带一列空列，不应导致整张表的表头识别失败
         var cells = 0, text = 0, keyword = false;
         for (var i = 0; i < row0.length; i++) {
             var v = row0[i];
@@ -758,7 +758,7 @@ var MaskEngine = (function () {
             for (var vi = 0; vi < values.length; vi++) {
                 if (!isBlank(values[vi])) { nonEmptyCount++; }
             }
-            // 整列空白（选区多带了一列空的）没有可处理的内容，别在面板里占一张卡片
+            // 整列空白（选区多带了一列空列）没有可处理的内容，不在面板中占用一张卡片
             if (nonEmptyCount === 0) { continue; }
             columns.push({
                 index: ci,
@@ -873,7 +873,7 @@ var MaskEngine = (function () {
         vault.ranges = keep;
     }
 
-    // 这个值是不是"某个原值映射出来的结果"（先看本列签名，再退到全局）
+    // 判断该值是否为"某个原值的映射结果"（先查本列签名，再退到全局表）
     function lookupMapped(idx, sig, value) {
         var mk = keyOf(value), lk = looseOf(value);
         var pref = idx.bySig[sig];
@@ -1075,8 +1075,8 @@ var MaskEngine = (function () {
                 }
             }
             if (any) {
-                // 只有这一列确实还原到东西时，才把它没命中的格子计入提示，
-                // 否则「不处理」列会被误报成"未命中"
+                // 只有这一列确实还原了值时，才把未命中的单元格计入提示，
+                // 否则「不处理」列会被误报为"未命中"
                 outputs.push({ col: col, values: newVals });
                 stats.columns++;
                 stats.miss += colMiss;

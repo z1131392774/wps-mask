@@ -2,33 +2,33 @@
 
 *[English](README.md)*
 
-一个 WPS 表格加载项：把选中区域里的数据换成看着像真的假数据，映射关系加密存进工作簿，随时一键还原原值。本仓库同时承载约束这个加载项怎么改的指令体系。
+WPS 表格加载项：把选中区域的数据替换成看似真实的假数据，映射关系加密保存在工作簿里，需要时一键还原原值。本仓库还包含约束加载项改动方式的指令文档。
 
 ## 目录
 
 | 路径 | 是什么 |
 | --- | --- |
 | `wps-mask-addon/` | 加载项本体。产品手册见 [README.md](wps-mask-addon/README.md)，目录规则见 [AGENTS.md](wps-mask-addon/AGENTS.md) |
-| `wps-mask-addon/test/` | Node 脚本：mock 对象模型上的引擎逻辑、与 `node:crypto` 比对的 AES、jsdom 里跑的任务窗格 |
-| `AGENTS.md` | agent 的常驻规则，每次会话先读 |
-| `docs/` | 标准：[指令与文档结构](docs/AGENTS.md)、[改动怎么做怎么验](docs/development.md)、[把这套树播种到别处](docs/adopting.md) |
-| `.agents/notes/` | 决策记录：为什么选它、否掉了什么、代价是什么 |
-| `.agents/skills/` | 只在描述匹配时才加载的流程：[推送前检查](.agents/skills/pre-push-checks/SKILL.md) |
-| `scripts/check-docs.mjs` | 文档门禁：词数预算、双语配对、链接、锚点、行尾换行 |
+| `wps-mask-addon/test/` | Node 脚本：基于 mock 对象模型的引擎测试、与 `node:crypto` 比对的 AES 测试、在 jsdom 中运行的任务窗格测试 |
+| `AGENTS.md` | agent 的常驻规则，每次会话开始时阅读 |
+| `docs/` | 标准：[指令与文档结构](docs/AGENTS.md)、[改动与验证方法](docs/development.md)、[在其他仓库复用这套目录](docs/adopting.md) |
+| `.agents/notes/` | 决策记录：为什么这样选、否决了什么方案、代价是什么 |
+| `.agents/skills/` | 仅在描述匹配任务时加载的操作流程：[推送前检查](.agents/skills/pre-push-checks/SKILL.md) |
+| `scripts/check-docs.mjs` | 文档检查：词数预算、双语配对、链接、锚点、末尾换行 |
 
-## 跑起来
+## 检查与测试
 
 ```sh
-npm run check                              # 文档门禁，不用装依赖
+npm run check                              # 文档检查，不用装依赖
 node wps-mask-addon/test/engine.test.js    # 映射引擎
 node wps-mask-addon/test/aes.test.js       # 加密算法，与 node:crypto 比对
 npm i jsdom --no-save                      # 仅面板测试需要
-node wps-mask-addon/test/taskpane.test.js  # 任务窗格，跑在 jsdom 里
+node wps-mask-addon/test/taskpane.test.js  # 任务窗格，在 jsdom 中运行
 ```
 
-装加载项本体的办法：把 `wps-mask-addon/wpsmask_1.0.0/` 和 `publish.xml` 拷进 `%APPDATA%\kingsoft\wps\jsaddons`，重启 WPS。安装步骤、功能对照表、以及还没在真机上验证的部分，都在[产品手册](wps-mask-addon/README.md)里。
+安装加载项：把 `wps-mask-addon/wpsmask_1.0.0/` 和 `publish.xml` 复制到 `%APPDATA%\kingsoft\wps\jsaddons`，重启 WPS。安装步骤、功能对照表和尚未在真机验证的部分见[产品手册](wps-mask-addon/README.md)。
 
-## 两个机械事实
+## 两个配置细节
 
-- 根 `package.json` 不声明 `"type"`：门禁是 `.mjs`，本来就走 ESM；而测试脚本是 CommonJS，写上 `"type": "module"` 就加载不起来。
-- `CLAUDE.md` 是指向 `AGENTS.md` 的符号链接。Windows 上要么开开发者模式，要么用 `New-Item -ItemType SymbolicLink` 建；直接复制一份会漂移。
+- 根 `package.json` 不声明 `"type"`：检查脚本使用 `.mjs` 后缀，始终按 ESM 加载；测试脚本是 CommonJS，一旦写上 `"type": "module"` 就无法加载。
+- `CLAUDE.md` 是指向 `AGENTS.md` 的符号链接。Windows 上需要开启开发者模式，或用 `New-Item -ItemType SymbolicLink` 创建；直接复制会导致两份文件内容不同步。

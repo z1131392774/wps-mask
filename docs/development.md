@@ -53,4 +53,4 @@ A note records a decision that outlives its diff: a structural choice, a rejecte
 
 [The note standard](../.agents/notes/README.md) owns the format: the fixed header, the per-lifecycle body skeleton, the mandatory `## Alternatives considered` section, and the supersession and deletion rules. Write a note in the same change as the decision, and update the note that already owns it rather than opening a second one.
 
-A note is neither a changelog nor a tutorial. If a reader needs current behavior, the code and the documentation carry it.
+A note does not describe current behavior; the code and the documentation do.

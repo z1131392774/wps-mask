@@ -2,7 +2,7 @@
 
 *[中文](AGENTS_zh.md)*
 
-Standing orders for any agent working in this repository. Read this file at the start of every session. The standard behind them lives in [docs/AGENTS.md](docs/AGENTS.md) for instruction and documentation structure, and in [docs/development.md](docs/development.md) for how to make and verify a change. Read the relevant one before your first change.
+Rules for any agent working in this repository. Read this file at the start of every session. The standard behind them lives in [docs/AGENTS.md](docs/AGENTS.md) for instruction and documentation structure, and in [docs/development.md](docs/development.md) for how to make and verify a change. Read the relevant one before your first change.
 
 Rules here are deliberately short. Background, examples, and procedures belong in the linked home, not in this file.
 
@@ -18,7 +18,7 @@ When this file and a nearer `AGENTS.md` disagree, the nearer file wins for paths
 
 - **Restate the task and your plan in one short message before editing.** If two readings of the request are plausible, ask which one. A wrong assumption costs more than a question.
 - **Inspect the working tree first.** `git status` and the relevant file tell you whether someone else is mid-change. Treat unfamiliar or uncommitted work as the user's; read it, never revert, reformat, or delete it to make your change easier.
-- **Find the existing owner before adding anything.** Search for the function, config key, test, or document that already covers the area. Extend it, or explain why a second one is needed. Duplicate mechanisms are the most expensive kind of change ([tiers](docs/AGENTS.md#the-tier-model)).
+- **Find the existing owner before adding anything.** Search for the function, config key, test, or document that already covers the area. Extend it, or explain why a second one is needed. Duplicated mechanisms drift and double the maintenance cost ([tiers](docs/AGENTS.md#the-tier-model)).
 
 ## Change discipline
 
@@ -50,4 +50,4 @@ Add a rule here only if it is needed in every session. Otherwise put it in the c
 
 ## Documentation language
 
-English is the source; every document carries a Chinese twin beside it whose name ends in `_zh.md`, and the pair links in both directions. `npm run check` fails when a twin is missing, so a document that exists in one language only cannot land. The [bilingual rule](docs/AGENTS.md#bilingual-documents) says what a translation may change and what it must not.
+English is the source; every document carries a Chinese twin beside it whose name ends in `_zh.md`, and the pair links in both directions. `npm run check` fails when a twin is missing, so a single-language document cannot be committed. The [bilingual rule](docs/AGENTS.md#bilingual-documents) says what a translation may change and what it must not.
