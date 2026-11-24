@@ -476,6 +476,8 @@ function legacyVaultApp() {
     a.setTable('Sheet1', 2, 1, [['姓名3']]);
     a.setTable('Sheet1', 3, 1, [['姓名8']]);
     const vv = Engine.loadVault(a);
+    // 真实旧文档没有版本字段；新代码靠 v 判断是否迁移，这里模拟旧文档
+    delete vv.v;
     vv.maps['text|zh|姓名|1'] = { 's:张三': '姓名3', 's:李四': '姓名8' };
     vv.ranges.push({ s: 'Sheet1', r1: 2, c1: 1, r2: 3, c2: 1 });
     Engine.saveVault(a, vv);
@@ -507,6 +509,7 @@ ok(Object.keys(Engine.loadVault(legacyApp).maps).length === 1, '迁移后只剩�
 const clashApp = new MockWPS();
 clashApp.setTable('Sheet1', 1, 1, [['姓名'], ['张三']]);
 let cv = Engine.loadVault(clashApp);
+delete cv.v;
 cv.maps['text|zh|姓名|1'] = { 's:张三': '姓名3' };
 cv.maps['text|en|姓名|1'] = { 's:李四': '姓名3' };
 Engine.saveVault(clashApp, cv);
@@ -554,8 +557,8 @@ ok(ageApp.getCell('Sheet2', 10, 1) === fakeOf28,
     '28 在新 sheet 沿用第一批的假值：' + ageApp.getCell('Sheet2', 10, 1));
 Engine.saveVault(ageApp, av);
 const numSigs = Object.keys(Engine.loadVault(ageApp).maps).filter(s => s.indexOf('num|') === 0);
-ok(numSigs.length === 1 && numSigs[0].indexOf('|20|49|') > 0,
-    '旧桶已并到新签名下，只剩一个：' + numSigs.join(','));
+ok(numSigs.length === 2 && numSigs.some(s => s.indexOf('|20|49|') > 0) && numSigs.some(s => s.indexOf('|20|43|') > 0),
+    '窄桶已并到新区间，同时保留 Sheet1 区域仍引用的旧桶：' + numSigs.join(','));
 ok(Engine.loadVault(ageApp).settings['年龄'].max === 49, '区间扩张后同步写回记忆');
 
 // 第三批：数据更窄，区间不缩，已映射的原值不再新建记录
@@ -604,8 +607,10 @@ try { Engine.applyMask(m2b, mv, {}); } catch (e) { mErr = e.message; }
 ok(mErr === null, '带小数的金额不再整列失败' + (mErr ? '，实际报错：' + mErr : ''));
 ok(moneyApp.getCell('Sheet2', 2, 1) === fake100, '100 在新 sheet 仍是同一个假值');
 const moneySigs = Object.keys(mv.maps);
-ok(moneySigs.length === 1 && /^num\|uniform\|100\|112\|1\|/.test(moneySigs[0]),
-    '整数桶并到带小数的签名下，只剩一个：' + moneySigs.join(','));
+ok(moneySigs.length === 2 &&
+    moneySigs.some(s => /^num\|uniform\|100\|112\|1\|/.test(s)) &&
+    moneySigs.some(s => /^num\|uniform\|100\|112\|0\|/.test(s)),
+    '整数桶并到带小数的签名下，旧桶保留给仍在引用的区域：' + moneySigs.join(','));
 
 // 整数区间还有空槽时不给整列添小数点：2.5 换成整数就够了
 const unitApp = new MockWPS();
@@ -684,6 +689,633 @@ ok(tinyModel2.columns[0].cfg.max === 66,
 let tinyErr2 = null;
 try { Engine.applyMask(tinyModel2, tinyVault, {}); } catch (e) { tinyErr2 = e.message; }
 ok(tinyErr2 === null, '值域跨两个数量级也不失败' + (tinyErr2 ? '：' + tinyErr2 : ''));
+
+
+/* ---------- 28. prepareMask / writeMask 拆分 ---------- */
+console.log('\n[28] prepareMask 只建映射、writeMask 只写表');
+function cipherRowCount(a) {
+    let n = 0;
+    for (let r = 2; r <= 200; r++) {
+        const v = a.getCell(Engine.VAULT_SHEET, r, 1);
+        if (v !== null && v !== undefined && v !== '') { n++; }
+    }
+    return n;
+}
+function clearCells(a, sheetName, col, fromRow, toRow) {
+    for (let r = fromRow; r <= toRow; r++) { delete a.grid[sheetName + '!' + r + ',' + col]; }
+}
+
+const splitApp = freshApp();
+const splitVault = Engine.loadVault(splitApp);
+const splitModel = Engine.hydrate(Engine.analyze(splitApp, {}), splitVault);
+const plan28 = Engine.prepareMask(splitModel, splitVault);
+ok(plan28.columns.length === 4 && plan28.ranges.length === 4 && plan28.stats.written === 38,
+    '计划：4 列 / 38 格 / 4 条区域，实际 ' + plan28.columns.length + ' / ' + plan28.stats.written + ' / ' + plan28.ranges.length);
+ok(splitApp.getCell('Sheet1', 2, 1) === names[0] && splitApp.getCell('Sheet1', 2, 2) === phones[0],
+    'prepareMask 一个单元格都不写');
+ok(Object.keys(splitVault.maps).length > 0 && splitVault.ranges.length === 4,
+    'prepareMask 更新映射并登记区域（面板按 prepareMask→saveVault→writeMask 调用）：桶 ' +
+    Object.keys(splitVault.maps).length + ' / ranges ' + splitVault.ranges.length);
+ok(plan28.ranges.every(function (rec) {
+    return rec.s === 'Sheet1' && rec.r1 === 2 && rec.r2 === 11 && rec.c1 === rec.c2 &&
+        typeof rec.sig === 'string' && rec.sig.length > 0;
+}), '每条区域带本列签名：' + plan28.ranges.map(function (rec) { return rec.sig; }).join(' | '));
+const wrote28 = Engine.writeMask(plan28);
+ok(wrote28 === plan28.stats && wrote28.written === 38, 'writeMask 返回 plan.stats（38 格）');
+ok(splitApp.getCell('Sheet1', 2, 1) !== names[0] && splitVault.ranges.length === 4,
+    'writeMask 只写表，区域记录不重复登记（仍 4 条），实际 ranges ' + splitVault.ranges.length);
+
+// 写中失败：第 3 列抛出，已写的列要按原值回滚
+const rbApp28 = freshApp();
+const rbVault28 = Engine.loadVault(rbApp28);
+const rbPlan28 = Engine.prepareMask(Engine.hydrate(Engine.analyze(rbApp28, {}), rbVault28), rbVault28);
+let threw28 = false;
+rbApp28.setWriteHook(function (info) {
+    if (!threw28 && info.sheet === 'Sheet1' && !info.single && info.col === 3) {
+        threw28 = true;
+        return 'throw';
+    }
+    return null;
+});
+let rbErr28 = null;
+try { Engine.writeMask(rbPlan28); } catch (e) { rbErr28 = e; }
+rbApp28.clearWriteHook();
+ok(!!rbErr28 && /已回滚/.test(rbErr28.message), '第 3 列写失败 → 回滚并 rethrow：' + (rbErr28 && rbErr28.message));
+ok(!!rbErr28 && rbErr28.rollback && rbErr28.rollback.ok === true && rbErr28.rollback.columns === 3,
+    '回滚结果 ok=true、尝试过 3 列，实际 ' + JSON.stringify(rbErr28 && rbErr28.rollback));
+let rbSame28 = true;
+for (let r = 0; r < table.length; r++) {
+    for (let c = 0; c < 4; c++) {
+        if (rbApp28.getCell('Sheet1', r + 1, c + 1) !== table[r][c]) { rbSame28 = false; }
+    }
+}
+ok(rbSame28, '回滚后整块恢复成原值');
+ok(rbVault28.ranges.length === 0 && Object.keys(rbVault28.maps).length > 0 && rbErr28.rollback.rangesReset === true,
+    '写失败只回滚单元格并撤销阶段一区域（映射保留），实际 ranges ' + rbVault28.ranges.length);
+const retryApp28 = rbApp28;
+const retryVault28 = rbVault28;
+const retryStats28 = Engine.applyMask(Engine.hydrate(Engine.analyze(retryApp28, {}), retryVault28), retryVault28, {});
+ok(retryStats28.written === 38 && retryStats28.created === 0,
+    '失败后重试：38 格全部用已有映射写出，新建 0（实际 written=' + retryStats28.written + ', created=' + retryStats28.created + '）');
+ok(retryVault28.ranges.length === 4, '重试不会重复登记区域，实际 ' + retryVault28.ranges.length);
+
+// 面板第二阶段的调用顺序：prepareMask → saveVault → writeMask
+const flowApp28 = freshApp();
+const flowVault28 = Engine.loadVault(flowApp28);
+const flowPlan28 = Engine.prepareMask(Engine.hydrate(Engine.analyze(flowApp28, {}), flowVault28), flowVault28);
+Engine.saveVault(flowApp28, flowVault28);   // 先保存：映射 + 区域都进文档
+ok(Engine.loadVault(flowApp28).ranges.length === 4,
+    '先保存时区域已持久化（重开文档也能 revert）：' + Engine.loadVault(flowApp28).ranges.length + ' 条');
+Engine.writeMask(flowPlan28);
+flowApp28.select('Sheet1', 1, 1, 11, 4);
+const flowRev28 = Engine.revert(Engine.analyze(flowApp28, {}), Engine.loadVault(flowApp28), {});
+ok(flowRev28.hit === 38 && flowApp28.getCell('Sheet1', 2, 1) === names[0],
+    '按记录的区域从文档恢复后 revert 仍能还原 38 格（实际 hit=' + flowRev28.hit + '）');
+
+/* ---------- 29. 数值区间先算跨度再物化 ---------- */
+console.log('\n[29] assignExact 先算跨度，不物化大区间');
+const AE29 = Engine._internal.assignExact;
+let aeErr29 = '';
+try { AE29({ mode: 'number', dist: 'uniform', min: 0, max: Infinity, dec: 0 }, ['n:1'], {}); }
+catch (e) { aeErr29 = e.message; }
+ok(/有限数/.test(aeErr29), 'Infinity 区间明确报错：' + aeErr29);
+aeErr29 = '';
+try { AE29({ mode: 'number', dist: 'uniform', min: NaN, max: 10, dec: 0 }, ['n:1'], {}); }
+catch (e) { aeErr29 = e.message; }
+ok(/有限数/.test(aeErr29), 'NaN 区间明确报错：' + aeErr29);
+const aeT0 = Date.now();
+const aeHuge29 = AE29({ mode: 'number', dist: 'uniform', min: 0, max: 1000000000000, dec: 0 }, ['n:5'], {});
+const aeMs29 = Date.now() - aeT0;
+ok(aeHuge29 === null && aeMs29 < 100, '万亿级跨度立即返回 null（' + aeMs29 + 'ms），不枚举槽位');
+// 单值 13800138000 的编号列：defaultCfg 会撑出 [13800138000, 27600276000]，整段置换绝不能物化
+const bigIdApp29 = new MockWPS();
+bigIdApp29.setTable('Sheet1', 1, 1, [['编号'], [13800138000]]);
+bigIdApp29.select('Sheet1', 1, 1, 2, 1);
+const bigIdVault29 = Engine.loadVault(bigIdApp29);
+const bigIdModel29 = Engine.hydrate(Engine.analyze(bigIdApp29, {}), bigIdVault29);
+const bigIdT0 = Date.now();
+const bigIdStats29 = Engine.applyMask(bigIdModel29, bigIdVault29, {});
+const bigIdMs29 = Date.now() - bigIdT0;
+ok(bigIdModel29.hasHeader === true, '前提：编号列识别为表头');
+ok(bigIdStats29.written === 1 && bigIdMs29 < 1000,
+    '单值 13800138000 的编号列 ' + bigIdMs29 + 'ms 内完成，未卡死');
+ok(bigIdApp29.getCell('Sheet1', 2, 1) !== 13800138000, '编号已替换：' + bigIdApp29.getCell('Sheet1', 2, 1));
+ok(Engine.assignExact === undefined && typeof Engine.prepareMask === 'function',
+    '新入口只在 Engine 上暴露 prepareMask/writeMask，assignExact 走 _internal');
+
+/* ---------- 30. 版本字段优先，不误改新桶 ---------- */
+console.log('\n[30] migrateVault 只迁移真正的旧格式');
+const migApp30 = new MockWPS();
+migApp30.setTable('Sheet1', 1, 1, [['姓名'], ['张三']]);
+const migVault30 = Engine.loadVault(migApp30);
+migVault30.maps['text|id|4'] = { 's:张三': 'id0001' };
+migVault30.maps['text|zh|姓名|1'] = { 's:李四': '姓名7' };
+Engine.saveVault(migApp30, migVault30);
+const migLoaded30 = Engine.loadVault(migApp30);
+ok(!!migLoaded30.maps['text|id|4'] && migLoaded30.maps['text|id|4']['s:张三'] === 'id0001',
+    'v>=2 的 text|id|4 新桶不改名');
+ok(!!migLoaded30.maps['text|zh|姓名|1'], 'v>=2 时 text|zh|... 也按新格式处理，不再二次迁移');
+
+const legacyApp30 = new MockWPS();
+legacyApp30.setTable('Sheet1', 1, 1, [['姓名'], ['张三']]);
+const legacyVault30 = Engine.loadVault(legacyApp30);
+delete legacyVault30.v;   // 真实旧文档没有版本字段
+legacyVault30.maps['text|zh|姓名|1'] = { 's:张三': '姓名3' };
+Engine.saveVault(legacyApp30, legacyVault30);
+const migrated30 = Engine.loadVault(legacyApp30);
+ok(!migrated30.maps['text|zh|姓名|1'] && !!migrated30.maps['text|姓名|1'] && migrated30.v === 2,
+    '无版本字段的旧桶照常迁移并写回 v=2：' + Object.keys(migrated30.maps).join(','));
+
+/* ---------- 31. loadVault 区分"新文档"与"损坏" ---------- */
+console.log('\n[31] loadVault 不把"损坏"当"新文档"');
+const blankApp31 = new MockWPS();
+const blankVault31 = Engine.loadVault(blankApp31);
+ok(blankVault31 && blankVault31.maps && Object.keys(blankVault31.maps).length === 0,
+    '没有映射表的工作簿 → 空 vault');
+const emptyCipherApp31 = new MockWPS();
+Engine.saveVault(emptyCipherApp31, Engine.loadVault(emptyCipherApp31));
+clearCells(emptyCipherApp31, Engine.VAULT_SHEET, 1, 2, 50);   // 只清密文，A1 标记还在
+let err31 = null;
+try { Engine.loadVault(emptyCipherApp31); } catch (e) { err31 = e.message; }
+ok(!!err31 && /密文为空|损坏/.test(err31), '标记在而密文空 → 明确抛错：' + err31);
+const corruptApp31 = new MockWPS();
+Engine.saveVault(corruptApp31, Engine.loadVault(corruptApp31));
+corruptApp31.grid[Engine.VAULT_SHEET + '!2,1'] = 'M1:not-a-valid-cipher';
+let err31b = null;
+try { Engine.loadVault(corruptApp31); } catch (e) { err31b = e.message; }
+ok(!!err31b && /解密失败|损坏/.test(err31b), '密文被改坏 → 明确抛错：' + err31b);
+
+/* ---------- 32. saveVault 失败原子性 / 备份恢复 ---------- */
+console.log('\n[32] saveVault 备份 + 读回校验 + 回滚');
+function bigMaps32(n) {
+    const maps = {};
+    const bucket = {};
+    for (let i = 0; i < n; i++) { bucket['s:客户' + i] = '客户' + String(1000 + i); }
+    maps['text|客户|4'] = bucket;
+    return maps;
+}
+const atomApp32 = new MockWPS();
+const atomVault32 = Engine.loadVault(atomApp32);
+atomVault32.maps = bigMaps32(3000);
+Engine.saveVault(atomApp32, atomVault32);
+const chunkRows32 = cipherRowCount(atomApp32);
+ok(chunkRows32 >= 3, '构造出 ' + chunkRows32 + ' 片密文，可测中间片失败');
+const savedMaps32 = JSON.stringify(atomVault32.maps);
+// 新一次保存的数据：加一条记录（密文长度基本不变，片数不变）
+atomVault32.maps['text|客户|4']['s:客户新增'] = '客户9999';
+
+// (a) 第一片写失败：回滚到上一份
+let firstThrew32 = false;
+atomApp32.setWriteHook(function (info) {
+    if (!firstThrew32 && info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 2) {
+        firstThrew32 = true;
+        return 'throw';
+    }
+    return null;
+});
+let svErrA32 = null;
+try { Engine.saveVault(atomApp32, atomVault32); } catch (e) { svErrA32 = e; }
+atomApp32.clearWriteHook();
+ok(!!svErrA32 && /已回滚/.test(svErrA32.message) && svErrA32.rollback.ok === true,
+    '第一片写失败 → 回滚并报错：' + (svErrA32 && svErrA32.message));
+ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === savedMaps32,
+    '第一片失败后 loadVault 仍拿到上一份完整映射');
+
+// (b) 中间片写失败：前一片已写新内容，回滚仍要恢复整份
+let midThrew32 = false;
+atomApp32.setWriteHook(function (info) {
+    if (!midThrew32 && info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 3) {
+        midThrew32 = true;
+        return 'throw';
+    }
+    return null;
+});
+let svErrB32 = null;
+try { Engine.saveVault(atomApp32, atomVault32); } catch (e) { svErrB32 = e; }
+atomApp32.clearWriteHook();
+ok(!!svErrB32 && /已回滚/.test(svErrB32.message), '中间片写失败 → 回滚：' + (svErrB32 && svErrB32.message));
+ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === savedMaps32,
+    '中间片失败后 loadVault 仍是上一份完整映射');
+
+// (c1) 宿主静默吞掉赋值：读回校验必须发现，并回滚到上一份
+const tinyNew32 = { v: 2, settings: {}, maps: {}, ranges: [] };   // 新密文只有 1 片
+atomApp32.setWriteHook(function (info) {
+    if (info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 2) { return 'ignore'; }
+    return null;
+});
+let svErrC32 = null;
+try { Engine.saveVault(atomApp32, tinyNew32); } catch (e) { svErrC32 = e; }
+atomApp32.clearWriteHook();
+ok(!!svErrC32 && /校验未通过/.test(svErrC32.message) && svErrC32.rollback.ok === true,
+    '静默吞赋值 → 读回校验失败并回滚：' + (svErrC32 && svErrC32.message));
+ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === savedMaps32,
+    '静默吞赋值后 loadVault 仍拿到上一份完整映射');
+
+// (c2) A 区此前只写了一半、备份可读：保存失败且回滚也失败时，由备份区兜底
+const silentApp32 = new MockWPS();
+const silentVault32 = Engine.loadVault(silentApp32);
+silentVault32.maps = bigMaps32(3000);
+Engine.saveVault(silentApp32, silentVault32);                 // A=v1，B 空
+const v1Maps32 = JSON.stringify(silentVault32.maps);
+silentVault32.maps['text|客户|4']['s:客户新增'] = '客户9999';
+Engine.saveVault(silentApp32, silentVault32);                 // A=v2，B=v1
+silentVault32.maps['text|客户|4']['s:客户再加'] = '客户8888';
+delete silentApp32.grid[Engine.VAULT_SHEET + '!2,1'];        // 模拟 A 区此前被截断（缺第一片）
+silentApp32.setWriteHook(function (info) {
+    if (info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 2) { return 'ignore'; }
+    return null;
+});
+let svErrC2 = null;
+try { Engine.saveVault(silentApp32, tinyNew32); } catch (e) { svErrC2 = e; }
+silentApp32.clearWriteHook();
+ok(!!svErrC2 && /回滚未完成/.test(svErrC2.message),
+    'A 区半写坏 + 静默吞赋值 → 回滚未完成：' + (svErrC2 && svErrC2.message));
+const recovered32 = Engine.loadVault(silentApp32);
+ok(!!recovered32 && recovered32.recovered === true &&
+    JSON.stringify(recovered32.maps) === v1Maps32,
+    'A 区不可用时 loadVault 自动从备份区恢复上一份完整映射');
+ok(Object.keys(recovered32).indexOf('recovered') === -1,
+    '恢复标记不可枚举，不会被写回文档');
+
+// (d) 首次保存失败（没有旧数据可回滚）：清空标记，loadVault 按新文档返回空表
+const firstSaveApp32 = new MockWPS();
+firstSaveApp32.setWriteHook(function (info) {
+    if (info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row >= 2) { return 'throw'; }
+    return null;
+});
+let svErrD32 = null;
+try { Engine.saveVault(firstSaveApp32, Engine.loadVault(firstSaveApp32)); } catch (e) { svErrD32 = e; }
+firstSaveApp32.clearWriteHook();
+ok(!!svErrD32 && /此前没有可用映射表/.test(svErrD32.message) && svErrD32.rollback.ok === true,
+    '首次保存失败 → 清空未完成写入：' + svErrD32.message);
+const firstLoaded32 = Engine.loadVault(firstSaveApp32);
+ok(firstLoaded32 && Object.keys(firstLoaded32.maps).length === 0,
+    '首次保存失败后 loadVault 不抛错、返回空表');
+
+// (e) 备份写入本身失败：A 区一个字节都不动
+const backupApp32 = new MockWPS();
+const backupVault32 = Engine.loadVault(backupApp32);
+backupVault32.maps['text|甲|1'] = { 's:甲': '甲1' };
+Engine.saveVault(backupApp32, backupVault32);
+const beforeMaps32 = JSON.stringify(backupVault32.maps);
+backupVault32.maps['text|甲|1']['s:乙'] = '甲2';
+backupApp32.setWriteHook(function (info) {
+    if (info.sheet === Engine.VAULT_SHEET && info.col === 2 && info.row >= 2) { return 'throw'; }
+    return null;
+});
+let svErrE32 = null;
+try { Engine.saveVault(backupApp32, backupVault32); } catch (e) { svErrE32 = e; }
+backupApp32.clearWriteHook();
+ok(!!svErrE32 && /备份未成功/.test(svErrE32.message), '备份区写失败 → 明确报错：' + (svErrE32 && svErrE32.message));
+ok(JSON.stringify(Engine.loadVault(backupApp32).maps) === beforeMaps32,
+    '备份失败时 A 区原数据未改动');
+
+// (f) 正常再保存一次：A 区是新数据，B 区保留上一份
+atomApp32.setWriteHook(null);
+Engine.saveVault(atomApp32, atomVault32);
+const healed32 = Engine.loadVault(atomApp32);
+ok(JSON.stringify(healed32.maps) === JSON.stringify(atomVault32.maps) && healed32.recovered === undefined,
+    'A 区校验通过后读取的是新数据');
+ok(String(atomApp32.getCell(Engine.VAULT_SHEET, 1, 2)).indexOf('备份') >= 0,
+    'B1 写入备份标记');
+// 直接改坏 A 区：loadVault 用备份恢复"上一份"（不含新增记录）
+atomApp32.grid[Engine.VAULT_SHEET + '!2,1'] = 'M1:corrupt';
+const fallback32 = Engine.loadVault(atomApp32);
+ok(fallback32.recovered === true && JSON.stringify(fallback32.maps) === savedMaps32,
+    'A 区被改坏 → 从备份恢复上一份完整映射');
+
+/* ---------- 33. revert 只按登记区域与记录签名还原 ---------- */
+console.log('\n[33] revert 只处理 vault.ranges 记录过的矩形，并按记录的签名找桶');
+// (a) 两个数值桶值域重叠：只选数据行、hasHeader=false 时，靠记录签名各自还原
+const sigApp33 = new MockWPS();
+const sigRows33 = [['工号', '成绩']];
+for (let i = 1; i <= 40; i++) { sigRows33.push([i, i]); }
+sigApp33.setTable('Sheet1', 1, 1, sigRows33);
+sigApp33.select('Sheet1', 1, 1, sigRows33.length, 2);
+const sigVault33 = Engine.loadVault(sigApp33);
+const sigModel33 = Engine.hydrate(Engine.analyze(sigApp33, {}), sigVault33);
+// 同值域、不同分布 → 两个签名不同、假值空间完全重叠（跨桶撞值）
+sigModel33.columns[0].cfg = { mode: 'number', dist: 'uniform', min: 1, max: 44, dec: 0, mean: 22, sd: 10, lambda: 22 };
+sigModel33.columns[1].cfg = { mode: 'number', dist: 'normal', min: 1, max: 44, dec: 0, mean: 22, sd: 10, lambda: 22 };
+const sigStats33 = Engine.applyMask(sigModel33, sigVault33, {});
+ok(sigStats33.written === 80, '两列各 40 格全部映射，实际 ' + sigStats33.written);
+ok(Object.keys(sigVault33.maps).length === 2, '两种签名各一个桶：' + Object.keys(sigVault33.maps).join(' | '));
+sigApp33.select('Sheet1', 2, 1, 40, 2);   // 只选数据行、且不告诉引擎有表头
+const sigRevModel33 = Engine.analyze(sigApp33, { hasHeader: false });
+ok(sigRevModel33.top === 2 && sigRevModel33.firstDataRow === 0 && sigRevModel33.hasHeader === false,
+    '前提：选区从第 2 行开始、按无表头分析');
+const sigRev33 = Engine.revert(sigRevModel33, sigVault33, {});
+ok(sigRev33.hit === 80 && sigRev33.ambiguous === 0,
+    '80 格全部按记录签名还原（hit=' + sigRev33.hit + '，ambiguous=' + sigRev33.ambiguous + '）');
+let sigOk33 = true;
+for (let r = 2; r <= 41; r++) {
+    if (sigApp33.getCell('Sheet1', r, 1) !== r - 1) { sigOk33 = false; }
+    if (sigApp33.getCell('Sheet1', r, 2) !== r - 1) { sigOk33 = false; }
+}
+ok(sigOk33, '两列 40 行逐个精确还原成 1~40');
+ok(sigVault33.ranges.length === 0, '还原后区域记录清空');
+const sigAgain33 = Engine.revert(Engine.analyze(sigApp33, { hasHeader: false }), sigVault33, {});
+ok(sigAgain33.hit === 0, '第二次 revert 是 no-op，实际 hit=' + sigAgain33.hit);
+
+// (b) 未登记过的列不还原：C 列里的"姓名假值"保持不动
+const scopeApp33 = freshApp();
+const scopeVault33 = Engine.loadVault(scopeApp33);
+const scopedModel33 = Engine.hydrate(Engine.analyze(scopeApp33, {}), scopeVault33);
+scopedModel33.columns = scopedModel33.columns.slice(0, 2);   // 只映射姓名、手机号
+Engine.applyMask(scopedModel33, scopeVault33, {});
+const fakeName33 = scopeApp33.getCell('Sheet1', 2, 1);
+ok(scopeVault33.ranges.length === 2, '只登记了两列区域');
+scopeApp33.setTable('Sheet1', 2, 3, [[fakeName33]]);   // 把手里的姓名假值塞进未映射的 C 列
+const scopeRev33 = Engine.revert(Engine.analyze(scopeApp33, {}), scopeVault33, {});
+ok(scopeApp33.getCell('Sheet1', 2, 3) === fakeName33,
+    '未登记过的 C 列保持不动：' + scopeApp33.getCell('Sheet1', 2, 3));
+ok(scopeApp33.getCell('Sheet1', 2, 1) === names[0], '登记过的 A 列照常还原');
+ok(scopeRev33.hit === 20 && scopeRev33.cells === 20,
+    '只处理登记区域内的 20 格（hit=' + scopeRev33.hit + '，cells=' + scopeRev33.cells + '）');
+
+// (c) 只还原选区覆盖的行，区域记录按矩形差集裁剪
+const trimApp33 = freshApp();
+const trimVault33 = Engine.loadVault(trimApp33);
+trimApp33.select('Sheet1', 1, 1, 4, 1);
+Engine.applyMask(Engine.hydrate(Engine.analyze(trimApp33, {}), trimVault33), trimVault33, {});
+ok(trimVault33.ranges.length === 1 && trimVault33.ranges[0].r1 === 2 && trimVault33.ranges[0].r2 === 4,
+    '映射 3 个数据行 → 一条区域记录：' + JSON.stringify(trimVault33.ranges[0]));
+trimApp33.select('Sheet1', 1, 1, 3, 1);
+const trimRev33 = Engine.revert(Engine.analyze(trimApp33, {}), trimVault33, {});
+ok(trimRev33.hit === 2, '只还原选区覆盖的 2 格，实际 ' + trimRev33.hit);
+ok(trimVault33.ranges.length === 1 && trimVault33.ranges[0].r1 === 4 && trimVault33.ranges[0].r2 === 4,
+    '区域记录按矩形差集裁剪到剩余行：' + JSON.stringify(trimVault33.ranges[0]));
+const trimRevAgain33 = Engine.revert(Engine.analyze(trimApp33, {}), trimVault33, {});
+ok(trimRevAgain33.hit === 0, '第二遍 revert 不再处理已还原的行');
+ok(trimApp33.getCell('Sheet1', 2, 1) === names[0] && trimApp33.getCell('Sheet1', 3, 1) === names[1],
+    '前两行已还原');
+
+// (d) 区域记录的合并 / 去重 / 矩形差集
+const unitRanges33 = { ranges: [] };
+const RR33 = Engine._internal.recordRange;
+const FR33 = Engine._internal.forgetRanges;
+RR33(unitRanges33, 'S', 2, 1, 4, 1, 'text|A|1');
+RR33(unitRanges33, 'S', 2, 1, 4, 1, 'text|A|1');
+ok(unitRanges33.ranges.length === 1, '相同矩形不重复登记');
+RR33(unitRanges33, 'S', 5, 1, 6, 1, 'text|A|1');
+ok(unitRanges33.ranges.length === 1 && unitRanges33.ranges[0].r1 === 2 && unitRanges33.ranges[0].r2 === 6,
+    '同列同签名的相邻行合并：' + JSON.stringify(unitRanges33.ranges[0]));
+RR33(unitRanges33, 'S', 2, 1, 3, 1, 'text|B|1');
+ok(unitRanges33.ranges.length === 2, '不同签名不合并（同一列新旧映射并存）');
+FR33(unitRanges33, 'S', 4, 1, 5, 1);
+const colA33 = unitRanges33.ranges.filter(function (rec) { return rec.c1 === 1 && rec.sigs && rec.sigs['1'] === 'text|A|1'; });
+ok(colA33.length === 2 && colA33[0].r2 === 3 && colA33[1].r1 === 6,
+    '矩形差集裁剪成两段：' + JSON.stringify(colA33));
+ok(colA33.every(function (rec) { return rec.sigs['1'] === 'text|A|1'; }), '裁剪后的记录保留每列签名');
+RR33(unitRanges33, 'S', 2, 2, 3, 2, 'text|C|1');
+FR33(unitRanges33, 'S', 2, 1, 6, 1);
+ok(unitRanges33.ranges.length === 1 && unitRanges33.ranges[0].c1 === 2,
+    '扣掉第 1 列时第 2 列记录保留：' + JSON.stringify(unitRanges33.ranges));
+
+/* ---------- 34. 全局兜底只在唯一映射时使用 ---------- */
+console.log('\n[34] 全局兜底只在假值唯一时使用，冲突计入 ambiguous');
+const ambApp34 = new MockWPS();
+ambApp34.setTable('Sheet1', 1, 1, [['姓名'], ['X1']]);
+ambApp34.select('Sheet1', 1, 1, 2, 1);
+const ambVault34 = Engine.loadVault(ambApp34);
+ambVault34.maps['text|甲|1'] = { 's:甲原': 'X1' };
+ambVault34.maps['text|乙|1'] = { 's:乙原': 'X1' };
+ambVault34.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 2, c2: 1 }];   // 旧格式区域，没有签名
+const ambRev34 = Engine.revert(Engine.analyze(ambApp34, {}), ambVault34, {});
+ok(ambApp34.getCell('Sheet1', 2, 1) === 'X1', '跨桶二义的假值保持不动');
+ok(ambRev34.hit === 0 && ambRev34.ambiguous === 1,
+    '冲突计入 ambiguous，不猜原值：hit=' + ambRev34.hit + ' ambiguous=' + ambRev34.ambiguous);
+ok(ambVault34.ranges.length === 0, '处理过的旧区域仍按矩形扣掉');
+
+const amb2App34 = new MockWPS();
+amb2App34.setTable('Sheet1', 1, 1, [['姓名'], ['X1']]);
+amb2App34.select('Sheet1', 1, 1, 2, 1);
+const amb2Vault34 = Engine.loadVault(amb2App34);
+amb2Vault34.maps['text|甲|1'] = { 's:甲原': 'X1' };
+amb2Vault34.maps['text|乙|1'] = { 's:乙原': 'X1' };
+amb2Vault34.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 2, c2: 1, sigs: { '1': 'text|丙|1' } }];
+const amb2Rev34 = Engine.revert(Engine.analyze(amb2App34, {}), amb2Vault34, {});
+ok(amb2App34.getCell('Sheet1', 2, 1) === 'X1' && amb2Rev34.ambiguous === 1,
+    '记录签名对应桶缺失时也不走"先到先得"：ambiguous=' + amb2Rev34.ambiguous);
+
+/* ---------- 35. analyze 标记表头来源 ---------- */
+console.log('\n[35] analyze 的 headerAuto 标记');
+const autoApp35 = freshApp();
+const autoModel35 = Engine.analyze(autoApp35, {});
+ok(autoModel35.hasHeader === true && autoModel35.headerAuto === true,
+    '启发式判定表头 → headerAuto=true');
+const manual35 = Engine.analyze(autoApp35, { hasHeader: true });
+ok(manual35.hasHeader === true && manual35.headerAuto === false,
+    '用户指定有表头 → headerAuto=false');
+const manualNo35 = Engine.analyze(autoApp35, { hasHeader: false });
+ok(manualNo35.hasHeader === false && manualNo35.headerAuto === false && manualNo35.firstDataRow === 0,
+    '用户指定无表头 → headerAuto=false 且第一行就是数据');
+
+/* ---------- 36. 区间收窄再放宽后，旧区域仍能反映射 ---------- */
+console.log('\n[36] 区间收窄再放宽，absorb 不丢被区域引用的旧桶');
+function agesTable(from, to) {
+    var rows = [['年龄']];
+    for (var a = from; a <= to; a++) { rows.push([a]); }
+    return rows;
+}
+const app36 = new MockWPS();
+['Sheet2', 'Sheet3', 'Sheet4'].forEach(function (n) { app36.ActiveWorkbook.addSheet(n); });
+const ages1 = agesTable(20, 40), ages2 = agesTable(20, 46);
+const ages3 = agesTable(25, 30);
+app36.setTable('Sheet1', 1, 1, ages1);
+app36.setTable('Sheet2', 1, 1, ages2);
+app36.setTable('Sheet3', 1, 1, ages3);
+app36.setTable('Sheet4', 1, 1, ages2);
+function maskOn36(sheet, rows, override) {
+    app36.select(sheet, 1, 1, rows.length, 1);
+    var vault = Engine.loadVault(app36);
+    var model = Engine.analyze(app36, {});
+    Engine.hydrate(model, vault);
+    if (override) { override(model.columns[0]); }
+    var plan = Engine.prepareMask(model, vault);
+    Engine.saveVault(app36, vault);
+    Engine.writeMask(plan);
+    return model.columns[0].cfg;
+}
+maskOn36('Sheet1', ages1);
+const sigsAfter1 = Object.keys(Engine.loadVault(app36).maps);
+maskOn36('Sheet2', ages2);      // 放宽区间：旧桶被并入新桶，但 Sheet1 区域仍引用旧签名
+const vault36a = Engine.loadVault(app36);
+ok(vault36a.maps[sigsAfter1[0]] != null, '搬桶后仍保留被区域引用的旧桶：' + sigsAfter1[0]);
+app36.select('Sheet1', 1, 1, ages1.length, 1);
+const rev36a = Engine.revert(Engine.analyze(app36, {}), vault36a, {});
+var sheet1Vals = [];
+for (var r36 = 2; r36 <= ages1.length; r36++) { sheet1Vals.push(app36.getCell('Sheet1', r36, 1)); }
+ok(rev36a.hit === ages1.length - 1 && sheet1Vals.join(',') === ages1.slice(1).map(function (x) { return x[0]; }).join(','),
+    'Sheet1 仍能逐格还原：hit=' + rev36a.hit + ' ambiguous=' + rev36a.ambiguous);
+
+// 面板里手动收窄区间后映射 Sheet3，再用更大值域批次把区间放宽回去
+var narrowCfg36 = maskOn36('Sheet3', ages3, function (col) { col.cfg.min = 25; col.cfg.max = 31; });
+const narrowSig36 = Engine.sigOf(narrowCfg36);
+maskOn36('Sheet4', ages2);      // 放宽回原签名：收窄桶被并入，但 Sheet3 区域仍引用它
+const vault36b = Engine.loadVault(app36);
+ok(vault36b.maps[narrowSig36] != null, '收窄区间再被放宽后，Sheet3 的桶仍保留：' + narrowSig36);
+app36.select('Sheet3', 1, 1, ages3.length, 1);
+const rev36b = Engine.revert(Engine.analyze(app36, {}), vault36b, {});
+var sheet3Vals = [];
+for (var r36b = 2; r36b <= ages3.length; r36b++) { sheet3Vals.push(app36.getCell('Sheet3', r36b, 1)); }
+ok(sheet3Vals.join(',') === '25,26,27,28,29,30',
+    'Sheet3 收窄批次全部还原为原值：' + sheet3Vals.join(','));
+ok(rev36b.hit === 6 && rev36b.ambiguous === 0, 'hit=6 ambiguous=0：' + JSON.stringify({ hit: rev36b.hit, ambiguous: rev36b.ambiguous }));
+
+/* ---------- 37. 记录签名对应的桶消失时，绝不跨桶猜值 ---------- */
+console.log('\n[37] 记录签名对应的桶不存在时保持不动，计入 ambiguous');
+const app37 = new MockWPS();
+app37.setTable('Sheet1', 1, 1, [['姓名'], ['X1']]);
+app37.select('Sheet1', 1, 1, 2, 1);
+const vault37 = Engine.loadVault(app37);
+vault37.maps['text|甲|1'] = { 's:甲原': 'X1' };   // 全局唯一映射，但与本区域签名无关
+vault37.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 2, c2: 1, sigs: { '1': 'text|已丢弃|1' } }];
+const rev37 = Engine.revert(Engine.analyze(app37, {}), vault37, {});
+ok(app37.getCell('Sheet1', 2, 1) === 'X1', '桶缺失时不把别的桶的原值猜回来');
+ok(rev37.hit === 0 && rev37.ambiguous === 1,
+    '计入 ambiguous 而不是写错：hit=' + rev37.hit + ' ambiguous=' + rev37.ambiguous);
+ok(vault37.ranges.length === 0, '这条区域仍按矩形扣掉，不会反复提示');
+
+/* ---------- 38. 宿主静默吞掉单元格写入：映射失败且表格不动 ---------- */
+console.log('\n[38] 写单元格被宿主静默吞掉时 loud 失败，不假装成功');
+const app38 = new MockWPS();
+app38.setTable('Sheet1', 1, 1, [['年龄'], [20], [21], [22]]);
+app38.select('Sheet1', 1, 1, 4, 1);
+const vault38 = Engine.loadVault(app38);
+const plan38 = Engine.prepareMask(Engine.analyze(app38, {}), vault38);
+Engine.saveVault(app38, vault38);
+app38.setWriteHook(function (info) { return info.sheet === 'Sheet1' ? 'ignore' : null; });
+let err38 = null;
+try { Engine.writeMask(plan38); } catch (e) { err38 = e; }
+app38.clearWriteHook();
+ok(err38 != null && /读回不一致/.test(err38.message), '读回发现没写进去：' + (err38 && err38.message));
+ok(app38.getCell('Sheet1', 2, 1) === 20 && app38.getCell('Sheet1', 4, 1) === 22, '表格仍是原值，没有"看起来脱敏了"');
+ok(plan38.vault.ranges.length === 0, '失败后区域记录回到写入前，重试不会误跳过');
+Engine.saveVault(app38, plan38.vault);
+const plan38b = Engine.prepareMask(Engine.analyze(app38, {}), Engine.loadVault(app38));
+const stats38b = Engine.writeMask(plan38b);
+ok(stats38b.written === 3, '故障消失后重试能正常映射：written=' + stats38b.written);
+ok(typeof app38.getCell('Sheet1', 2, 1) === 'number' && app38.getCell('Sheet1', 2, 1) !== 20,
+    '重试后单元格写入假值：' + app38.getCell('Sheet1', 2, 1));
+
+/* ---------- 39. 宿主静默吞掉反映射写入：不裁剪区域，可重试 ---------- */
+console.log('\n[39] 反映射被宿主静默吞掉时不裁剪区域，可重试');
+const app39 = new MockWPS();
+app39.setTable('Sheet1', 1, 1, [['年龄'], [20], [21], [22]]);
+app39.select('Sheet1', 1, 1, 4, 1);
+const vault39 = Engine.loadVault(app39);
+Engine.writeMask(Engine.prepareMask(Engine.analyze(app39, {}), vault39));
+Engine.saveVault(app39, vault39);
+const fake39 = app39.getCell('Sheet1', 2, 1);
+ok(fake39 !== 20, '先正常映射一格：20 → ' + fake39);
+const vault39b = Engine.loadVault(app39);
+app39.setWriteHook(function (info) { return info.sheet === 'Sheet1' ? 'ignore' : null; });
+let err39 = null;
+try { Engine.revert(Engine.analyze(app39, {}), vault39b, {}); } catch (e) { err39 = e; }
+app39.clearWriteHook();
+ok(err39 != null && /读回不一致/.test(err39.message), '反映射读回失败被 loud 拒绝：' + (err39 && err39.message));
+ok(vault39b.ranges.length === 1, '区域记录没有被裁剪，重试还能还原：' + JSON.stringify(vault39b.ranges));
+ok(app39.getCell('Sheet1', 2, 1) === fake39, '失败时表格没有被部分改写');
+const rev39 = Engine.revert(Engine.analyze(app39, {}), Engine.loadVault(app39), {});
+const back39 = [app39.getCell('Sheet1', 2, 1), app39.getCell('Sheet1', 3, 1), app39.getCell('Sheet1', 4, 1)];
+ok(rev39.hit === 3 && back39.join(',') === '20,21,22', '重试后逐格还原：' + back39.join(','));
+
+
+/* ---------- 40. 区域还原完后，保存时回收不再被引用的签名桶 ---------- */
+console.log('\n[40] 保存时回收不再被区域引用的旧签名桶');
+const app40 = new MockWPS();
+app40.ActiveWorkbook.addSheet('Sheet2');
+function agesRows40(from, to) {
+    const rows = [['年龄']];
+    for (let a = from; a <= to; a++) { rows.push([a]); }
+    return rows;
+}
+const ages40a = agesRows40(20, 40), ages40b = agesRows40(20, 46);
+app40.setTable('Sheet1', 1, 1, ages40a);
+app40.setTable('Sheet2', 1, 1, ages40b);
+function mask40(sheet, rows) {
+    app40.select(sheet, 1, 1, rows.length, 1);
+    const vault = Engine.loadVault(app40);
+    const model = Engine.analyze(app40, {});
+    Engine.hydrate(model, vault);
+    const plan = Engine.prepareMask(model, vault);
+    Engine.saveVault(app40, vault);
+    Engine.writeMask(plan);
+}
+mask40('Sheet1', ages40a);
+const sigs40a = Object.keys(Engine.loadVault(app40).maps);
+ok(sigs40a.length === 1, '先映射 Sheet1，只有 1 个桶：' + sigs40a.join(','));
+mask40('Sheet2', ages40b);   // 放宽区间：旧桶被并入新桶，但 Sheet1 区域仍引用旧签名
+const maps40b = Engine.loadVault(app40).maps;
+ok(Object.keys(maps40b).length === 2 && maps40b[sigs40a[0]] != null,
+    '搬桶后旧桶仍在（Sheet1 区域还引用）：' + Object.keys(maps40b).join(','));
+app40.select('Sheet1', 1, 1, ages40a.length, 1);
+const vault40 = Engine.loadVault(app40);
+const rev40 = Engine.revert(Engine.analyze(app40, {}), vault40, {});
+ok(rev40.hit === ages40a.length - 1, 'Sheet1 先正常还原：hit=' + rev40.hit);
+Engine.saveVault(app40, vault40);
+const maps40c = Engine.loadVault(app40).maps;
+ok(Object.keys(maps40c).length === 1 && maps40c[sigs40a[0]] == null,
+    'Sheet1 区域还原完后保存，旧桶被回收，只剩 Sheet2 在用的桶：' + Object.keys(maps40c).join(','));
+app40.select('Sheet2', 1, 1, ages40b.length, 1);
+const rev40b = Engine.revert(Engine.analyze(app40, {}), Engine.loadVault(app40), {});
+ok(rev40b.hit === ages40b.length - 1, '回收旧桶不影响 Sheet2 还原：hit=' + rev40b.hit);
+var sheet2Vals40 = [];
+for (var r40 = 2; r40 <= ages40b.length; r40++) { sheet2Vals40.push(app40.getCell('Sheet2', r40, 1)); }
+ok(sheet2Vals40.join(',') === ages40b.slice(1).map(function (x) { return x[0]; }).join(','),
+    'Sheet2 逐格还原正确');
+
+/* ---------- 41. 旧文档迁移撞值丢记录后，旧格式区域不猜原值 ---------- */
+console.log('\n[41] 旧文档迁移撞值后，旧格式区域宁可不还原也不猜错');
+const app41 = new MockWPS();
+app41.setTable('Sheet1', 1, 1, [['姓名'], ['姓名3']]);
+const legacy41 = {
+    settings: {},
+    maps: {
+        'text|zh|姓名|1': { 's:张三': '姓名3' },
+        'text|en|姓名|1': { 's:李四': '姓名3' }
+    },
+    ranges: [{ s: 'Sheet1', r1: 2, c1: 1, r2: 2, c2: 1 }]
+};
+Engine.saveVault(app41, legacy41);
+const loaded41 = Engine.loadVault(app41);
+ok(loaded41.migrated && loaded41.migrated.dropped === 1,
+    '迁移搬桶撞值丢 1 条记录：' + JSON.stringify(loaded41.migrated));
+app41.select('Sheet1', 1, 1, 2, 1);
+const rev41 = Engine.revert(Engine.analyze(app41, {}), loaded41, {});
+ok(app41.getCell('Sheet1', 2, 1) === '姓名3', '旧格式区域保持假值，不写别人的原值');
+ok(rev41.hit === 0 && rev41.ambiguous === 1,
+    '计入 ambiguous：hit=' + rev41.hit + ' ambiguous=' + rev41.ambiguous);
+
+// 对照：迁移没有丢记录时，旧格式区域的唯一映射仍可正常还原
+const app41b = new MockWPS();
+app41b.setTable('Sheet1', 1, 1, [['姓名'], ['姓名3']]);
+const legacy41b = {
+    settings: {},
+    maps: { 'text|zh|姓名|1': { 's:张三': '姓名3' } },
+    ranges: [{ s: 'Sheet1', r1: 2, c1: 1, r2: 2, c2: 1 }]
+};
+Engine.saveVault(app41b, legacy41b);
+const loaded41b = Engine.loadVault(app41b);
+ok(!loaded41b.migrated || loaded41b.migrated.dropped === 0, '对照文档迁移无丢失');
+app41b.select('Sheet1', 1, 1, 2, 1);
+const rev41b = Engine.revert(Engine.analyze(app41b, {}), loaded41b, {});
+ok(rev41b.hit === 1 && app41b.getCell('Sheet1', 2, 1) === '张三', '无丢失的旧文档仍能安全还原');
+
+/* ---------- 42. 宽数值区间快速返回，不物化大数组 ---------- */
+console.log('\n[42] 跨百万的数值区间不物化大数组');
+const app42 = new MockWPS();
+app42.setTable('Sheet1', 1, 1, [['编号'], [1], [2000000]]);
+app42.select('Sheet1', 1, 1, 3, 1);
+const t42 = Date.now();
+const vault42 = Engine.loadVault(app42);
+Engine.writeMask(Engine.prepareMask(Engine.analyze(app42, {}), vault42));
+const elapsed42 = Date.now() - t42;
+ok(elapsed42 < 2000, '跨度 200 万的编号列映射快速完成：' + elapsed42 + 'ms');
+ok(typeof app42.getCell('Sheet1', 2, 1) === 'number' && typeof app42.getCell('Sheet1', 3, 1) === 'number' &&
+    app42.getCell('Sheet1', 2, 1) !== 1 && app42.getCell('Sheet1', 3, 1) !== 2000000,
+    '两格都换成了数字假值：' + app42.getCell('Sheet1', 2, 1) + ',' + app42.getCell('Sheet1', 3, 1));
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

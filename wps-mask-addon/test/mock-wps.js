@@ -173,6 +173,22 @@ function makeRange(sheet, row, col, rows, cols) {
             return out;
         },
         set: function (val) {
+            // 写入钩子：测试注入宿主故障（抛错 / 静默吞掉赋值），默认不存在
+            var hook = sheet.app._writeHook;
+            if (typeof hook === 'function') {
+                var action = hook({
+                    sheet: sheet.Name,
+                    row: row, col: col, rows: rows, cols: cols,
+                    single: rows === 1 && cols === 1 && !Array.isArray(val),
+                    value: val
+                });
+                if (action === 'throw') {
+                    throw new Error('模拟宿主写入失败：' + sheet.Name + '!' + row + ',' + col);
+                }
+                if (action === 'ignore') {
+                    return;   // 模拟宿主静默吞掉赋值：不报错，但单元格没变
+                }
+            }
             if (rows === 1 && cols === 1 && !Array.isArray(val)) {
                 sheet.app.grid[sheet.Name + '!' + row + ',' + col] = val;
                 if (val !== null && val !== undefined && val !== '') {
@@ -195,6 +211,15 @@ function makeRange(sheet, row, col, rows, cols) {
 
     return rng;
 }
+
+// 注入宿主写入故障：fn(info) 返回 'throw' 抛错、'ignore' 静默吞掉赋值，其它值正常写入
+MockWPS.prototype.setWriteHook = function (fn) {
+    this._writeHook = typeof fn === 'function' ? fn : null;
+};
+
+MockWPS.prototype.clearWriteHook = function () {
+    this._writeHook = null;
+};
 
 MockWPS.prototype.setTable = function (sheetName, top, left, data) {
     var sheet = this.sheets.filter(function (s) { return s.Name === sheetName; })[0];
