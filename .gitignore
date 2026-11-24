@@ -8,7 +8,12 @@ test.xlsx
 # 任务窗格离线预览与截图：由 tools/preview-pane.mjs 生成
 wps-mask-addon/wpsmask_1.0.0/taskpane/__preview.html
 wps-mask-addon/wpsmask_1.0.0/taskpane/__preview.js
+pane-*.png
 .shots/
+
+# Windows 资源管理器生成的垃圾文件
+Thumbs.db
+desktop.ini
 
 # 图标光栅化时的临时页面
 wps-mask-addon/assets/.icons-tmp/
