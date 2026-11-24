@@ -277,5 +277,103 @@ for (let round = 0; round < 8; round++) {
 }
 ok(tightBad === 0, '40 个值占满 40 个整数槽：8 轮全部成功、无不动点、列内不重复（失败 ' + tightBad + ' 轮）');
 
+/* ---------- 17. 混合账号列：手机 / 邮箱 / 固话 / 字母账号 / 中文 混在一列 ---------- */
+console.log('\n[17] 混合标识列按各自的形态映射');
+const mixOrig = [
+    '13800138000', 'zhang.wei@corp.com', '010-88886666', 'kf_2024_001',
+    '0755-12345678', 'li.na@corp.com', 'wxid_abc123', '王小明',
+    '021-65432100', 'zhao@example.org'
+];
+const mixApp = new MockWPS();
+mixApp.setTable('Sheet1', 1, 1, [['账号']].concat(mixOrig.map(v => [v])));
+mixApp.select('Sheet1', 1, 1, mixOrig.length + 1, 1);
+const mixModel0 = Engine.analyze(mixApp, {});
+ok(mixModel0.hasHeader === true, '混合列首行仍识别为表头');
+ok(Engine.guessMode('账号', mixModel0.columns[0].values) === 'mixed', '混合列被识别为 mixed');
+const mixVault = Engine.loadVault(mixApp);
+const mixStats = Engine.applyMask(Engine.hydrate(mixModel0, mixVault), mixVault, {});
+const mixOut = [];
+for (let r = 2; r <= mixOrig.length + 1; r++) { mixOut.push(mixApp.getCell('Sheet1', r, 1)); }
+ok(mixStats.written === mixOrig.length, mixOrig.length + ' 格全部替换，实际 ' + mixStats.written);
+ok(mixOut.every((v, i) => v !== mixOrig[i]), '没有一个值等于它自己');
+ok(new Set(mixOut).size === mixOut.length, '列内不重复');
+ok(/^1[3-9]\d{9}$/.test(mixOut[0]), '手机号仍是合法手机号：' + mixOut[0]);
+ok(/@corp\.com$/.test(mixOut[1]) && !/^zhang/.test(mixOut[1]), '邮箱保留域名、换掉本地部分：' + mixOut[1]);
+ok(/^010-\d{8}$/.test(mixOut[2]), '固话保留区号与位数：' + mixOut[2]);
+ok(/^[A-Za-z]{2}_\d{4}_\d{3}$/.test(mixOut[3]) && mixOut[3].length === mixOrig[3].length,
+    '字母数字账号按原形态逐字替换：' + mixOut[3]);
+ok(/^0755-\d{8}$/.test(mixOut[4]) && /^021-\d{8}$/.test(mixOut[8]), '另外两个固话同样保形');
+ok(/^账号\d{4}$/.test(mixOut[7]), '中文值回落到「字段名+数字」：' + mixOut[7]);
+ok(/@example\.org$/.test(mixOut[9]), '不同域名的邮箱各自保留自己的域名：' + mixOut[9]);
+const mixBack = Engine.revert(Engine.hydrate(Engine.analyze(mixApp, {}), mixVault), mixVault, {});
+ok(mixBack.hit === mixOrig.length, '反映射命中 ' + mixBack.hit + ' 格');
+let mixOk = true;
+for (let i = 0; i < mixOrig.length; i++) {
+    if (mixApp.getCell('Sheet1', i + 2, 1) !== mixOrig[i]) { mixOk = false; }
+}
+ok(mixOk, '十个值逐个精确还原');
+
+/* ---------- 18. used 的键格式必须和写入时一致（曾导致 6% 的重号） ---------- */
+console.log('\n[18] 生成器认可 keyOf 形式的占位');
+const usedProbe = {};
+for (let i = 0; i < 99; i++) { usedProbe['s:X' + String(i).padStart(2, '0')] = true; }
+const only = Engine._internal.genText({ prefix: 'X', digits: 2 }, 'zzz', usedProbe);
+ok(only === 'X99', '只剩 X99 时就必须给出 X99，实际 ' + only);
+
+const dupApp = new MockWPS();
+const dupRows = [['姓名']];
+for (let i = 0; i < 40; i++) { dupRows.push(['名字' + i]); }
+dupApp.setTable('Sheet1', 1, 1, dupRows);
+dupApp.select('Sheet1', 1, 1, dupRows.length, 1);
+const dupVault = Engine.loadVault(dupApp);
+const dupModel = Engine.hydrate(Engine.analyze(dupApp, {}), dupVault);
+dupModel.columns[0].cfg = { mode: 'text', lang: 'zh', prefix: 'X', digits: 2 };
+Engine.applyMask(dupModel, dupVault, {});
+const dupOut = [];
+for (let r = 2; r <= dupRows.length; r++) { dupOut.push(dupApp.getCell('Sheet1', r, 1)); }
+ok(new Set(dupOut).size === dupOut.length,
+    '40 个值塞进 100 个后缀位（旧代码几乎必有重号）也不重复，实际 ' + new Set(dupOut).size + ' 个不同');
+
+/* ---------- 19. 单一形态的列不受影响 ---------- */
+console.log('\n[19] 单一形态的列保持原有识别');
+ok(Engine.guessMode('订单号', ['SO-2024-0001', 'SO-2024-0002']) === 'text', '纯字母数字列仍按文本处理');
+ok(Engine.guessMode('备注', ['老客户', '待跟进']) === 'text', '纯中文列仍是文本');
+ok(Engine.guessMode('工号', [1001, 1002, 1003]) === 'number', '纯数字列仍是数字');
+ok(Engine.guessMode('手机号', ['13800138000', '13912345678']) === 'phone', '纯手机号列仍是手机号');
+
+/* ---------- 20. 前导零是格式的一部分，不能丢 ---------- */
+console.log('\n[20] 纯数字账号的前导零原样留住');
+const gMix = v => Engine._internal.genMixed({ mode: 'mixed', prefix: '账号', suffixLen: 4 }, v, {});
+let zeroBad = 0;
+for (let i = 0; i < 200; i++) {
+    const out = gMix('000123');
+    if (!/^000\d{3}$/.test(out) || out === '000123') { zeroBad++; }
+}
+ok(zeroBad === 0, '000123 两百次都是 000 开头的六位数，异常 ' + zeroBad);
+const allZero = gMix('000000');
+ok(/^0{5}\d$/.test(allZero), '000000 仍是六位、仍以 0 开头：' + allZero);
+const twoDigit = gMix('01');
+ok(/^0\d$/.test(twoDigit), '两位编码 01 仍给两位、仍以 0 开头：' + twoDigit);
+const oneDigit = gMix('0');
+ok(/^账号\d{4}$/.test(oneDigit), '单个数字太短，按文本兜底（已知取舍）：' + oneDigit);
+ok(/^[1-9]\d{5}$/.test(gMix('123456')), '本来没有前导零的不会凭空长出前导零');
+
+const zipApp = new MockWPS();
+const zipRows = [['账号'], ['000123'], ['li.na@corp.com'], ['13800138000'], ['020-88997766']];
+zipApp.setTable('Sheet1', 1, 1, zipRows);
+zipApp.select('Sheet1', 1, 1, zipRows.length, 1);
+const zipVault = Engine.loadVault(zipApp);
+const zipModel = Engine.analyze(zipApp, {});
+ok(Engine.guessMode('账号', zipModel.columns[0].values) === 'mixed', '带前导零的混合列仍判为 mixed');
+Engine.applyMask(Engine.hydrate(zipModel, zipVault), zipVault, {});
+const zipCel = r => zipApp.getCell('Sheet1', r, 1);
+ok(/^000\d{3}$/.test(zipCel(2)), '写入后前导零还在：' + zipCel(2));
+ok(/@corp\.com$/.test(zipCel(3)) && /^1[3-9]\d{9}$/.test(zipCel(4)) && /^020-/.test(zipCel(5)),
+    '同一列的其它形态照旧保形');
+Engine.revert(Engine.hydrate(Engine.analyze(zipApp, {}), zipVault), zipVault, {});
+let zipOk = true;
+for (let i = 0; i < 4; i++) { if (zipCel(i + 2) !== zipRows[i + 1][0]) { zipOk = false; } }
+ok(zipOk, '四个值（含前导零的那个）逐个还原');
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

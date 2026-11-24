@@ -53,7 +53,8 @@
 
     function modeOptions(cur) {
         // 前缀「映射为」在页头与按钮上已经说过一次，这里只留结果，免得十行重复十遍
-        var list = [['phone', '手机号'], ['number', '数字'], ['text', '文本'], ['keep', '不处理']];
+        var list = [['phone', '手机号'], ['number', '数字'], ['text', '文本'],
+            ['mixed', '混合'], ['keep', '不处理']];
         var out = '';
         for (var i = 0; i < list.length; i++) {
             out += '<option value="' + list[i][0] + '"' + (list[i][0] === cur ? ' selected' : '') + '>' + list[i][1] + '</option>';
@@ -81,6 +82,10 @@
         }
         if (cfg.mode === 'keep') {
             return '<div class="hint">保持原值，不做处理。</div>';
+        }
+        if (cfg.mode === 'mixed') {
+            return '<div class="hint">每个值按它自己的形态换：手机号仍是合法手机号，邮箱只换 @ 前面、' +
+                '域名保留，固话保留区号与位数，字母数字账号按原长度换，其他文本用「字段名+数字」。</div>';
         }
         if (cfg.mode === 'number') {
             var hidden = function (when) { return cfg.dist === when ? '' : ' style="display:none"'; };
@@ -193,7 +198,7 @@
 
     function defaultForMode(mode, col) {
         var auto = E.defaultCfg(col.header, col.values);
-        if (mode === 'phone' || mode === 'keep') { return { mode: mode }; }
+        if (mode === 'phone' || mode === 'keep' || mode === 'mixed') { return { mode: mode }; }
         if (mode === 'number') {
             if (auto.mode === 'number') { return auto; }
             return { mode: 'number', dist: 'uniform', min: 0, max: 1000, dec: 0, mean: 500, sd: 150, lambda: 500 };
@@ -217,7 +222,7 @@
         var mode = modeEl ? modeEl.value : (col.cfg.mode || 'text');
         var cfg;
 
-        if (mode === 'phone' || mode === 'keep') {
+        if (mode === 'phone' || mode === 'keep' || mode === 'mixed') {
             cfg = { mode: mode };
         } else if (mode === 'number') {
             var distEl = card.querySelector('.dist');

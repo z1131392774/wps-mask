@@ -9,10 +9,10 @@ Select a range, and every value in it is replaced by fake data that still looks 
 | Requirement | How it is implemented |
 | --- | --- |
 | Pick a range, map its data to random values | Ribbon tab "数据脱敏" → mapping panel, or the panel-free "快速映射" button |
-| One-to-one: the same value always maps to the same result | The mapping table persists `original → mapped`. A repeat original always resolves to the recorded entry; distinct originals are forced onto distinct results (retry on collision, hard error when the value space is too small instead of a silent duplicate) |
-| Two kinds of mapped value: number and text | "Map to" dropdown per column: phone, number, text, leave alone |
+| One-to-one: the same value always maps to the same result | The table stores `original → mapped`; a repeat original resolves to its recorded entry, and distinct originals are forced onto distinct results — retry on collision, hard error when the value space is too small rather than a silent duplicate |
+| Two kinds of mapped value: number and text | "Map to" dropdown per column: phone, number, text, mixed, leave alone |
 | Numbers take parameters, uniform by default | Uniform (default), normal (mean/sd, out-of-range folded back into the interval), exponential (λ sets the decay); bounds and decimal places are editable |
-| Phone numbers must be valid | Real prefixes (130–199) plus 8 random digits, `1[3-9]` first and 11 digits total, unique within the column, never equal to the original |
+| Phone numbers must be valid | `1[3-9]` plus 9 digits drawn from the real prefix ranges (130–199), unique within the column and never equal to the original |
 | Text is a prefix plus a random numeric suffix | Chinese prefix (field name by default, e.g. 姓名9527) or English prefix (built-in word list: 姓名→Name, 地址→Address, and so on, or type your own); suffix length 1–8 |
 | Auto-detect the field name and type | Header matched against 手机/电话/phone/tel → phone; ≥60% of values shaped like a mobile number → phone; ≥80% numeric → number; everything else → text with the field name as prefix. Whole-column and whole-row selections resolve the field name correctly |
 | One-click reverse mapping, mapping stored encrypted | "反映射回原值" looks each cell up in the encrypted table and writes the original back, preserving number/text type and blanks; the table is AES-128-CBC ciphertext in a hidden worksheet |
@@ -67,13 +67,15 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 
 ## Usage
 
-**Panel.** Select the range (whole column, whole row, or any block) and open "映射面板": it reads the selection itself and follows you when you move it, with "刷新选区" for a forced re-read. Each column gets a card: detected type and a sample value in the header, parameters beneath opened on demand. Check them, then "映射并写入" — the new values replace the range in place. "反映射回原值" puts the originals back.
+**Panel.** Select the range (whole column, whole row, or any block) and open "映射面板": it reads the selection itself and follows you as you move it, with "刷新选区" to force a re-read. Each column gets a card — detected type and a sample in the header, parameters beneath on demand — then "映射并写入" replaces the range in place, and "反映射回原值" puts the originals back.
 
-**Masking twice is safe.** A cell already holding a mapped value is skipped, and the status line names the columns. A partial mask followed by a whole-region mask therefore cannot map the same cells twice; to map the current values again, revert first.
+**Masking twice is safe.** A cell already holding a mapped value is skipped, and the status line names the columns, so masking a part and then the whole region cannot hit the same cell twice. To map the current values again, revert first.
 
-**Quick buttons.** "快速映射" processes the current selection using auto-detection or the remembered settings. Already-mapped cells are skipped here too; when no new cell is left it says so and writes nothing. "反映射" reverses the current selection directly.
+**Quick buttons.** "快速映射" uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none are left. "反映射" reverses the selection directly.
 
 **Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers.
+
+**Mixed columns.** An account column is rarely one thing: mobiles, emails, landlines, and order codes share it. Set it to "混合" and the shape is decided per cell — a mobile becomes a valid mobile; an email becomes `u` plus six digits with its domain kept; a landline keeps area code, separator, digit count, and extension; a digit run keeps its length and leading zero; a letter-digit code is re-lettered character by character (`kf_2024_001` → `ud_9309_739`); anything else falls back to "field name + digits". One-to-one holds, since the original stays the key and reverting ignores which shape produced the value. Two limits: the email domain stays visible, and a very short code such as `a1` can exhaust its shape space, in which case the add-in says so rather than repeat a value.
 
 ## Where the mapping lives, and how far the encryption goes
 
@@ -90,17 +92,18 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 
 - The AES implementation matches `node:crypto` byte for byte in both directions: empty string, Chinese, emoji, a 5,000-character body, tamper detection, IV randomness.
 - Engine: field detection, one-to-one and uniqueness, capacity errors, exact reverse mapping including types and blanks, whole-column and whole-row trimming, header toggle, ciphertext round-trip, remembered settings, stable mapping across a reopened document.
+- Mixed mode: each shape detected and replaced in kind (domain kept, area code kept, length and leading zero kept, letters re-lettered), ten mixed values reverted exactly, and single-shape columns still detected as before.
 - Panel: four cards rendered, distribution switch reveals its parameters, type switch rebuilds the card, mask, revert, header toggle, drop the table, and the no-selection error path.
 - Syntax check on every script, XML well-formedness of `ribbon.xml`.
 
 **Needs one run on a real device** — nothing in the local documentation set measures these; they follow official samples:
 
-1. Whether this WPS build accepts the `publish.xml` fields and the `enable` value. Test: the "数据脱敏" tab appears.
-2. **Whether the task pane page receives `window.Application`.** If the panel reports "未取到 WPS 应用对象", this build does not inject the host object into the pane; the fallback is the ribbon buttons, which run the same engine from the host page.
+1. Whether this build accepts the `publish.xml` fields and the `enable` value — test: the tab appears.
+2. **Whether the pane receives `window.Application`.** A panel reporting "未取到 WPS 应用对象" means the host object is not injected; the ribbon buttons are the fallback and run the same engine.
 3. Whether `CreateTaskPane` accepts a `file://`-style relative URL.
-4. The parameter form of `Worksheets.Add(undefined, lastSheet)` — the code falls back from `undefined` to `null` to no-argument before it reports a failure.
-5. Whether a very hidden sheet (`Visible = 2`) survives a save to `.xlsx`/`.et` and reads back.
-6. Performance and UI responsiveness at a hundred thousand rows.
+4. The parameter form of `Worksheets.Add(undefined, lastSheet)` — it falls back to `null`, then to no argument.
+5. Whether a very hidden sheet (`Visible = 2`) survives a save and reads back.
+6. Responsiveness at a hundred thousand rows.
 
 ## Troubleshooting
 
@@ -113,16 +116,17 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 | Numbers show as left-aligned text | Those cells were text-formatted and kept it. Change the cell format |
 | "区间容量不足" | The integer interval cannot hold that many distinct values (12 distinct amounts inside 1–5). Widen the bounds or add decimal places |
 | "解密失败" | `KEY_TEXT` changed, or the hidden table was edited by hand |
+| A mixed cell came back as "字段名+数字" though it looked like an account | It fits none of the five shapes — Chinese text, a one-character value, a code beginning with a digit such as `2024abc`, or one carrying punctuation other than `_ . -` and spaces. The text fallback is still one-to-one and reverts correctly |
 
 ## What the documentation set still lacks
 
 Ordered by importance; with these, the unverified items above become measured facts:
 
-1. **Add-in development as a whole:** the `wpsjs` toolchain (`create`, `debug`, `build --exe`, `publish`), project layout, `publish.xml` versus `jsplugins.xml` deployment, offline `.7z`/`.exe` packaging, and the permission differences between macros and add-ins.
-2. **`ribbon.xml` specification:** available controls (tab/group/button/toggleButton/dropDown/menu), every callback and its signature (`onLoad`, `onAction`, `getImage`, `getEnabled`, `getVisible`, `getLabel`, `getScreentip`), the `imageMso` value list, and behaviour differences between the `2006/01` and `2009/07` namespaces.
-3. **Web-side JSAPI versus macro API:** `window.Application` versus `wps.WpsApplication()`, the shape of `Range.Value2` and cross-context arrays (`instanceof Array` fails — this bit the engine once), `Selection`, `CreateTaskPane`/`GetTaskPane`/`ShowDialog`, `PluginStorage`, `ApiEvent`, `OAAssist`, and how a task pane talks to the host page.
-4. Async and synchronous semantics in an add-in, and the `DoEvents` equivalent for long loops.
-5. One official minimal project sample, including the real `publish.xml`, to serve as a regression baseline.
+1. **Add-in development as a whole:** the `wpsjs` toolchain (`create`, `debug`, `build`, `publish`), layout, `publish.xml` versus `jsplugins.xml`, offline packaging, and how add-in permissions differ from macros.
+2. **`ribbon.xml`:** available controls, every callback and its signature (`onLoad`, `onAction`, `getImage`, `getEnabled`, `getVisible`…), the `imageMso` list, and namespace differences between `2006/01` and `2009/07`.
+3. **Web JSAPI versus macro API:** `window.Application` versus `wps.WpsApplication()`, `Range.Value2` and cross-context arrays (`instanceof Array` fails — this bit the engine once), `CreateTaskPane`, `PluginStorage`, `ApiEvent`, and how a pane talks to its host page.
+4. Async semantics in an add-in, and the `DoEvents` equivalent for long loops.
+5. One official minimal sample carrying its real `publish.xml`, as a regression baseline.
 
 ## Tests
 

@@ -99,29 +99,60 @@ var MaskEngine = (function () {
 
     var PHONE_HEADER = /手机|手机号|电话|联系方式|联络|号码|mobile|phone|tel|cell|msisdn|contact/i;
     var MOBILE_BODY = /^1[3-9]\d{9}$/;
+    var EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+    // 固话：区号 0xx / 0xxx，可带分隔符，后面 7~8 位，可带分机
+    var LANDLINE_RE = /^(0\d{2,3})([-\s]?)(\d{7,8})(?:-(\d{1,6}))?$/;
+    var ALNUM_RE = /^[A-Za-z][A-Za-z0-9 _.-]*$/;
+    var PURE_DIGITS_RE = /^\d{2,}$/;
 
     function isMobileLike(s) {
         return MOBILE_BODY.test(String(s).replace(/\s|-/g, ''));
     }
 
-    function guessMode(header, samples) {
-        var h = header == null ? '' : String(header);
-        if (PHONE_HEADER.test(h)) { return 'phone'; }
+    // 一个值属于哪一类标识。混合列按它自己的形态生成，别把一个邮箱换成手机号。
+    function shapeOf(v) {
+        if (isBlank(v)) { return 'blank'; }
+        if (typeof v === 'number') { return 'digits'; }
+        var s = String(v).trim();
+        if (isMobileLike(s)) { return 'mobile'; }
+        if (EMAIL_RE.test(s)) { return 'email'; }
+        if (LANDLINE_RE.test(s)) { return 'landline'; }
+        if (PURE_DIGITS_RE.test(s)) { return 'digits'; }
+        if (ALNUM_RE.test(s)) { return 'alnum'; }
+        return 'text';
+    }
 
-        var total = 0, phone = 0, numeric = 0;
+    function shapeStats(samples) {
+        var st = { total: 0, mobile: 0, email: 0, landline: 0, digits: 0, alnum: 0, text: 0, numeric: 0 };
         for (var i = 0; i < samples.length; i++) {
             var v = samples[i];
             if (isBlank(v)) { continue; }
-            total++;
-            if (typeof v === 'number') {
-                numeric++;
-            } else if (typeof v === 'string') {
-                if (isMobileLike(v)) { phone++; }
-                if (/^-?\d+(\.\d+)?$/.test(v.trim())) { numeric++; }
-            }
+            st.total++;
+            var shape = shapeOf(v);
+            if (shape !== 'blank') { st[shape]++; }
+            if (typeof v === 'number' || /^-?\d+(\.\d+)?$/.test(String(v).trim())) { st.numeric++; }
         }
-        if (total > 0 && phone / total >= 0.6) { return 'phone'; }
-        if (total > 0 && numeric / total >= 0.8) { return 'number'; }
+        return st;
+    }
+
+    function guessMode(header, samples) {
+        var h = header == null ? '' : String(header);
+        var st = shapeStats(samples);
+        if (!st.total) { return PHONE_HEADER.test(h) ? 'phone' : 'text'; }
+        var ratio = function (n) { return n / st.total; };
+        // 邮箱和固话没有"整列一种生成器"的说法，只能按形态来
+        if (st.email || st.landline) { return 'mixed'; }
+        if (PHONE_HEADER.test(h) && ratio(st.mobile) >= 0.5) { return 'phone'; }
+        if (ratio(st.mobile) >= 0.6) { return 'phone'; }
+        if (PHONE_HEADER.test(h)) { return 'phone'; }
+        if (ratio(st.numeric) >= 0.8) { return 'number'; }
+        // 一列里出现两种以上形态（手机+英文账号、数字+中文…）就按各自形态处理
+        var families = 0;
+        if (st.mobile) { families++; }
+        if (st.digits) { families++; }
+        if (st.alnum) { families++; }
+        if (st.text) { families++; }
+        if (families >= 2) { return 'mixed'; }
         return 'text';
     }
 
@@ -200,6 +231,9 @@ var MaskEngine = (function () {
         if (mode === 'phone') {
             return { mode: 'phone' };
         }
+        if (mode === 'mixed') {
+            return { mode: 'mixed' };
+        }
         if (mode === 'number') {
             var st = numericStats(values) || { min: 0, max: 100, mean: 50, sd: 15, dec: 0 };
             var span = st.max - st.min;
@@ -236,6 +270,7 @@ var MaskEngine = (function () {
     function sigOf(cfg) {
         if (!cfg) { return 'none'; }
         if (cfg.mode === 'phone') { return 'phone'; }
+        if (cfg.mode === 'mixed') { return 'mixed'; }
         if (cfg.mode === 'number') {
             return 'num|' + cfg.dist + '|' + cfg.min + '|' + cfg.max + '|' + cfg.dec +
                 '|' + cfg.mean + '|' + cfg.sd + '|' + cfg.lambda;
@@ -255,7 +290,8 @@ var MaskEngine = (function () {
         for (var i = 0; i < 500; i++) {
             var s = PHONE_PREFIX[rndInt(0, PHONE_PREFIX.length - 1)];
             for (var k = 0; k < 8; k++) { s += rndInt(0, 9); }
-            if (s === orig || used[s]) { continue; }
+            // used 里的键一律是 keyOf() 形态（"s:值"）；这里必须同样查，否则占位等于没登记
+            if (s === orig || used[keyOf(s)]) { continue; }
             return s;
         }
         throw new Error('手机号取值空间不足，无法继续生成唯一号码');
@@ -335,14 +371,110 @@ var MaskEngine = (function () {
         var span = Math.pow(10, digits);
         for (var i = 0; i < 300; i++) {
             var s = prefix + padNum(rndInt(0, span - 1), digits);
-            if (s === orig || used[s]) { continue; }
+            if (s === orig || used[keyOf(s)]) { continue; }
             return s;
         }
         for (var n = 0; n < span; n++) {
             var cand = prefix + padNum(n, digits);
-            if (cand !== orig && !used[cand]) { return cand; }
+            if (cand !== orig && !used[keyOf(cand)]) { return cand; }
         }
         throw new Error('文本后缀位数不足，无法为每条记录分配唯一值（请增大后缀位数）');
+    }
+
+    /* ==================== 混合标识（手机 / 邮箱 / 固话 / 账号 混在一列） ==================== */
+
+    var LOWER_CHARS = 'abcdefghijkmnpqrstuvwxyz';
+    var UPPER_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+    function randChar(pool) { return pool.charAt(rndInt(0, pool.length - 1)); }
+
+    // 邮箱：保留域名（它本来就在数据里，不算新增泄露），只换本地部分
+    function genEmail(orig, used) {
+        var s = String(orig).trim();
+        var at = s.lastIndexOf('@');
+        var domain = at > 0 ? s.substring(at + 1) : 'example.com';
+        for (var i = 0; i < 300; i++) {
+            var cand = 'u' + padNum(rndInt(0, 999999), 6) + '@' + domain;
+            if (cand !== orig && !used[keyOf(cand)]) { return cand; }
+        }
+        for (var n = 0; n < 1000000; n++) {
+            var c2 = 'u' + padNum(n, 6) + '@' + domain;
+            if (c2 !== orig && !used[keyOf(c2)]) { return c2; }
+        }
+        throw new Error('邮箱地址空间不足，无法继续生成唯一地址');
+    }
+
+    // 固话：区号、分隔符、位数都照旧，只换后面的号码
+    function genLandline(orig, used) {
+        var m = LANDLINE_RE.exec(String(orig).trim());
+        if (!m) { return null; }
+        var head = m[1] + m[2], len = m[3].length, ext = m[4] ? ('-' + m[4]) : '';
+        var lo = Math.pow(10, len - 1), hi = Math.pow(10, len) - 1;
+        for (var i = 0; i < 300; i++) {
+            var cand = head + padNum(rndInt(lo, hi), len) + ext;
+            if (cand !== orig && !used[keyOf(cand)]) { return cand; }
+        }
+        var start = rndInt(lo, hi);
+        for (var n = 0; n < 100000; n++) {
+            var num = lo + ((start - lo + n) % (hi - lo + 1));
+            var c2 = head + padNum(num, len) + ext;
+            if (c2 !== orig && !used[keyOf(c2)]) { return c2; }
+        }
+        throw new Error('固话号码空间不足，无法继续生成唯一号码');
+    }
+
+    // 纯数字账号：等长随机数字，0 开头的把前导零原样留住
+    function genDigits(orig, used) {
+        var s = String(orig).trim(), len = s.length;
+        // 前导零是编码格式的一部分（工号 000123），必须留着。只把区间放宽到含 0 是不够的：
+        // 那样只有十分之一的概率刚好撞出 0 开头，其余都变成不等宽的样子。
+        var zeros = 0;
+        while (zeros < len && s.charAt(zeros) === '0') { zeros++; }
+        if (zeros >= len) { zeros = len - 1; }
+        var head = s.substring(0, zeros), body = len - zeros;
+        var lo = body > 1 ? Math.pow(10, body - 1) : 0;
+        var hi = Math.pow(10, body) - 1;
+        for (var i = 0; i < 300; i++) {
+            var cand = head + padNum(rndInt(lo, hi), body);
+            if (cand !== s && !used[keyOf(cand)]) { return cand; }
+        }
+        var start = rndInt(lo, hi);
+        for (var n = 0; n < 100000; n++) {
+            var num = lo + ((start - lo + n) % (hi - lo + 1));
+            var c2 = head + padNum(num, body);
+            if (c2 !== s && !used[keyOf(c2)]) { return c2; }
+        }
+        throw new Error('数字账号空间不足，无法继续生成唯一账号');
+    }
+
+    // 字母数字账号：逐字符换，数字换数字、字母换字母、符号原样留着
+    function genSameShape(orig, used) {
+        var s = String(orig).trim();
+        for (var i = 0; i < 300; i++) {
+            var out = '';
+            for (var k = 0; k < s.length; k++) {
+                var ch = s.charAt(k);
+                if (ch >= '0' && ch <= '9') { out += String(rndInt(0, 9)); }
+                else if (ch >= 'a' && ch <= 'z') { out += randChar(LOWER_CHARS); }
+                else if (ch >= 'A' && ch <= 'Z') { out += randChar(UPPER_CHARS); }
+                else { out += ch; }
+            }
+            if (out !== s && !used[keyOf(out)]) { return out; }
+        }
+        throw new Error('同形态替换空间不足，无法继续生成唯一账号');
+    }
+
+    function genMixed(textCfg, orig, used) {
+        var shape = shapeOf(orig);
+        if (shape === 'mobile') { return genPhone(String(orig), used); }
+        if (shape === 'email') { return genEmail(orig, used); }
+        if (shape === 'landline') {
+            var land = genLandline(orig, used);
+            if (land != null) { return land; }
+        }
+        if (shape === 'digits') { return genDigits(orig, used); }
+        if (shape === 'alnum') { return genSameShape(orig, used); }
+        return genText(textCfg, String(orig), used);
     }
 
     /* ==================== 映射表（保险箱） ==================== */
@@ -804,6 +936,13 @@ var MaskEngine = (function () {
 
             var newVals = [];
             var wrote = 0;
+            // 混合列的"中文/其他文本"分支沿用文本模式的前缀与位数
+            var textCfg = {
+                mode: 'text',
+                lang: cfg.lang || 'zh',
+                prefix: cfg.prefix || col.header || '文本',
+                digits: cfg.digits || 4
+            };
             // 区间刚好装下这批不同值时，先整列算好错位置换，避免逐个随机取走进死胡同
             var batch = null;
             if (cfg.mode === 'number' && (cfg.dist || 'uniform') === 'uniform' && (!cfg.dec || cfg.dec <= 0)) {
@@ -827,6 +966,8 @@ var MaskEngine = (function () {
                     try {
                         if (cfg.mode === 'phone') {
                             mapped = genPhone(String(v), used);
+                        } else if (cfg.mode === 'mixed') {
+                            mapped = genMixed(textCfg, v, used);
                         } else if (cfg.mode === 'number') {
                             if (batch && Object.prototype.hasOwnProperty.call(batch, k)) {
                                 mapped = batch[k];
@@ -951,6 +1092,15 @@ var MaskEngine = (function () {
         }
         try {
             if (cfg.mode === 'phone') { return genPhone(orig == null ? '' : String(orig), {}); }
+            if (cfg.mode === 'mixed') {
+                var tcfg = {
+                    mode: 'text',
+                    lang: cfg.lang || 'zh',
+                    prefix: col.header || '文本',
+                    digits: cfg.digits || 4
+                };
+                return genMixed(tcfg, orig == null ? '' : orig, {});
+            }
             if (cfg.mode === 'number') {
                 var n = (typeof orig === 'number') ? orig : Number(orig);
                 if (isNaN(n)) { n = 0; }
@@ -984,6 +1134,9 @@ var MaskEngine = (function () {
             genPhone: genPhone,
             genNumber: genNumber,
             genText: genText,
+            genMixed: genMixed,
+            genSameShape: genSameShape,
+            shapeOf: shapeOf,
             looksLikeHeader: looksLikeHeader,
             buildIndex: buildIndex,
             numericStats: numericStats,
