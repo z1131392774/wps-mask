@@ -68,14 +68,12 @@ function MaskQuickApply() {
     var vault = MaskEngine.loadVault(app);
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
 
-    var probe = MaskEngine.revert(model, vault, { dryRun: true });
-    if (probe.cells > 0 && probe.hit / probe.cells > 0.3) {
-        MaskAlert('这个区域看起来已经映射过了（' + probe.hit + '/' + probe.cells +
-            ' 格能对上映射表）。\n若要重新映射，请先执行「反映射」或换一个选区。');
+    var stats = MaskEngine.applyMask(model, vault, {});
+    if (stats.written === 0) {
+        MaskAlert('这个区域已经映射过（跳过 ' + stats.skipped + ' 格），没有可处理的新数据。\n' +
+            '要基于当前值再映射一次，请先执行「反映射」。');
         return;
     }
-
-    var stats = MaskEngine.applyMask(model, vault, {});
     try {
         MaskEngine.saveVault(app, vault);
     } catch (saveErr) {
@@ -90,7 +88,10 @@ function MaskQuickApply() {
         var modeName = { phone: '手机号', number: '数字', text: '文本', keep: '不处理' }[c.cfg.mode] || c.cfg.mode;
         detail += '\n· ' + (c.header || ('第' + (c.index + 1) + '列')) + ' → ' + modeName;
     }
-    MaskAlert('已处理 ' + stats.columns + ' 列、' + stats.cells + ' 个单元格。' + detail +
+    var skipNote = stats.skipped > 0
+        ? ('\n已映射过、本次跳过：' + stats.skippedColumns.join('、') + '（' + stats.skipped + ' 格）')
+        : '';
+    MaskAlert('已处理 ' + stats.columns + ' 列、' + stats.written + ' 个单元格。' + detail + skipNote +
         '\n\n映射关系已加密写入本文档（记得保存），可随时「反映射」还原。');
 }
 

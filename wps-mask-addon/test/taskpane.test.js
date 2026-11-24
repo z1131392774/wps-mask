@@ -147,6 +147,26 @@ function fire(el, type) {
     const s2 = doc.getElementById('status').textContent;
     ok(/选中/.test(s2), '给出可读提示：' + s2);
 
+
+    console.log('\n[9] 只映射部分列，再映射整个区域');
+    app.select('Sheet1', 1, 1, table.length, 2);
+    doc.getElementById('btnRefresh').click();
+    doc.getElementById('btnMask').click();
+    const nameOnce = app.getCell('Sheet1', 2, 1);
+    const phoneOnce = app.getCell('Sheet1', 2, 2);
+    ok(/已映射 2 列/.test(doc.getElementById('status').textContent), '先映射 2 列：' + doc.getElementById('status').textContent);
+
+    app.select('Sheet1', 1, 1, table.length, 4);
+    doc.getElementById('btnRefresh').click();
+    doc.getElementById('btnMask').click();
+    const s9 = doc.getElementById('status').textContent;
+    ok(app.getCell('Sheet1', 2, 1) === nameOnce, '姓名没有被二次映射，仍是 ' + nameOnce);
+    ok(app.getCell('Sheet1', 2, 2) === phoneOnce, '手机号没有被二次映射，仍是 ' + phoneOnce);
+    ok(/跳过 6 格已映射（姓名、手机号）/.test(s9), '状态栏说明跳过：' + s9);
+
+    doc.getElementById('btnMask').click();
+    ok(/已经映射过/.test(doc.getElementById('status').textContent), '整块再点一次：' + doc.getElementById('status').textContent);
+
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
     process.exit(fail === 0 ? 0 : 1);
 })();

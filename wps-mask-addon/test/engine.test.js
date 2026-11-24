@@ -142,5 +142,53 @@ const noH = Engine.analyze(app, { hasHeader: false });
 ok(noH.dataRows === 2, '手动关闭表头后，首行也参与映射');
 ok(noH.columns[0].header === '', '无字段名时前缀回落为默认值');
 
+
+/* ---------- 9. 已映射区域不再被二次映射 ---------- */
+console.log('\n[9] 二次映射保护（按列、按格跳过）');
+app = freshApp();
+vault = Engine.loadVault(app);
+
+// 第一步：只映射前两列（姓名、手机号）
+let m1 = Engine.hydrate(Engine.analyze(app, {}), vault);
+m1.columns = m1.columns.slice(0, 2);
+m1.cols = 2;
+m1.sheet = app.sheets[0];
+let s1 = Engine.applyMask(m1, vault, {});
+const nameAfter1 = app.getCell('Sheet1', 2, 1);
+const phoneAfter1 = app.getCell('Sheet1', 2, 2);
+ok(s1.written === 20, '第一步：映射 2 列 20 格，实际 ' + s1.written);
+ok(vault.ranges.length === 2, '记下 2 条已映射区域记录，实际 ' + vault.ranges.length);
+
+// 第二步：选中整个区域再映射
+let mFull = Engine.hydrate(Engine.analyze(app, {}), vault);
+let s2 = Engine.applyMask(mFull, vault, {});
+ok(app.getCell('Sheet1', 2, 1) === nameAfter1, '姓名没有被二次映射，仍是 ' + nameAfter1);
+ok(app.getCell('Sheet1', 2, 2) === phoneAfter1, '手机号没有被二次映射，仍是 ' + phoneAfter1);
+ok(s2.skipped === 20, '跳过 20 格已映射，实际 ' + s2.skipped);
+ok(s2.written === 18, '只写了其余 2 列 18 格，实际 ' + s2.written);
+ok(s2.skippedColumns.join(',') === '姓名,手机号', '跳过列名：' + s2.skippedColumns.join(','));
+
+// 第三步：整块再映射一次，应当什么都没得写
+let s3 = Engine.applyMask(Engine.hydrate(Engine.analyze(app, {}), vault), vault, {});
+ok(s3.written === 0 && s3.columns === 0, '已全部映射时不再写入，written=' + s3.written);
+ok(s3.skipped === 38, '跳过全部 38 个非空格，实际 ' + s3.skipped);
+
+/* ---------- 10. 反映射后可以重新映射 ---------- */
+console.log('\n[10] 反映射解除"已映射"状态');
+const backAll = Engine.revert(Engine.hydrate(Engine.analyze(app, {}), vault), vault, {});
+ok(backAll.hit === 38, '整块还原 38 格，实际 ' + backAll.hit);
+ok(vault.ranges.length === 0, '区域记录已清除，实际 ' + vault.ranges.length);
+const s4 = Engine.applyMask(Engine.hydrate(Engine.analyze(app, {}), vault), vault, {});
+ok(s4.written === 38, '还原后可以重新映射 38 格，实际 ' + s4.written);
+ok(app.getCell('Sheet1', 2, 1) === nameAfter1, '重新映射回到同一个结果（映射表复用）→ ' + nameAfter1);
+
+/* ---------- 11. 已映射区域内改了值，只映射改过的那格 ---------- */
+console.log('\n[11] 区域内改值后再映射');
+app.setTable('Sheet1', 3, 4, [['临时改动']]);
+const s5 = Engine.applyMask(Engine.hydrate(Engine.analyze(app, {}), vault), vault, {});
+ok(s5.written === 1, '只写了改动的那 1 格，实际 ' + s5.written);
+ok(/^备注\d{4}$/.test(app.getCell('Sheet1', 3, 4)), '改动值被映射成 ' + app.getCell('Sheet1', 3, 4));
+ok(app.getCell('Sheet1', 2, 1) === nameAfter1, '同列其他格保持不动');
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

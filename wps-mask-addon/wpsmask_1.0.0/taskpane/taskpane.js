@@ -275,16 +275,12 @@
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
             applySavedCfgs(model);
 
-            var probe = E.revert(model, vault, { dryRun: true });
-            if (probe.cells > 0 && probe.hit / probe.cells > 0.3) {
-                if (!confirmBox('这个区域有 ' + probe.hit + ' 个单元格能对上已有映射，可能已经映射过了。\n' +
-                    '继续会把当前值再映射一次。确定继续？')) {
-                    setStatus('已取消');
-                    return;
-                }
-            }
-
             var stats = E.applyMask(model, vault, {});
+            if (stats.written === 0) {
+                setStatus('这个区域已经映射过（跳过 ' + stats.skipped +
+                    ' 格），没有可处理的新数据。要基于当前值再映射一次，请先反映射。', '');
+                return;
+            }
             try {
                 E.saveVault(a, vault);
             } catch (saveErr) {
@@ -292,8 +288,11 @@
                     '。请立刻 Ctrl+Z 撤销，否则这些数据无法还原！', 'err');
                 return;
             }
-            setStatus('已映射 ' + stats.columns + ' 列 / ' + stats.cells + ' 格，新建 ' + stats.created +
-                ' 条映射；映射表已加密写入本文档，记得保存文档。', 'ok');
+            var extra = stats.skipped > 0
+                ? ('，跳过 ' + stats.skipped + ' 格已映射（' + stats.skippedColumns.join('、') + '）')
+                : '';
+            setStatus('已映射 ' + stats.columns + ' 列 / ' + stats.written + ' 格' + extra +
+                '；新建 ' + stats.created + ' 条映射，记得保存文档。', 'ok');
         } catch (e) {
             setStatus('映射失败：' + MaskErrText(e), 'err');
         }
@@ -339,6 +338,9 @@
             '2. 点「刷新选区」，面板会按字段名与数据自动判断每列映射成什么。',
             '3. 逐列核对「映射为」与参数，右侧示例可先看一眼效果。',
             '4. 点「映射并写入」，新值直接写回原区域。',
+            '',
+            '已经映射过的单元格会被自动跳过，所以对着同一块区域反复点「映射」不会把数据映射两次。',
+            '要基于映射后的值再映射一遍，先「反映射」，再映射。',
             '',
             '关于 1 对 1：同一个原始值永远得到同一个结果，不同原始值一定得到不同结果；',
             '映射关系加密后存进本文档的隐藏工作表「' + E.VAULT_SHEET + '」，所以「反映射」能精确还原。',

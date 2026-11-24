@@ -288,7 +288,7 @@ var MaskEngine = (function () {
     /* ==================== 映射表（保险箱） ==================== */
 
     function emptyVault() {
-        return { v: VAULT_VERSION, settings: {}, maps: {} };
+        return { v: VAULT_VERSION, settings: {}, maps: {}, ranges: [] };
     }
 
     function findSheet(wb, name) {
@@ -346,6 +346,7 @@ var MaskEngine = (function () {
         try { obj = JSON.parse(text); } catch (e2) { throw new Error('映射表内容损坏，无法解析'); }
         if (!obj || !obj.maps) { return emptyVault(); }
         obj.settings = obj.settings || {};
+        obj.ranges = obj.ranges || [];
         return obj;
     }
 
@@ -608,10 +609,67 @@ var MaskEngine = (function () {
         }
     }
 
+    /* ==================== 已映射区域 ==================== */
+
+    // 只用"当前值能反查到原值"来判断是否已映射是不可靠的：整数列在区间内做置换，
+    // 原值与映射值共用同一个值域，反映射之后照样几乎每个值都"能反查到"。
+    // 所以额外记录"哪些区域写过"，反查只用来排除"用户后来改过的格子"。
+
+    function rectOverlaps(a, b) {
+        return !(a.r2 < b.r1 || a.r1 > b.r2 || a.c2 < b.c1 || a.c1 > b.c2);
+    }
+
+    function inMaskedArea(vault, sheetName, row, col) {
+        var list = vault.ranges || [];
+        for (var i = 0; i < list.length; i++) {
+            var it = list[i];
+            if (it.s === sheetName && row >= it.r1 && row <= it.r2 && col >= it.c1 && col <= it.c2) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function recordRange(vault, sheetName, r1, c1, r2, c2) {
+        if (!vault.ranges) { vault.ranges = []; }
+        vault.ranges.push({ s: sheetName, r1: r1, c1: c1, r2: r2, c2: c2 });
+        if (vault.ranges.length > 200) { vault.ranges.splice(0, vault.ranges.length - 200); }
+    }
+
+    function forgetRanges(vault, sheetName, r1, c1, r2, c2) {
+        if (!vault.ranges) { return; }
+        var probe = { r1: r1, c1: c1, r2: r2, c2: c2 };
+        var keep = [];
+        for (var i = 0; i < vault.ranges.length; i++) {
+            var it = vault.ranges[i];
+            if (it.s === sheetName && rectOverlaps(it, probe)) { continue; }
+            keep.push(it);
+        }
+        vault.ranges = keep;
+    }
+
+    // 这个值是不是"某个原值映射出来的结果"（先看本列签名，再退到全局）
+    function lookupMapped(idx, sig, value) {
+        var mk = keyOf(value), lk = looseOf(value);
+        var pref = idx.bySig[sig];
+        if (pref) {
+            if (mk in pref.typed) { return true; }
+            if (lk in pref.loose) { return true; }
+        }
+        if (mk in idx.global.typed) { return true; }
+        if (lk in idx.global.loose) { return true; }
+        return false;
+    }
+
     function applyMask(model, vault, opts) {
         opts = opts || {};
-        var stats = { cells: 0, columns: 0, created: 0, kept: 0 };
+        var stats = {
+            cells: 0, columns: 0, created: 0, kept: 0,
+            written: 0, skipped: 0, skippedColumns: []
+        };
         var outputs = [];
+        // 跳过判定只看"本轮开始之前"就存在的映射，本轮刚建的记录不该被当成本来就有
+        var preIndex = buildIndex(vault);
 
         for (var i = 0; i < model.columns.length; i++) {
             var col = model.columns[i];
@@ -620,9 +678,42 @@ var MaskEngine = (function () {
                 stats.kept++;
                 continue;
             }
-            capacityHint(col, cfg);
 
             var sig = sigOf(cfg);
+            var skipFlags = [];
+            var distinctNeed = {};
+            var needCount = 0;
+            var colSkipped = 0;
+
+            for (var r0 = 0; r0 < col.values.length; r0++) {
+                var v0 = col.values[r0];
+                var skip = false;
+                if (!isBlank(v0)) {
+                    var absRow = model.top + model.firstDataRow + r0;
+                    if (inMaskedArea(vault, model.sheetName, absRow, col.col) &&
+                        lookupMapped(preIndex, sig, v0)) {
+                        skip = true;
+                    }
+                }
+                skipFlags.push(skip);
+                if (skip) {
+                    colSkipped++;
+                    stats.skipped++;
+                } else if (!isBlank(v0)) {
+                    var kk = keyOf(v0);
+                    if (!distinctNeed[kk]) { distinctNeed[kk] = true; needCount++; }
+                }
+            }
+
+            if (needCount === 0) {
+                if (colSkipped > 0) {
+                    stats.skippedColumns.push(col.header || ('第' + (col.index + 1) + '列'));
+                }
+                continue;
+            }
+
+            capacityHint({ header: col.header, index: col.index, distinctCount: needCount }, cfg);
+
             if (!vault.maps[sig]) { vault.maps[sig] = {}; }
             var bucket = vault.maps[sig];
             var used = {};
@@ -634,9 +725,10 @@ var MaskEngine = (function () {
             }
 
             var newVals = [];
+            var wrote = 0;
             for (var r = 0; r < col.values.length; r++) {
                 var v = col.values[r];
-                if (isBlank(v)) { newVals.push(v); continue; }
+                if (isBlank(v) || skipFlags[r]) { newVals.push(v); continue; }
                 var k = keyOf(v);
                 var mapped;
                 if (Object.prototype.hasOwnProperty.call(bucket, k)) {
@@ -655,15 +747,24 @@ var MaskEngine = (function () {
                     stats.created++;
                 }
                 newVals.push(mapped);
+                wrote++;
                 stats.cells++;
             }
-            outputs.push({ col: col, values: newVals });
-            stats.columns++;
+
+            if (wrote > 0) {
+                outputs.push({ col: col, values: newVals, wrote: wrote });
+                stats.columns++;
+                stats.written += wrote;
+            }
         }
 
         if (!opts.dryRun) {
             for (var oi = 0; oi < outputs.length; oi++) {
-                writeColumn(model, outputs[oi].col, outputs[oi].values);
+                var oc = outputs[oi];
+                writeColumn(model, oc.col, oc.values);
+                recordRange(vault, model.sheetName,
+                    model.top + model.firstDataRow, oc.col.col,
+                    model.top + model.firstDataRow + oc.values.length - 1, oc.col.col);
             }
             rememberSettings(vault, model);
         }
@@ -730,7 +831,12 @@ var MaskEngine = (function () {
 
         if (!opts.dryRun) {
             for (var oi = 0; oi < outputs.length; oi++) {
-                writeColumn(model, outputs[oi].col, outputs[oi].values);
+                var oc = outputs[oi];
+                writeColumn(model, oc.col, oc.values);
+                // 还原过的区域不再是"已映射"，否则再映射时会被误跳过
+                forgetRanges(vault, model.sheetName,
+                    model.top + model.firstDataRow, oc.col.col,
+                    model.top + model.firstDataRow + oc.values.length - 1, oc.col.col);
             }
         }
         stats.preview = outputs;

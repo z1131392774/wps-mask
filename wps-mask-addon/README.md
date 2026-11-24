@@ -58,9 +58,11 @@ If `wpsjs` is already installed, its generated `publish.xml` works too: replace 
 
 **Panel.** Select the range (whole column, whole row, or any block), open "映射面板", press "刷新选区". Each column gets a card with a detected type and a sample value at the bottom. Check the type and parameters, then "映射并写入" — the new values replace the range in place. "反映射回原值" puts the originals back.
 
+**Masking twice is safe.** A cell that already holds a value from the mapping table is skipped, and the status line names the columns it skipped. A partial mask followed by a whole-region mask therefore cannot map the same cells twice; to map the current values again, revert first.
+
 **Quick buttons.** "快速映射" processes the current selection using auto-detection or the remembered settings. It first probes whether the selection already matches the mapping table and stops to ask before masking twice. "反映射" reverses the current selection directly.
 
-**Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers.
+**Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers. Cells that already hold a mapped value are left alone and reported, so re-running a mask over the same area is idempotent.
 
 ## Where the mapping lives, and how far the encryption goes
 
@@ -96,6 +98,7 @@ If `wpsjs` is already installed, its generated `publish.xml` works too: replace 
 | No "数据脱敏" tab | Folder must be named `wpsmask_1.0.0`; `version`/`url` in `publish.xml` must match it; restart WPS after editing |
 | Panel empty, "未取到 WPS 应用对象" | See item 2 above |
 | Reverse mapping restored only part of the range | The selection must match the one used to mask; or the column parameters changed, in which case the lookup prefers the current signature before falling back to the global table |
+| Re-masking a column changes nothing | Those cells already hold mapped values, so they are skipped. Revert first if you meant to map the current values again |
 | Numbers show as left-aligned text | The cells were text-formatted before; the numeric values kept that format. Change the cell format |
 | "区间容量不足" | The integer interval cannot hold that many distinct values (12 distinct amounts inside 1–5). Widen the bounds or add decimal places |
 | "解密失败" | `KEY_TEXT` changed, or the hidden table was edited by hand |
