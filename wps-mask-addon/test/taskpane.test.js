@@ -69,6 +69,44 @@ function fire(el, type) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// 包一层引擎入口，记录面板实际调用了哪些阶段（顺序敏感）
+function spyEngine(win) {
+    const E = win.MaskEngine;
+    const calls = [];
+    const orig = {
+        prepareMask: E.prepareMask,
+        saveVault: E.saveVault,
+        writeMask: E.writeMask,
+        revert: E.revert
+    };
+    E.prepareMask = function (model, vault) {
+        calls.push('prepareMask');
+        return orig.prepareMask.call(E, model, vault);
+    };
+    E.saveVault = function (app, vault) {
+        calls.push('saveVault');
+        return orig.saveVault.call(E, app, vault);
+    };
+    E.writeMask = function (plan) {
+        calls.push('writeMask');
+        return orig.writeMask.call(E, plan);
+    };
+    E.revert = function (model, vault, opts) {
+        calls.push('revert');
+        return orig.revert.call(E, model, vault, opts);
+    };
+    return {
+        calls,
+        reset() { calls.length = 0; },
+        restore() {
+            E.prepareMask = orig.prepareMask;
+            E.saveVault = orig.saveVault;
+            E.writeMask = orig.writeMask;
+            E.revert = orig.revert;
+        }
+    };
+}
+
 (async () => {
     const { dom, app, errors } = boot();
     await waitLoad(dom);
@@ -149,9 +187,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     console.log('\n[7] 清除映射表');
     const hadSheet = app.sheets.some(s => s.Name === '脱敏映射表');
     ok(hadSheet, '映射期间已生成隐藏工作表');
+
+    // 删除不可逆：确认框被拦（宿主策略）时必须按「没确认」处理，不能 fail-open
+    const confirmReal = win.confirm;
+    win.confirm = () => { throw new Error('dialog blocked'); };
+    doc.getElementById('btnDrop').click();
+    ok(app.sheets.some(s => s.Name === '脱敏映射表'), 'confirm 抛异常时不删除映射表');
+    ok(!/已删除/.test(doc.getElementById('status').textContent), 'confirm 抛异常时不报「已删除」');
+    win.confirm = () => false;
+    doc.getElementById('btnDrop').click();
+    ok(app.sheets.some(s => s.Name === '脱敏映射表'), 'confirm 返回 false 时不删除映射表');
+    win.confirm = confirmReal;
+
+    ok(doc.getElementById('btnAuto').style.display !== 'none', '删除前本文档有记忆，「重新识别」可见');
     doc.getElementById('btnDrop').click();
     ok(!app.sheets.some(s => s.Name === '脱敏映射表'), '清除后工作表已删除');
     ok(/已删除/.test(doc.getElementById('status').textContent), '状态栏：' + doc.getElementById('status').textContent);
+    ok(doc.getElementById('btnAuto').style.display === 'none', '删除后没有可重新识别的记忆，「重新识别」消失');
+    ok(doc.querySelectorAll('.card')[3].querySelector('.mode').value !== 'keep',
+        '删除后卡片回到自动识别（备注列不再是不处理）');
 
     console.log('\n[8] 没有选区时的空态');
     app.Selection = null;
@@ -243,6 +297,353 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
         '另一个 sheet 沿用同一个假值：' + b3.app.getCell('Sheet2', 10, 1));
     ok(!/失败|装不下/.test(d3.getElementById('status').textContent),
         '状态栏没有报错：' + d3.getElementById('status').textContent);
+
+    console.log('\n[13] 宿主对象缺席：nohost 空态可达，晚到之后能自愈');
+    {
+        const late = new MockWPS();
+        late.setTable('Sheet1', 1, 1, table);
+        late.select('Sheet1', 1, 1, table.length, 4);
+        const vc = new VirtualConsole();
+        const lateErrors = [];
+        vc.on('jsdomError', e => lateErrors.push('jsdomError: ' + (e && e.message)));
+        vc.on('error', (...a) => lateErrors.push('console.error: ' + a.join(' ')));
+        const dom3 = new JSDOM(fs.readFileSync(PANE, 'utf8'), {
+            url: 'file:///' + PANE.replace(/\\/g, '/'),
+            runScripts: 'dangerously',
+            resources: 'usable',
+            virtualConsole: vc,
+            beforeParse(window) {
+                window.confirm = () => true;
+                window.alert = () => {};
+                // 这里故意不注入 Application：面板要在取不到宿主对象时给出空态，而不是一直转
+            }
+        });
+        await waitLoad(dom3);
+        await sleep(3000);
+        const d4 = dom3.window.document;
+        const nohostT = d4.querySelector('.empty');
+        ok(nohostT && /取不到 WPS 应用对象/.test(nohostT.textContent),
+            '3s 后显示 nohost 提示：' + (nohostT && nohostT.textContent));
+        ok(!/正在读取选区/.test(d4.getElementById('selInfo').textContent) &&
+            !/读取选区失败/.test(d4.body.textContent),
+            '不再停在「正在读取选区…」也不误报「读取失败」');
+        ok(d4.getElementById('bar').style.display === 'none', 'nohost 下不显示工具栏');
+        ok(d4.getElementById('btnMask').disabled && d4.getElementById('btnRevert').disabled,
+            'nohost 下写入按钮置灰');
+        ok(lateErrors.length === 0, 'nohost 期间没有未捕获异常' +
+            (lateErrors.length ? ' → ' + lateErrors.join(' | ') : ''));
+
+        await sleep(3000);                       // 约 6s：宿主对象这才注入
+        dom3.window.Application = late;
+        await sleep(2600);                       // 轮询两拍确认选区后自动识别
+        ok(d4.querySelectorAll('.card').length === 4,
+            '6s 注入宿主对象后自动恢复 4 张卡片，实际 ' + d4.querySelectorAll('.card').length);
+        ok(/A1:D4/.test(d4.getElementById('selInfo').textContent),
+            '恢复后选区信息：' + d4.getElementById('selInfo').textContent);
+        ok(lateErrors.length === 0, '恢复过程没有未捕获异常' +
+            (lateErrors.length ? ' → ' + lateErrors.join(' | ') : ''));
+        dom3.window.close();
+    }
+
+    console.log('\n[14] 无表头列的编辑按位置记住，不被自动刷新冲掉');
+    {
+        const b = boot([
+            ['13800138000', '张三'],
+            ['13912345678', '李四'],
+            ['13700001111', '王五']
+        ]);
+        await waitLoad(b.dom);
+        const w = b.dom.window, d = w.document;
+        const chk2 = d.getElementById('chkHeader');
+        chk2.checked = false;
+        fire(chk2, 'change');
+        ok(/无表头/.test(d.getElementById('selInfo').textContent),
+            '取消表头后按无表头识别：' + d.getElementById('selInfo').textContent);
+
+        const m0 = d.querySelectorAll('.card .mode')[0];
+        m0.value = 'keep';
+        fire(m0, 'change');
+        ok(d.querySelectorAll('.card .mode')[0].value === 'keep', '第 1 列改成不处理');
+
+        b.app.select('Sheet1', 1, 1, 4, 2);       // 行数变化触发自动重新分析
+        await sleep(1900);
+        const m0After = d.querySelectorAll('.card .mode')[0].value;
+        ok(m0After === 'keep', '无表头列的「不处理」刷新后仍在，实际 ' + m0After);
+        ok(/无表头/.test(d.getElementById('selInfo').textContent),
+            '刷新后仍然是无表头：' + d.getElementById('selInfo').textContent);
+        b.dom.window.close();
+    }
+
+    console.log('\n[15] 两列同名「姓名」的配置互不串列');
+    {
+        const b = boot([
+            ['姓名', '姓名', '备注'],
+            ['张三', '李四', 'a'],
+            ['王五', '赵六', 'b'],
+            ['孙七', '周八', 'c']
+        ]);
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        ok(d.querySelectorAll('.card').length === 3, '识别出 3 列，实际 ' + d.querySelectorAll('.card').length);
+
+        const m0 = d.querySelectorAll('.card .mode')[0];
+        m0.value = 'keep';
+        fire(m0, 'change');
+        const m1 = d.querySelectorAll('.card .mode')[1];
+        m1.value = 'number';
+        fire(m1, 'change');
+        ok(d.querySelectorAll('.card .mode')[0].value === 'keep' &&
+            d.querySelectorAll('.card .mode')[1].value === 'number',
+            '两列同名分别设为不处理 / 数字');
+
+        b.app.select('Sheet1', 1, 1, 5, 3);       // 行数变化触发自动重新分析
+        await sleep(1900);
+        const modes = Array.from(d.querySelectorAll('.card .mode')).map(el => el.value);
+        ok(modes[0] === 'keep' && modes[1] === 'number',
+            '刷新后各自保持 [不处理, 数字]，实际 [' + modes.join(', ') + ']');
+        b.dom.window.close();
+    }
+
+    console.log('\n[16] 空区域：单行空态、不显示工具栏、写入按钮不可用');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        b.app.select('Sheet1', 8, 1, 3, 2);       // 表格下方整块空区域
+        await sleep(1900);
+        const emptyT = d.querySelector('.empty');
+        ok(emptyT && /这块区域没有数据/.test(emptyT.textContent),
+            '空态提示：' + (emptyT && emptyT.textContent));
+        ok(d.getElementById('bar').style.display === 'none', '空区域不显示工具栏');
+        ok(d.getElementById('btnMask').disabled && d.getElementById('btnRevert').disabled,
+            '写入按钮保持置灰');
+        ok(d.getElementById('status').textContent === '', '空区域不写状态栏');
+        d.getElementById('btnMask').click();
+        ok(!/已经映射过/.test(d.getElementById('status').textContent),
+            '按钮不可用，也不会报「已经映射过」：' + d.getElementById('status').textContent);
+        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '没有生成映射表');
+
+        b.app.select('Sheet1', 1, 1, table.length, table[0].length);
+        await sleep(1900);
+        ok(d.querySelectorAll('.card').length === 4,
+            '换回有数据的区域后卡片恢复，实际 ' + d.querySelectorAll('.card').length);
+        ok(!d.getElementById('btnMask').disabled, '写入按钮恢复可用');
+
+        // 轮询还没发现选区变空时按钮仍可点：此时必须说「没有数据」，不能拿旧卡片报「已经映射过」
+        b.app.select('Sheet1', 8, 1, 3, 2);
+        d.getElementById('btnMask').click();
+        ok(/这块区域没有数据/.test(d.getElementById('status').textContent),
+            '选区刚变空就点映射：' + d.getElementById('status').textContent);
+        ok(!/已经映射过/.test(d.getElementById('status').textContent), '不误报「已经映射过」');
+        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '空区域没有生成映射表');
+        await sleep(1900);                       // 收尾：轮询把面板切回空态
+        b.dom.window.close();
+    }
+
+    console.log('\n[17] 自动刷新不重置卡片的展开状态与滚动位置');
+    {
+        const head = ['姓名', '手机号', '年龄', '入职日期', '月薪', '部门', '工号', '订单号', '城市', '备注'];
+        const rows = [head];
+        for (let i = 0; i < 9; i++) {
+            rows.push(['张' + i, '1380000' + (1000 + i), 20 + i, 45000 + i, 10000 + i,
+                '研发部', 1001 + i, 'SO2024110300' + i, '上海', '备注' + i]);
+        }
+        const b = boot(rows);
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        ok(d.querySelectorAll('.card').length === 10 && d.querySelectorAll('.card.open').length === 0,
+            '十列默认全部收起');
+        d.getElementById('btnExpand').click();
+        ok(d.querySelectorAll('.card.open').length === 10, '点「展开全部」后 10 张都展开');
+        d.querySelectorAll('.card')[4].querySelector('.exp').click();
+        ok(d.querySelectorAll('.card.open').length === 9, '收起第 5 张后 9 张展开');
+        d.getElementById('cards').scrollTop = 40;
+
+        b.app.select('Sheet1', 1, 1, 11, 10);     // 行数变化触发自动刷新
+        await sleep(1900);
+        ok(d.querySelectorAll('.card').length === 10, '刷新后仍是 10 列');
+        ok(d.querySelectorAll('.card.open').length === 9,
+            '刷新保留用户的展开状态（9 张），实际 ' + d.querySelectorAll('.card.open').length);
+        ok(!(' ' + d.querySelectorAll('.card')[4].className + ' ').includes(' open '),
+            '第 5 张仍保持收起');
+        ok(d.getElementById('cards').scrollTop === 40,
+            '刷新保留滚动位置，实际 ' + d.getElementById('cards').scrollTop);
+        b.dom.window.close();
+    }
+
+    console.log('\n[18] 两阶段接入：prepareMask → saveVault → writeMask');
+    {
+        // a) 正常路径：先保存映射表，再写单元格
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        d.getElementById('btnMask').click();
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask',
+            '调用顺序：' + spy.calls.join(' > '));
+        ok(/已映射/.test(d.getElementById('status').textContent),
+            '状态栏：' + d.getElementById('status').textContent);
+        ok(b.app.getCell('Sheet1', 2, 2) !== table[1][1],
+            '保存成功后才写单元格 → ' + b.app.getCell('Sheet1', 2, 2));
+        spy.restore();
+        b.dom.window.close();
+    }
+    {
+        // b) 映射表保存失败：绝不能写单元格，状态必须是失败
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        b.app.setWriteHook(info => info.sheet === '脱敏映射表' ? 'throw' : undefined);
+        d.getElementById('btnMask').click();
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault',
+            '保存失败后不再调用 writeMask，实际：' + spy.calls.join(' > '));
+        ok(b.app.getCell('Sheet1', 2, 1) === table[1][0] &&
+            b.app.getCell('Sheet1', 2, 2) === table[1][1],
+            '映射表没保存成功时一个单元格都没写');
+        const st = d.getElementById('status').textContent;
+        ok(/映射表保存失败/.test(st) && /请重新映射/.test(st),
+            '状态栏报保存失败并提示重新映射：' + st);
+        ok(!/已映射/.test(st), '不误报成功');
+        b.app.clearWriteHook();
+        spy.restore();
+        b.dom.window.close();
+    }
+    {
+        // c) 写单元格失败：引擎已回滚，面板把恢复好的区域记录写回磁盘，状态必须是失败
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        b.app.setWriteHook(info => info.sheet === 'Sheet1' ? 'throw' : undefined);
+        d.getElementById('btnMask').click();
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask > saveVault',
+            '写入失败后把恢复好的映射表写回磁盘，实际：' + spy.calls.join(' > '));
+        ok(b.app.getCell('Sheet1', 2, 1) === table[1][0] &&
+            b.app.getCell('Sheet1', 2, 2) === table[1][1],
+            '写入失败后单元格仍是原值');
+        const st = d.getElementById('status').textContent;
+        ok(/写入失败/.test(st) && /重新映射/.test(st),
+            '状态栏报写入失败并提示重新映射：' + st);
+        ok(!/已映射/.test(st), '不误报成功');
+        b.app.clearWriteHook();
+        spy.restore();
+        b.dom.window.close();
+    }
+
+    console.log('\n[19] 反映射后保存映射表；二次反映射是 no-op');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        d.getElementById('btnMask').click();
+        spy.reset();
+
+        d.getElementById('btnRevert').click();
+        ok(spy.calls.join(' > ') === 'revert > saveVault',
+            'revert 之后保存映射表，实际：' + spy.calls.join(' > '));
+        ok(/已还原 11 格/.test(d.getElementById('status').textContent),
+            '还原计数与 stats 一致：' + d.getElementById('status').textContent);
+
+        spy.reset();
+        d.getElementById('btnRevert').click();
+        ok(spy.calls.length === 1 && spy.calls[0] === 'revert',
+            '二次反映射只做 no-op，不重复保存，实际：' + spy.calls.join(' > '));
+        ok(/没有可还原/.test(d.getElementById('status').textContent),
+            '二次点击状态：' + d.getElementById('status').textContent);
+        let restored = true;
+        for (let r = 0; r < table.length; r++) {
+            for (let c = 0; c < 4; c++) {
+                if (b.app.getCell('Sheet1', r + 1, c + 1) !== table[r][c]) { restored = false; }
+            }
+        }
+        ok(restored, '二次反映射没有重复改写单元格');
+        spy.restore();
+        b.dom.window.close();
+    }
+
+    console.log('\n[20] 映射表主密文损坏：从备份恢复并提示重新保存');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        d.getElementById('btnMask').click();      // 第一次保存：A 区有密文，还没有备份
+        d.getElementById('btnRevert').click();    // 第二次保存：旧密文进 B 列备份
+        ok(b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表工作表存在');
+        ok(b.app.getCell('脱敏映射表', 1, 2) !== null, '备份列已写入');
+
+        b.app.grid['脱敏映射表!2,1'] = 'broken-cipher';   // 把主密文改坏
+        b.app.select('Sheet1', 1, 2, table.length, 2);    // 选区变化触发自动刷新
+        await sleep(1900);
+        const st = d.getElementById('status').textContent;
+        ok(/映射表损坏，已用备份恢复，请重新保存/.test(st), '面板提示从备份恢复：' + st);
+        ok(!/读取选区失败/.test(d.body.textContent), '不是「读取失败」空态');
+        ok(d.querySelectorAll('.card').length === 2,
+            '恢复后照常识别选区，卡片 ' + d.querySelectorAll('.card').length + ' 张');
+
+        // 重新映射会重新保存，覆盖掉损坏的主密文；警告应消失
+        d.getElementById('btnMask').click();
+        ok(/已映射/.test(d.getElementById('status').textContent),
+            '恢复后可以继续映射：' + d.getElementById('status').textContent);
+        ok(!/映射表损坏/.test(d.getElementById('status').textContent), '保存成功后不再提示损坏');
+        b.dom.window.close();
+    }
+
+    console.log('\n[21] 首行被自动判成表头时给出可操作提示');
+    {
+        // 全文本数据：表头行和数据行长得一样，启发式只能按"从第 1 行开始就是表格"默认当表头，
+        // 首行一旦其实是数据就整行不脱敏，必须提示用户去取消勾选。
+        const textRows = [
+            ['张伟', '北京', '备注一'],
+            ['李娜', '上海', '备注二'],
+            ['王强', '广州', '备注三'],
+            ['赵敏', '深圳', '备注四']
+        ];
+        const b = boot(textRows);
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const info = () => d.getElementById('selInfo').textContent;
+        ok(/首行自动判定为字段名/.test(info()), '全文本首行 → 警告出现：' + info());
+        ok(d.getElementById('chkHeader').checked === true, '首行仍默认勾选为表头');
+        ok(/首行为字段名/.test(info()), '仍显示首行为字段名');
+
+        // 自动刷新（选区行数变化）会传显式 hasHeader，但表头值本来就是自动判定继承下来的，
+        // 用户还没表过态，警告必须继续在。
+        b.app.select('Sheet1', 1, 1, 5, 3);
+        await sleep(1900);
+        ok(/首行自动判定为字段名/.test(info()), '自动刷新后警告仍在：' + info());
+
+        // 用户手动取消勾选：按无表头分析，警告消失，首行也参与脱敏
+        d.getElementById('chkHeader').checked = false;
+        fire(d.getElementById('chkHeader'), 'change');
+        await sleep(150);
+        ok(!/首行自动判定为字段名/.test(info()), '手动取消表头后警告消失：' + info());
+        ok(/无表头/.test(info()), '切换后按无表头分析');
+        ok(/5 行/.test(info()), '取消表头后首行被算进数据行：' + info());
+        ok(d.querySelectorAll('.card').length === 3, '无表头下仍是 3 列卡片');
+
+        // 用户重新勾选：已经表过态，不再提示
+        d.getElementById('chkHeader').checked = true;
+        fire(d.getElementById('chkHeader'), 'change');
+        await sleep(150);
+        ok(!/首行自动判定为字段名/.test(info()), '手动勾选表头后不再提示：' + info());
+
+        // 「重新识别」回到自动判定：提示应重新出现，让用户再核对一次
+        d.getElementById('btnAuto').click();
+        await sleep(150);
+        ok(/首行自动判定为字段名/.test(info()), '重新识别后提示重新出现：' + info());
+        b.dom.window.close();
+    }
+    {
+        // 常规表：第二行就有手机号/年龄这类强证据，首行不可能是数据，提示只会变成噪音
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        ok(!/首行自动判定为字段名/.test(d.getElementById('selInfo').textContent),
+            '常规表头数据不显示表头警告：' + d.getElementById('selInfo').textContent);
+        b.dom.window.close();
+    }
 
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
     process.exit(fail === 0 ? 0 : 1);

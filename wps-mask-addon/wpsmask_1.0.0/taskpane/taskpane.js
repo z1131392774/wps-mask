@@ -6,7 +6,7 @@
     'use strict';
 
     var E = MaskEngine;
-    var state = { model: null, vault: null, ready: false, selKey: '', edited: {} };
+    var state = { model: null, vault: null, ready: false, headerTouched: false, selKey: '', edited: {} };
     var POLL_MS = 800;
 
     function $(id) { return document.getElementById(id); }
@@ -38,6 +38,17 @@
         var a = MaskGetApp();
         if (!a) { throw new Error('未取到 WPS 应用对象，请确认加载项运行在 WPS 表格中'); }
         return a;
+    }
+
+    // 配置记忆的键：工作表名 + 列位置。表头可能为空（无表头）也可能重名，
+    // 只有位置能稳定标出用户改过的那一列。
+    function cfgKey(sheetName, col) {
+        return sheetName + '!' + col.col;
+    }
+
+    function markEdited(col) {
+        if (!state.model) { return; }
+        state.edited[cfgKey(state.model.sheetName, col)] = true;
     }
 
     function closestCard(node) {
@@ -88,14 +99,16 @@
         }
         if (cfg.mode === 'number') {
             var hidden = function (when) { return cfg.dist === when ? '' : ' style="display:none"'; };
+            // 小数位单独一行：260px 的窗格里「范围 min ~ max 小数 dec」挤在一行，
+            // 数字框被压到 42px 以下，五位数的末位会被截掉。
             return '' +
                 '<div class="row"><span class="lbl">分布</span>' +
                 '<select class="dist" style="flex:1 1 auto">' + distOptions(cfg.dist || 'uniform') + '</select></div>' +
                 '<div class="row"><span class="lbl">范围</span>' +
                 '<input class="num f-min" type="text" value="' + esc(cfg.min) + '">' +
                 '<span class="sep">~</span>' +
-                '<input class="num f-max" type="text" value="' + esc(cfg.max) + '">' +
-                '<span class="lbl">小数</span>' +
+                '<input class="num f-max" type="text" value="' + esc(cfg.max) + '"></div>' +
+                '<div class="row"><span class="lbl">小数</span>' +
                 '<input class="num f-dec" type="text" value="' + esc(num(cfg.dec, 0)) + '"></div>' +
                 '<div class="row" data-when="normal"' + hidden('normal') + '>' +
                 '<span class="lbl">均值</span><input class="num f-mean" type="text" value="' + esc(cfg.mean) + '">' +
@@ -160,6 +173,13 @@
 
     function render() {
         var box = $('cards');
+        // 自动刷新会重建整列卡片：先把展开状态和滚动位置留下来，别让用户从头找
+        var openMap = {};
+        var old = box.querySelectorAll('.card');
+        for (var oi = 0; oi < old.length; oi++) {
+            openMap[old[oi].getAttribute('data-i')] = isOpen(old[oi]);
+        }
+        var scrollTop = box.scrollTop;
         box.innerHTML = '';
         var model = state.model;
         if (!model || !model.columns.length) {
@@ -169,12 +189,15 @@
         // 列少就全展开；列多先收起，让十列都能一眼扫到，需要改参数的再点开
         var open = model.columns.length <= 3;
         for (var i = 0; i < model.columns.length; i++) {
+            var wasOpen = openMap[String(i)];
+            var opened = wasOpen === undefined ? open : wasOpen;
             var card = document.createElement('div');
-            card.className = 'card' + (open ? ' open' : '');
+            card.className = 'card' + (opened ? ' open' : '');
             card.setAttribute('data-i', String(i));
-            card.innerHTML = cardHtml(model.columns[i], i, open);
+            card.innerHTML = cardHtml(model.columns[i], i, opened);
             box.appendChild(card);
         }
+        box.scrollTop = scrollTop;
         syncExpandLabel();
     }
 
@@ -270,7 +293,7 @@
             if (!cfg.prefix) { cfg.prefix = col.header || '文本'; }
         }
         col.cfg = cfg;
-        state.edited[col.header] = true;   // 只有用户动过的列，换选区时才按字段名带回
+        markEdited(col);   // 只有用户动过的列，换选区时才按位置带回
         updateSample(card, col);
         return col;
     }
@@ -318,15 +341,17 @@
         }
     }
 
-    // 自动刷新会重建卡片，先把用户已修改的参数按字段名保存。
+    // 自动刷新会重建卡片，先把用户已修改的参数保存下来。
     // 只留用户动过的列：没动过的列要拿 hydrate 算出来的新配置，
     // 否则换选区时会把上一个 sheet 同名列的数值区间搬过来，值域一变就装不下。
+    // 键是工作表名 + 列位置：无表头的列表头为空，重名列又共用一个表头，按表头存都会串。
     function snapshotCfgs() {
         var out = {};
         if (!state.model) { return out; }
         for (var i = 0; i < state.model.columns.length; i++) {
             var c = state.model.columns[i];
-            if (c.header && c.cfg && state.edited[c.header]) { out[c.header] = c.cfg; }
+            var k = cfgKey(state.model.sheetName, c);
+            if (c.cfg && state.edited[k]) { out[k] = c.cfg; }
         }
         return out;
     }
@@ -334,8 +359,24 @@
     function applySnapshot(model, snap) {
         for (var i = 0; i < model.columns.length; i++) {
             var c = model.columns[i];
-            if (c.header && snap[c.header]) { c.cfg = snap[c.header]; }
+            var k = cfgKey(model.sheetName, c);
+            if (snap[k]) { c.cfg = snap[k]; }
         }
+    }
+
+    // 表头值还是自动判定出来的（或沿用了上一次的自动判定）、而用户自己从没勾选/取消过时，
+    // 首行可能其实是数据：它不会被脱敏，整行都会泄露。给一句能直接照着做的提示。
+    // 只在"有歧义"时提示：全部列都只能按文本处理时，表头和数据行长得一样，启发式才可能猜错；
+    // 有手机号/数字这类强证据的列时，首行几乎不可能是数据，提示只会变成每次开面板都刷屏的噪音。
+    // 用户手动切换过 chkHeader（headerTouched）就不再提示，避免对已经核对过的表反复刷屏。
+    function headerWarn(model) {
+        if (!(model.hasHeader && (model.headerAuto || !state.headerTouched))) { return ''; }
+        for (var i = 0; i < model.columns.length; i++) {
+            var c = model.columns[i];
+            var cfg = E.defaultCfg(c.header, c.values);
+            if (cfg && cfg.mode !== 'text') { return ''; }
+        }
+        return '；首行自动判定为字段名，若首行其实是数据，请取消勾选「首行是表头」';
     }
 
     function refresh(useRemember, keepEdits) {
@@ -360,19 +401,29 @@
             state.ready = true;
             state.selKey = selSignature(a);
             $('chkHeader').checked = !!model.hasHeader;
-            $('selInfo').textContent = model.sheetName + ' · ' + rangeText(model) + ' · ' +
+            var info = model.sheetName + ' · ' + rangeText(model) + ' · ' +
                 model.columns.length + ' 列 × ' + model.dataRows + ' 行' +
                 (model.hasHeader ? ' · 首行为字段名' : ' · 无表头');
+            $('selInfo').textContent = info + headerWarn(model);
             render();
+            // 区域里没有非空数据：render() 已经切到单行空态，这里别再显示工具栏、
+            // 启用写入按钮，否则按钮可点、点了只会报「已经映射过」
+            if (!model.columns.length) { return; }
             showTools(model);
             $('btnMask').disabled = false;
             $('btnRevert').disabled = false;
             setStatus(useRemember === false ? '已按数据类型重新识别' : '', '');
+            // 主密文坏了、这次是从备份区恢复的：提醒用户重新保存，否则下次打开还是坏的
+            if (state.vault && state.vault.recovered) {
+                setStatus('映射表损坏，已用备份恢复，请重新保存', 'err');
+            }
         } catch (e) {
             state.model = null;
-            // 三种原因分开说：还没选/选得太小是常态，取不到宿主对象才是真出错
+            // 三种原因分开说：还没选/选得太小是常态，取不到宿主对象才是真出错。
+            // 这里必须用不抛错的 MaskGetApp()：没有宿主对象时 getApp() 会再抛一次，
+            // 异常从 catch 里逃出去，nohost 空态就永远到不了。
             var msg = String((e && e.message) || e || '');
-            var a2 = getApp();
+            var a2 = MaskGetApp();
             var sig = null;
             if (a2) { try { sig = selSignature(a2); } catch (e2) { sig = null; } }
             if (!a2) { showEmpty('nohost'); }
@@ -382,8 +433,10 @@
         }
     }
 
+    // 确认框被拦（宿主/浏览器策略）时按「没确认」处理：删除映射表不可逆，不能 fail-open。
+    // 弹窗不可用是宿主限制，不是用户点了确定。
     function confirmBox(msg) {
-        try { return confirm(msg); } catch (e) { return true; }
+        try { return confirm(msg); } catch (e) { return false; }
     }
 
     function doMask() {
@@ -392,19 +445,42 @@
             var a = getApp();
             var vault = E.loadVault(a);
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
+            // 轮询还没跟上时选区可能已经换成空区域：重新分析后没有列就直说，别拿旧卡片去写
+            if (!model.columns.length) { setStatus('这块区域没有数据', ''); return; }
             // 先按记忆重新套一遍，再覆盖面板上的改动：区间并集和随之的搬桶都发生在 hydrate 里，
             // 跳过它就会拿着扩过的区间去新桶里发假值，同一批人拿到两套结果
             E.hydrate(model, vault);
             applySavedCfgs(model);
-            var stats = E.applyMask(model, vault, {});
+            // 两阶段：prepareMask 只建映射并把区域记录写进 vault，不碰单元格。
+            // 必须先 saveVault 再 writeMask：保存失败时表格里一个单元格都不能动。
+            var plan = E.prepareMask(model, vault);
+            var stats = plan.stats;
             if (stats.written === 0) {
                 setStatus('这个区域已经映射过，先反映射再映射。', '');
                 return;
             }
             try {
-                E.saveVault(a, vault);
+                E.saveVault(a, plan.vault);
             } catch (saveErr) {
-                setStatus('映射表保存失败：' + MaskErrText(saveErr) + '，请立刻撤销。', 'err');
+                setStatus('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，请重新映射。', 'err');
+                return;
+            }
+            try {
+                E.writeMask(plan);
+            } catch (writeErr) {
+                // 引擎已按原值回滚写了一半的单元格；再把内存里恢复好的区域记录写回磁盘，
+                // 否则映射表还记着这些没写成功的区域，下次映射会把它们误当成已映射。
+                var tail = (writeErr && writeErr.rollback && writeErr.rollback.ok === false)
+                    ? '；回滚未完成，请检查表格后重新映射。'
+                    : '；已回滚，请重新映射。';
+                var fail = '写入失败：' + MaskErrText(writeErr) + tail;
+                try {
+                    E.saveVault(a, vault);
+                } catch (resaveErr) {
+                    fail = '写入失败：' + MaskErrText(writeErr) + '；映射表写回失败：' +
+                        MaskErrText(resaveErr) + '，请勿关闭文档，重新映射前先检查映射表。';
+                }
+                setStatus(fail, 'err');
                 return;
             }
             var extra = stats.skipped > 0 ? ('，跳过 ' + stats.skipped + ' 格') : '';
@@ -426,14 +502,29 @@
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
             applySavedCfgs(model);
             var stats = E.revert(model, vault, {});
-            if (stats.hit === 0) {
+            // 有还原或有歧义都说明映射表的区域记录被裁剪过，必须立刻落盘，否则关掉文档就丢；
+            // 二次点击两者都是 0，保持 no-op：不重复写单元格，也不重复保存。
+            if (stats.hit === 0 && stats.ambiguous === 0) {
                 setStatus('没有可还原的映射，选区要和映射时一致。', 'err');
                 return;
             }
+            var saveErr = null;
+            try {
+                E.saveVault(a, vault);
+            } catch (e2Save) {
+                saveErr = e2Save;
+            }
             state.vault = vault;
             refresh(true);
-            setStatus('已还原 ' + stats.hit + ' 格' +
-                (stats.miss > 0 ? ('，' + stats.miss + ' 格未命中') : ''), 'ok');
+            if (saveErr) {
+                setStatus('映射表未保存：' + MaskErrText(saveErr) +
+                    '，请勿关闭文档，重新映射前先检查映射表。', 'err');
+                return;
+            }
+            var tail = '';
+            if (stats.miss > 0) { tail += '，' + stats.miss + ' 格未命中'; }
+            if (stats.ambiguous > 0) { tail += '，' + stats.ambiguous + ' 格有歧义未还原'; }
+            setStatus('已还原 ' + stats.hit + ' 格' + tail, stats.ambiguous > 0 ? 'err' : 'ok');
         } catch (e) {
             setStatus('反映射失败：' + MaskErrText(e), 'err');
         }
@@ -446,8 +537,15 @@
         try {
             var a = getApp();
             var dropped = E.dropVault(a);
-            if (state.vault) { state.vault.settings = {}; state.vault.maps = {}; }
-            setStatus(dropped ? '映射表已删除' : '本文档没有映射表', dropped ? 'ok' : '');
+            if (!dropped) {
+                setStatus('本文档没有映射表', '');
+                return;
+            }
+            // 映射表和记忆一起没了：清掉面板里的旧配置，再刷新让卡片回到自动识别
+            state.vault = null;
+            state.edited = {};
+            refresh(true);
+            setStatus('映射表已删除', 'ok');
         } catch (e) {
             setStatus('删除失败：' + MaskErrText(e), 'err');
         }
@@ -519,7 +617,7 @@
             var i = Number(card.getAttribute('data-i'));
             var col = state.model.columns[i];
             col.cfg = defaultForMode(t.value, col);
-            state.edited[col.header] = true;
+            markEdited(col);
             renderCard(card, i);
             return;
         }
@@ -543,8 +641,15 @@
         for (var i = 0; i < list.length; i++) { setCardOpen(list[i], open); }
         syncExpandLabel();
     });
-    $('btnAuto').addEventListener('click', function () { refresh(false); });
-    $('chkHeader').addEventListener('change', function () { refresh(true); });
+    $('btnAuto').addEventListener('click', function () {
+        // 「重新识别」= 回到自动判定：允许表头提示重新出现（用户还没为这块数据做决定）
+        state.headerTouched = false;
+        refresh(false);
+    });
+    $('chkHeader').addEventListener('change', function () {
+        state.headerTouched = true;
+        refresh(true);
+    });
     $('btnMask').addEventListener('click', doMask);
     $('btnRevert').addEventListener('click', doRevert);
     $('btnDrop').addEventListener('click', doDrop);
@@ -583,17 +688,18 @@
     function boot(tries) {
         tries = tries || 0;
         var a = MaskGetApp();
-        if (a && selSignature(a)) {
-            refresh(true);
-            startWatch();
-            return;
-        }
-        if (tries < 20) {
+        // 宿主对象还没注入或选区还没就绪时先重试（10×250ms，够晚到的宿主接上）；
+        // 重试用完就进入正常报错路径：没宿主对象时由 refresh() 给出 nohost 空态。
+        if (!(a && selSignature(a)) && tries < 10) {
             setTimeout(function () { boot(tries + 1); }, 250);
             return;
         }
-        refresh(true);   // 仍失败则进入正常报错路径，避免面板一直停留在"正在读取"状态
-        startWatch();
+        // refresh 失败也必须开始轮询：宿主对象晚到时靠这个轮询自愈
+        try {
+            refresh(true);
+        } finally {
+            startWatch();
+        }
     }
 
     boot();

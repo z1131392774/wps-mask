@@ -289,7 +289,7 @@ select:focus, input[type="text"]:focus {
 .num {
     flex: 0 1 auto;
     width: 56px;
-    min-width: 34px;
+    min-width: 42px;   /* 260px 窗格里也要完整放下 5 位数（34px 时末位会被截掉） */
     text-align: right;
     font-family: Consolas, monospace;
 }
