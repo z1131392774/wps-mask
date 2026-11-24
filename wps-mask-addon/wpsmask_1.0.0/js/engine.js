@@ -316,7 +316,7 @@ var MaskEngine = (function () {
             if (s === orig || used[keyOf(s)]) { continue; }
             return s;
         }
-        throw new Error('手机号取值空间不足，无法继续生成唯一号码');
+        throw new Error('手机号已经用满，无法再生成不重复的号码');
     }
 
     function genNumber(cfg, orig, used) {
@@ -359,7 +359,7 @@ var MaskEngine = (function () {
             var cand = roundTo(lo + idx * step, dec);
             if (cand !== orig && !used['n:' + cand]) { return cand; }
         }
-        throw new Error('数值区间容量不足，无法为每条记录分配唯一值（请扩大取值范围）');
+        throw new Error('数值区间不够用，请扩大取值范围');
     }
 
     // 区间刚好够用时，逐个随机取会走进死胡同：最后一格只剩它自己的值，只能报"容量不足"。
@@ -400,7 +400,7 @@ var MaskEngine = (function () {
             var cand = prefix + padNum(n, digits);
             if (cand !== orig && !used[keyOf(cand)]) { return cand; }
         }
-        throw new Error('文本后缀位数不足，无法为每条记录分配唯一值（请增大后缀位数）');
+        throw new Error('后缀位数不够用，请加大后缀位数');
     }
 
     /* ==================== 混合标识（手机 / 邮箱 / 固话 / 账号 混在一列） ==================== */
@@ -423,7 +423,7 @@ var MaskEngine = (function () {
             var c2 = 'u' + padNum(n, 6) + '@' + domain;
             if (c2 !== orig && !used[keyOf(c2)]) { return c2; }
         }
-        throw new Error('邮箱地址空间不足，无法继续生成唯一地址');
+        throw new Error('邮箱地址已经用满');
     }
 
     // 固话：区号、分隔符、位数都照旧，只换后面的号码
@@ -442,7 +442,7 @@ var MaskEngine = (function () {
             var c2 = head + padNum(num, len) + ext;
             if (c2 !== orig && !used[keyOf(c2)]) { return c2; }
         }
-        throw new Error('固话号码空间不足，无法继续生成唯一号码');
+        throw new Error('固话号码已经用满');
     }
 
     // 纯数字账号：等长随机数字，0 开头的把前导零原样留住
@@ -466,7 +466,7 @@ var MaskEngine = (function () {
             var c2 = head + padNum(num, body);
             if (c2 !== s && !used[keyOf(c2)]) { return c2; }
         }
-        throw new Error('数字账号空间不足，无法继续生成唯一账号');
+        throw new Error('数字账号已经用满');
     }
 
     // 字母数字账号：逐字符换，数字换数字、字母换字母、符号原样留着
@@ -483,7 +483,7 @@ var MaskEngine = (function () {
             }
             if (out !== s && !used[keyOf(out)]) { return out; }
         }
-        throw new Error('同形态替换空间不足，无法继续生成唯一账号');
+        throw new Error('同形态的账号已经用满');
     }
 
     function genMixed(textCfg, orig, used) {
@@ -695,7 +695,7 @@ var MaskEngine = (function () {
         if (!sel) { throw new Error('请先在工作表里选中一个区域'); }
         try {
             if (sel.Areas && sel.Areas.Count > 1) {
-                throw new Error('不支持 Ctrl 多区域选择，请选中一整块连续区域');
+                throw new Error('不支持 Ctrl 多区域，请选中一整块连续区域');
             }
         } catch (eArea) {
             if (eArea && eArea.message && eArea.message.indexOf('多区域') >= 0) { throw eArea; }
@@ -731,7 +731,7 @@ var MaskEngine = (function () {
         }
 
         if (rows * cols === 1) { throw new Error('请选中至少两个单元格'); }
-        if (rows * cols > 300000) { throw new Error('选区过大（超过 30 万单元格），请分批处理'); }
+        if (rows * cols > 300000) { throw new Error('选区超过 30 万单元格，请分批处理'); }
 
         var rng = sheet.Cells.Item(top, left).Resize(rows, cols);
         var data = to2D(rng.Value2, rows, cols);
@@ -821,16 +821,15 @@ var MaskEngine = (function () {
         if (cfg.mode === 'number' && cfg.dist === 'uniform' && (!cfg.dec || cfg.dec <= 0)) {
             var cap = Math.floor(cfg.max) - Math.ceil(cfg.min) + 1;
             if (need > cap) {
-                throw new Error(label + '有 ' + need + ' 个不同值，区间 ' + cfg.min + '~' + cfg.max +
-                    ' 只有 ' + cap + ' 个整数可取，做不到 1 对 1。' +
-                    '请在映射面板把这一列的区间放宽，或把它设为「不处理」。');
+                throw new Error(label + '的区间只有 ' + cap + ' 个整数，装不下 ' + need +
+                    ' 个不同值，请放宽区间或设为「不处理」。');
             }
         }
         if (cfg.mode === 'text') {
             var span = Math.pow(10, Math.max(1, Math.min(8, cfg.digits || 4)));
             if (need > span) {
-                throw new Error(label + '有 ' + need + ' 个不同值，超过 ' + cfg.digits +
-                    ' 位后缀能表示的范围（' + span + ' 个）。请增大后缀位数。');
+                throw new Error(label + '的 ' + cfg.digits + ' 位后缀只有 ' + span +
+                    ' 个可用，装不下 ' + need + ' 个不同值，请加大后缀位数。');
             }
         }
     }

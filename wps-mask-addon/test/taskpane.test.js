@@ -103,7 +103,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const modeSel = cards[3].querySelector('.mode');
     modeSel.value = 'keep';
     fire(modeSel, 'change');
-    ok(/保持原值/.test(cards[3].querySelector('.cb').textContent), '切到「不处理」后显示提示');
+    ok(/这一列不处理/.test(cards[3].querySelector('.cb').textContent), '切到「不处理」后显示提示');
     ok(cards[3].querySelector('.samp').textContent === '不处理', '示例列显示「不处理」');
 
     console.log('\n[4] 执行映射');
@@ -151,8 +151,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     console.log('\n[8] 没有选区时的空态');
     app.Selection = null;
     await sleep(1900);   // 选区消失也要两拍确认，面板自己会发现
-    const emptyT = doc.querySelector('.empty-t');
-    ok(emptyT && /选一块区域/.test(emptyT.textContent), '空态标题：' + (emptyT && emptyT.textContent));
+    const emptyT = doc.querySelector('.empty');
+    ok(emptyT && /选中要脱敏的区域/.test(emptyT.textContent), '空态提示：' + (emptyT && emptyT.textContent));
     ok(!/读取选区失败/.test(doc.body.textContent), '没有选区时不说「读取失败」');
     ok(doc.getElementById('status').textContent === '', '状态栏不重复报同一件事');
     ok(doc.getElementById('bar').style.display === 'none', '空态下不显示表头/展开/重新识别');
@@ -160,8 +160,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     app.select('Sheet1', 1, 1, 1, 1);
     await sleep(1900);
-    ok(/太少/.test(doc.querySelector('.empty-t').textContent),
-        '只选一格时说「太少」而不是「读取失败」：' + doc.querySelector('.empty-t').textContent);
+    ok(/至少选中两个/.test(doc.querySelector('.empty').textContent),
+        '只选一格时说「至少两个」而不是「读取失败」：' + doc.querySelector('.empty').textContent);
 
 
     console.log('\n[9] 只映射部分列，再映射整个区域');
@@ -170,7 +170,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     doc.getElementById('btnMask').click();
     const nameOnce = app.getCell('Sheet1', 2, 1);
     const phoneOnce = app.getCell('Sheet1', 2, 2);
-    ok(/已映射 2 列/.test(doc.getElementById('status').textContent), '先映射 2 列：' + doc.getElementById('status').textContent);
+    ok(/已映射 6 格/.test(doc.getElementById('status').textContent), '先映射 2 列：' + doc.getElementById('status').textContent);
 
     app.select('Sheet1', 1, 1, table.length, 4);
     await sleep(1900);
@@ -179,7 +179,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const s9 = doc.getElementById('status').textContent;
     ok(app.getCell('Sheet1', 2, 1) === nameOnce, '姓名没有被二次映射，仍是 ' + nameOnce);
     ok(app.getCell('Sheet1', 2, 2) === phoneOnce, '手机号没有被二次映射，仍是 ' + phoneOnce);
-    ok(/跳过 6 格已映射（姓名、手机号）/.test(s9), '状态栏说明跳过：' + s9);
+    ok(/已映射 5 格，跳过 6 格/.test(s9), '状态栏说明跳过：' + s9);
 
     doc.getElementById('btnMask').click();
     ok(/已经映射过/.test(doc.getElementById('status').textContent), '整块再点一次：' + doc.getElementById('status').textContent);

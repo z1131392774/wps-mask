@@ -78,14 +78,13 @@
 
     function bodyHtml(cfg) {
         if (cfg.mode === 'phone') {
-            return '<div class="hint">生成 11 位合法手机号，列内不重复。</div>';
+            return '<div class="hint">换成合法的 11 位手机号。</div>';
         }
         if (cfg.mode === 'keep') {
-            return '<div class="hint">保持原值，不做处理。</div>';
+            return '<div class="hint">这一列不处理。</div>';
         }
         if (cfg.mode === 'mixed') {
-            return '<div class="hint">每个值按它自己的形态换：手机号仍是合法手机号，邮箱只换 @ 前面、' +
-                '域名保留，固话保留区号与位数，字母数字账号按原长度换，其他文本用「字段名+数字」。</div>';
+            return '<div class="hint">每个值换成同形态的假值。</div>';
         }
         if (cfg.mode === 'number') {
             var hidden = function (when) { return cfg.dist === when ? '' : ' style="display:none"'; };
@@ -102,8 +101,7 @@
                 '<span class="lbl">均值</span><input class="num f-mean" type="text" value="' + esc(cfg.mean) + '">' +
                 '<span class="lbl">标准差</span><input class="num f-sd" type="text" value="' + esc(cfg.sd) + '"></div>' +
                 '<div class="row" data-when="exponential"' + hidden('exponential') + '>' +
-                '<span class="lbl">均值λ</span><input class="num f-lambda" type="text" value="' + esc(cfg.lambda) + '">' +
-                '<span class="hint">越大越平缓</span></div>';
+                '<span class="lbl">均值λ</span><input class="num f-lambda" type="text" value="' + esc(cfg.lambda) + '"></div>';
         }
         return '' +
             '<div class="row"><span class="lbl">语言</span>' +
@@ -185,23 +183,20 @@
     }
 
     /* ---------------- 空状态 ----------------
-     * 三种"没东西可看"要分开说，别用同一句"读取失败"糊过去：
-     * 还没选、选得太小是正常情况；取不到宿主对象是真出错。
+     * 一句话说完，不跟补充说明：还没选/选得太小是常态，取不到宿主对象才是真出错。
      * 空的时候整条工具栏都不该出现——没有列可展开、也没有可重新识别的对象。
      */
     var EMPTY = {
-        idle: ['在表格里选一块区域', '整列、整行或任意一块都行；选好后这里会自动列出每一列。'],
-        small: ['选中的格子太少', '至少要选两个单元格。勾了「首行是表头」时，第一行会当作字段名，数据从第二行算起。'],
-        blank: ['这块区域没有可处理的数据', '全是空格子，或者整块都是表头。换个区域试试。'],
-        nohost: ['未取到 WPS 应用对象', '这一版 WPS 没把应用对象交给面板。可以先用功能区的「快速映射」，它跑的是同一套逻辑。'],
-        error: ['读取选区失败', '']
+        idle: '在表格里选中要脱敏的区域',
+        small: '至少选中两个单元格',
+        blank: '这块区域没有数据',
+        nohost: '面板取不到 WPS 应用对象，请用功能区的「快速映射」',
+        error: '读取选区失败'
     };
 
     function showEmpty(kind, detail) {
-        var t = EMPTY[kind] || EMPTY.error;
         $('cards').innerHTML = '<div class="empty">' +
-            '<div class="empty-t">' + esc(t[0]) + '</div>' +
-            '<div class="empty-d">' + esc(detail || t[1]) + '</div></div>';
+            esc(detail || EMPTY[kind] || EMPTY.error) + '</div>';
         $('bar').style.display = 'none';
         $('selInfo').textContent = '';
         $('btnMask').disabled = true;
@@ -373,7 +368,7 @@
             showTools(model);
             $('btnMask').disabled = false;
             $('btnRevert').disabled = false;
-            setStatus(useRemember === false ? '已按数据类型重新识别（忽略上次设置）' : '', '');
+            setStatus(useRemember === false ? '已按数据类型重新识别' : '', '');
         } catch (e) {
             state.model = null;
             // 三种原因分开说：还没选/选得太小是常态，取不到宿主对象才是真出错
@@ -402,26 +397,21 @@
 
             var stats = E.applyMask(model, vault, {});
             if (stats.written === 0) {
-                setStatus('这个区域已经映射过（跳过 ' + stats.skipped +
-                    ' 格），没有可处理的新数据。要基于当前值再映射一次，请先反映射。', '');
+                setStatus('这个区域已经映射过，先反映射再映射。', '');
                 return;
             }
             try {
                 E.saveVault(a, vault);
             } catch (saveErr) {
-                setStatus('数据已改，但映射表保存失败：' + MaskErrText(saveErr) +
-                    '。请立刻 Ctrl+Z 撤销，否则这些数据无法还原！', 'err');
+                setStatus('映射表保存失败：' + MaskErrText(saveErr) + '，请立刻撤销。', 'err');
                 return;
             }
-            var extra = stats.skipped > 0
-                ? ('，跳过 ' + stats.skipped + ' 格已映射（' + stats.skippedColumns.join('、') + '）')
-                : '';
+            var extra = stats.skipped > 0 ? ('，跳过 ' + stats.skipped + ' 格') : '';
             // 写完把卡片重读一遍：示例要显示刚写进去的值，本文档也从这一刻起有了记忆，
             // 「重新识别」才该出现。先刷新再报状态，否则状态会被刷新清掉。
             state.vault = vault;
             refresh(true);
-            setStatus('已映射 ' + stats.columns + ' 列 / ' + stats.written + ' 格' + extra +
-                '；新建 ' + stats.created + ' 条映射，记得保存文档。', 'ok');
+            setStatus('已映射 ' + stats.written + ' 格' + extra + '，记得保存文档。', 'ok');
         } catch (e) {
             setStatus('映射失败：' + MaskErrText(e), 'err');
         }
@@ -436,20 +426,20 @@
             applySavedCfgs(model);
             var stats = E.revert(model, vault, {});
             if (stats.hit === 0) {
-                setStatus('没有命中任何映射记录（' + stats.cells + ' 个单元格）。请确认选区与映射时一致。', 'err');
+                setStatus('没有可还原的映射，选区要和映射时一致。', 'err');
                 return;
             }
             state.vault = vault;
             refresh(true);
-            setStatus('已还原 ' + stats.hit + ' 个单元格' +
-                (stats.miss > 0 ? ('，' + stats.miss + ' 个未命中已保持原样') : ''), 'ok');
+            setStatus('已还原 ' + stats.hit + ' 格' +
+                (stats.miss > 0 ? ('，' + stats.miss + ' 格未命中') : ''), 'ok');
         } catch (e) {
             setStatus('反映射失败：' + MaskErrText(e), 'err');
         }
     }
 
     function doDrop() {
-        if (!confirmBox('将删除本文档中的加密映射表。\n删除后，已映射的数据无法再还原成原值。确定继续？')) {
+        if (!confirmBox('删除后已映射的数据无法还原，确定删除映射表？')) {
             return;
         }
         try {
@@ -465,34 +455,29 @@
     function showHelp() {
         var text = [
             '用法：',
-            '1. 在工作表里选中要脱敏的区域（可以整列、整行或任意块）。',
-            '2. 面板会自己读取选区；换了地方也会自动跟着更新，没有需要点的刷新按钮。',
-            '3. 逐列核对「映射方式」与参数，示例可先看一眼效果。',
-            '4. 列多的时候参数默认收起，点这一行或行尾的箭头展开；也可以「展开全部 / 收起全部」。',
+            '1. 在工作表里选中要脱敏的区域。',
+            '2. 面板会自己读取选区，换了地方也会自动更新。',
+            '3. 逐列核对「映射方式」与参数，示例可先看效果。',
+            '4. 列多时参数默认收起，点这一行或行尾箭头展开。',
             '5. 点「映射并写入」，新值直接写回原区域。',
             '',
-            '已经映射过的单元格会被自动跳过，所以对着同一块区域反复点「映射」不会把数据映射两次。',
-            '要基于映射后的值再映射一遍，先「反映射」，再映射。',
+            '已经映射过的格子会被跳过，所以对同一块区域反复点「映射」不会映射两次。',
+            '要基于映射后的值再映射一遍，先「反映射」。',
             '',
-            '关于 1 对 1：同一个原始值永远得到同一个结果，不同原始值一定得到不同结果；',
-            '映射关系加密后存进本文档的隐藏工作表「' + E.VAULT_SHEET + '」，所以「反映射」能精确还原。',
+            '同一个原值永远映射成同一个结果，不同原值一定映射成不同结果。',
+            '映射关系加密存在隐藏工作表「' + E.VAULT_SHEET + '」里，所以「反映射」能精确还原。',
             '',
-            '关于分布：均匀=在范围内等概率；正态=按均值/标准差聚集，超出范围会被折回；',
-            '指数=多数靠近下限、少数拉高，λ 控制平缓程度。',
+            '均匀=范围内等概率；正态=按均值/标准差聚集，越界折回；指数=多数靠近下限，λ 越大越平缓。',
             '',
-            '关于整数区间：区间里可取的整数刚好等于这一列的不同值个数时，会把整列做一次错位换算',
-            '（只用这批值本身，1 对 1、不会出现原值），因为这时本来就没有别的排法。',
+            '整数区间刚好够用时，整列会做一次错位换算，保证新值不落在原值上。',
             '',
-            '关于文本后缀：位数按本列要写的格子数自动给，只留 10% 余量。41 行客户名就是 2 位',
-            '（如「姓名37」），够用又不会写成「姓名0037」那种看着像按条数编了号的长号；可以手改。',
+            '后缀位数按这一列要写的格子数自动给，可以手改。',
             '',
-            '关于表头：「首行是表头」是自动判断的，判错时手动勾上/勾掉即可。勾上时第一行不参与脱敏，',
-            '文本映射的前缀也从这一行取；勾掉就把第一行当数据。',
+            '「首行是表头」勾上时第一行不参与脱敏，文本前缀也从这一行取。',
             '',
-            '关于「重新识别」：只有这份文档记过上次的设置时才会出现，用来忽略记忆、按数据类型重判一遍。',
+            '「重新识别」只在本文档记过设置时出现，点了就忽略记忆重新判断。',
             '',
-            '注意：本文档若被他人拿到，' +
-            '对方可以用同一份加载项解开映射表（密钥内置在代码里，属混淆级保护）。'
+            '密钥内置在代码里，拿到这份加载项的人能解开映射表，所以这是混淆级保护。'
         ].join('\n');
         MaskAlert(text);
     }

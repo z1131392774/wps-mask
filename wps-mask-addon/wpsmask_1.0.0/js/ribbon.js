@@ -39,7 +39,7 @@ function OnAction(control) {
 
 function MaskTogglePane() {
     var app = MaskGetApp();
-    if (!app) { throw new Error('未取到 WPS 应用对象，请确认加载项在 WPS 表格中运行'); }
+    if (!app) { throw new Error('未取到 WPS 应用对象，请确认在 WPS 表格中运行'); }
 
     var savedId = null;
     try { savedId = app.PluginStorage.getItem(MASK_TP_KEY); } catch (e) { savedId = null; }
@@ -70,15 +70,13 @@ function MaskQuickApply() {
 
     var stats = MaskEngine.applyMask(model, vault, {});
     if (stats.written === 0) {
-        MaskAlert('这个区域已经映射过（跳过 ' + stats.skipped + ' 格），没有可处理的新数据。\n' +
-            '要基于当前值再映射一次，请先执行「反映射」。');
+        MaskAlert('这个区域已经映射过，先执行「反映射」再映射。');
         return;
     }
     try {
         MaskEngine.saveVault(app, vault);
     } catch (saveErr) {
-        MaskAlert('数据已经改了，但映射表保存失败：' + MaskErrText(saveErr) +
-            '\n请立刻 Ctrl+Z 撤销，否则这些数据无法还原！');
+        MaskAlert('映射表保存失败：' + MaskErrText(saveErr) + '，请立刻撤销。');
         return;
     }
 
@@ -89,10 +87,10 @@ function MaskQuickApply() {
         detail += '\n· ' + (c.header || ('第' + (c.index + 1) + '列')) + ' → ' + modeName;
     }
     var skipNote = stats.skipped > 0
-        ? ('\n已映射过、本次跳过：' + stats.skippedColumns.join('、') + '（' + stats.skipped + ' 格）')
+        ? ('\n本次跳过：' + stats.skippedColumns.join('、') + ' ' + stats.skipped + ' 格')
         : '';
     MaskAlert('已处理 ' + stats.columns + ' 列、' + stats.written + ' 个单元格。' + detail + skipNote +
-        '\n\n映射关系已加密写入本文档（记得保存），可随时「反映射」还原。');
+        '\n\n映射关系已加密写入本文档，记得保存。');
 }
 
 function MaskQuickRevert() {
@@ -104,10 +102,9 @@ function MaskQuickRevert() {
     var stats = MaskEngine.revert(model, vault, {});
 
     if (stats.hit === 0) {
-        MaskAlert('这个区域没有找到对应的映射记录（' + stats.cells + ' 个单元格都未命中）。\n' +
-            '请确认：① 选中的是当初映射过的区域；② 本文档的「脱敏映射表」未被删除。');
+        MaskAlert('这个区域没有对应的映射记录，请确认选区和映射时一致。');
         return;
     }
-    var tail = stats.miss > 0 ? ('\n另有 ' + stats.miss + ' 个单元格没有映射记录，已保持原样。') : '';
-    MaskAlert('已还原 ' + stats.hit + ' 个单元格。' + tail);
+    var tail = stats.miss > 0 ? ('，另有 ' + stats.miss + ' 个没有映射记录') : '';
+    MaskAlert('已还原 ' + stats.hit + ' 个单元格' + tail + '。');
 }

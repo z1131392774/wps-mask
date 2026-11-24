@@ -114,7 +114,7 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 | Reverse mapping restored only part of the range | The selection must match the one used to mask; or the column parameters changed, in which case the lookup prefers the current signature before falling back to the global table |
 | Re-masking a column changes nothing | Those cells already hold mapped values, so they are skipped. Revert first if you meant to map the current values again |
 | Numbers show as left-aligned text | Those cells were text-formatted and kept it. Change the cell format |
-| "区间容量不足" | The integer interval cannot hold that many distinct values (12 distinct amounts inside 1–5). Widen the bounds or add decimal places |
+| "装不下 N 个不同值" | The interval cannot hold these distinct values (12 amounts inside 1–5). Widen the bounds or add decimal places |
 | "解密失败" | `KEY_TEXT` changed, or the hidden table was edited by hand |
 | A mixed cell came back as "字段名+数字" though it looked like an account | It fits none of the five shapes — Chinese text, a one-character value, a code beginning with a digit such as `2024abc`, or one carrying punctuation other than `_ . -` and spaces. The text fallback is still one-to-one and reverts correctly |
 
