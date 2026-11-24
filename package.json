@@ -4,6 +4,9 @@
   "engines": {
     "node": ">=20.11"
   },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  },
   "scripts": {
     "check": "node scripts/check-docs.mjs",
     "test": "node wps-mask-addon/test/engine.test.js && node wps-mask-addon/test/aes.test.js && node wps-mask-addon/test/taskpane.test.js && node wps-mask-addon/test/utils.test.js",

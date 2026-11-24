@@ -33,11 +33,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Cipher and engine
-        run: |
-          node wps-mask-addon/test/aes.test.js
-          node wps-mask-addon/test/engine.test.js
-      - name: Task pane
-        run: |
-          npm i jsdom --no-save
-          node wps-mask-addon/test/taskpane.test.js
+      - name: Install test dependencies
+        run: npm ci
+      - name: Cipher, engine, task pane and utils
+        run: npm test
