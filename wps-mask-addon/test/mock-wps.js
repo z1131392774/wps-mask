@@ -56,6 +56,9 @@ function MockWorkbook(app) {
             } else {
                 self.app.sheets.unshift(ws);
             }
+            // WPS 的行为：新建工作表会成为活动表
+            self.app.ActiveSheet = ws;
+            self.app.activeSheet = ws;
             return ws;
         }
     };
@@ -93,6 +96,15 @@ MockSheet.prototype.Delete = function () {
     var idx = this.app.sheets.indexOf(this);
     if (idx >= 0) { this.app.sheets.splice(idx, 1); }
     this._deleted = true;
+    if (this.app.ActiveSheet === this) {
+        this.app.ActiveSheet = this.app.sheets[0] || null;
+        this.app.activeSheet = this.app.ActiveSheet;
+    }
+};
+
+MockSheet.prototype.Activate = function () {
+    this.app.ActiveSheet = this;
+    this.app.activeSheet = this;
 };
 
 function makeRange(sheet, row, col, rows, cols) {

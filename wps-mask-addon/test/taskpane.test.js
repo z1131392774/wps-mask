@@ -167,6 +167,38 @@ function fire(el, type) {
     doc.getElementById('btnMask').click();
     ok(/已经映射过/.test(doc.getElementById('status').textContent), '整块再点一次：' + doc.getElementById('status').textContent);
 
+    console.log('\n[10] 打开面板就自动识别（不用点刷新）');
+    const late = new MockWPS();
+    late.setTable('Sheet1', 1, 1, table);
+    late.select('Sheet1', 1, 1, table.length, 4);
+    const dom2 = new JSDOM(fs.readFileSync(PANE, 'utf8'), {
+        url: 'file:///' + PANE.replace(/\\/g, '/'),
+        runScripts: 'dangerously',
+        resources: 'usable',
+        virtualConsole: new VirtualConsole(),
+        beforeParse(window) {
+            window.confirm = () => true;
+            window.alert = () => {};
+            // 宿主对象晚到：面板脚本已经跑起来了，Application 过一会儿才注入
+            window.setTimeout(function () { window.Application = late; }, 300);
+        }
+    });
+    await waitLoad(dom2);
+    await new Promise(r => setTimeout(r, 1600));
+    const d2 = dom2.window.document;
+    ok(d2.querySelectorAll('.card').length === 4,
+        '宿主对象晚到也会自己识别，卡片 ' + d2.querySelectorAll('.card').length + ' 张');
+    ok(/A1:D4/.test(d2.getElementById('selInfo').textContent),
+        '选区信息：' + d2.getElementById('selInfo').textContent);
+
+    console.log('\n[11] 换选区自动跟着重算');
+    late.select('Sheet1', 1, 2, table.length, 2);
+    await new Promise(r => setTimeout(r, 2400));
+    ok(/B1:C4/.test(d2.getElementById('selInfo').textContent),
+        '换到 B:C 后自动更新：' + d2.getElementById('selInfo').textContent);
+    ok(d2.querySelectorAll('.card').length === 2,
+        '卡片跟着变成 2 张，实际 ' + d2.querySelectorAll('.card').length);
+
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
     process.exit(fail === 0 ? 0 : 1);
 })();

@@ -167,6 +167,33 @@ var MaskEngine = (function () {
         return { min: min, max: max, mean: mean, sd: sd, dec: Math.min(dec, 4), count: nums.length };
     }
 
+    function colLetter(n) {
+        var x = Number(n), s = '';
+        while (x > 0) {
+            var m = (x - 1) % 26;
+            s = String.fromCharCode(65 + m) + s;
+            x = Math.floor((x - 1) / 26);
+        }
+        return s || '?';
+    }
+
+    // 报错里报列：字母是用户眼睛看到的那个，字段名是他认得出的那个
+    function colLabel(col) {
+        var letter = colLetter(col.col);
+        var head = (col.header == null) ? '' : String(col.header).trim();
+        return head ? (letter + ' 列（' + head + '）') : (letter + ' 列');
+    }
+
+    function distinctCountOf(values) {
+        var seen = {}, n = 0;
+        for (var i = 0; i < values.length; i++) {
+            if (isBlank(values[i])) { continue; }
+            var k = keyOf(values[i]);
+            if (!seen[k]) { seen[k] = true; n++; }
+        }
+        return n;
+    }
+
     function defaultCfg(header, values) {
         var mode = guessMode(header, values);
         var h = header == null ? '' : String(header).trim();
@@ -178,6 +205,14 @@ var MaskEngine = (function () {
             var span = st.max - st.min;
             var lo = st.min, hi = st.max;
             if (span === 0) { lo = st.min; hi = st.min === 0 ? 100 : st.min * 2; }
+            // 数值统计只看数字，但不同值里可能混着 "无"、"N/A" 这类文本；
+            // 区间装不下时把上界抬到刚好够用为止（1001~1040 差一个就 1041），
+            // 而不是让整次映射失败，也不是一把拉到 9999 把"年龄"变成七千岁。
+            if (st.dec <= 0) {
+                var need = distinctCountOf(values);
+                var cap = Math.floor(hi) - Math.ceil(lo) + 1;
+                if (cap < need) { hi = Math.ceil(lo) + need - 1; }
+            }
             return {
                 mode: 'number',
                 dist: 'uniform',
@@ -269,6 +304,31 @@ var MaskEngine = (function () {
         throw new Error('数值区间容量不足，无法为每条记录分配唯一值（请扩大取值范围）');
     }
 
+    // 区间刚好够用时，逐个随机取会走进死胡同：最后一格只剩它自己的值，只能报"容量不足"。
+    // 这种情况下整列做一次错位置换 —— 随机错开 r 格，1 对 1、无不动点、且每个槽只用一次。
+    function assignExact(cfg, keys, used) {
+        var lo = Math.ceil(Number(cfg.min)), hi = Math.floor(Number(cfg.max));
+        var slots = [];
+        for (var v = lo; v <= hi; v++) {
+            if (!used['n:' + v]) { slots.push(v); }
+        }
+        var nums = [];
+        for (var i = 0; i < keys.length; i++) {
+            if (String(keys[i]).indexOf('n:') !== 0) { return null; }   // 混着文本值，交给逐个生成
+            nums.push(Number(String(keys[i]).substring(2)));
+        }
+        if (!keys.length || nums.length !== slots.length || nums.length < 2) { return null; }
+        nums.sort(function (a, b) { return a - b; });
+        slots.sort(function (a, b) { return a - b; });
+        // slots 与 nums 是同一组数，错开 r 位（r 随机且不为 0）就既没有不动点、也不是恒定的 +1
+        var r = rndInt(1, nums.length - 1);
+        var out = {};
+        for (var j = 0; j < nums.length; j++) {
+            out['n:' + nums[j]] = slots[(j + r) % nums.length];
+        }
+        return out;
+    }
+
     function genText(cfg, orig, used) {
         var prefix = cfg.prefix == null ? '' : String(cfg.prefix);
         var digits = Math.max(1, Math.min(8, Number(cfg.digits) || 4));
@@ -300,13 +360,19 @@ var MaskEngine = (function () {
         return null;
     }
 
-    function getVaultSheet(wb) {
+    function getVaultSheet(app) {
+        var wb = app.ActiveWorkbook;
         var ws = findSheet(wb, VAULT_SHEET);
         if (ws) { return ws; }
+        var prev = null;
+        try { prev = app.ActiveSheet; } catch (e) { prev = null; }
         ws = wb.Worksheets.Add(undefined, wb.Worksheets.Item(wb.Worksheets.Count));
         ws.Name = VAULT_SHEET;
-        try { ws.Visible = 2; } catch (e) { try { ws.Visible = false; } catch (e2) {} }
-        try { ws.Cells.Item(1, 1).Value2 = '本表由「数据脱敏映射」加载项维护，存放加密后的映射关系，请勿编辑或删除。'; } catch (e3) {}
+        // 新建工作表会成为活动表：用户什么都没做，视图却跳到别处（越隐藏越像"跑到了 sheet3"）。
+        // 先切回原来那张，再把它藏起来 —— 活动表不允许隐藏，顺序反过来就藏不住。
+        if (prev) { try { prev.Activate(); } catch (e2) {} }
+        try { ws.Visible = 2; } catch (e3) { try { ws.Visible = false; } catch (e4) {} }
+        try { ws.Cells.Item(1, 1).Value2 = '本表由「数据脱敏映射」加载项维护，存放加密后的映射关系，请勿编辑或删除。'; } catch (e5) {}
         return ws;
     }
 
@@ -353,7 +419,7 @@ var MaskEngine = (function () {
     function saveVault(app, vault) {
         var wb = app.ActiveWorkbook;
         if (!wb) { throw new Error('当前没有打开的工作簿'); }
-        var ws = getVaultSheet(wb);
+        var ws = getVaultSheet(app);
         var cipher = Cipher.encrypt(JSON.stringify(vault));
         var oldLast = ws.Cells.Item(ws.Rows.Count, 1).End(XL_UP).Row;
         if (oldLast >= 2) {
@@ -372,6 +438,8 @@ var MaskEngine = (function () {
         var wb = app.ActiveWorkbook;
         var ws = wb ? findSheet(wb, VAULT_SHEET) : null;
         if (!ws) { return false; }
+        var prev = null;
+        try { prev = app.ActiveSheet; } catch (e0) { prev = null; }
         try { ws.Visible = true; } catch (e) {}
         var oldAlerts = app.DisplayAlerts;
         try {
@@ -379,6 +447,10 @@ var MaskEngine = (function () {
             ws.Delete();
         } finally {
             try { app.DisplayAlerts = oldAlerts; } catch (e2) {}
+        }
+        // 删掉的若是活动表，WPS 会自己换一张；这里把用户原来的那张还回去
+        if (prev && prev !== ws && prev.Name !== undefined) {
+            try { prev.Activate(); } catch (e3) {}
         }
         return true;
     }
@@ -431,17 +503,21 @@ var MaskEngine = (function () {
     }
 
     function looksLikeHeader(row0, row1, top) {
-        var allText = true, anyEmpty = false, keyword = false;
+        // 空单元格不投票也不否决：选区多带一列空列，不该让整张表的表头识别翻车
+        var cells = 0, text = 0, keyword = false;
         for (var i = 0; i < row0.length; i++) {
             var v = row0[i];
-            if (isBlank(v)) { anyEmpty = true; continue; }
-            if (typeof v !== 'string') { allText = false; }
-            if (PHONE_HEADER.test(String(v)) ||
-                /姓名|名称|地址|备注|金额|数量|日期|编号|部门|城市|邮箱|公司|产品|类型|状态|说明/.test(String(v))) {
+            if (isBlank(v)) { continue; }
+            cells++;
+            if (typeof v !== 'string') { continue; }
+            text++;
+            if (PHONE_HEADER.test(v) ||
+                /姓名|名称|地址|备注|金额|数量|日期|编号|部门|城市|邮箱|公司|产品|类型|状态|说明/.test(v)) {
                 keyword = true;
             }
         }
-        if (anyEmpty || !allText) { return false; }
+        if (!cells) { return false; }
+        if (text * 2 < cells) { return false; }
         if (keyword) { return true; }
         if (row1) {
             for (var j = 0; j < row1.length; j++) {
@@ -526,11 +602,15 @@ var MaskEngine = (function () {
             }
             var distinct = {};
             var distinctCount = 0;
+            var nonEmptyCount = 0;
             for (var vi = 0; vi < values.length; vi++) {
                 if (isBlank(values[vi])) { continue; }
+                nonEmptyCount++;
                 var kk = keyOf(values[vi]);
                 if (!distinct[kk]) { distinct[kk] = true; distinctCount++; }
             }
+            // 整列空白（选区多带了一列空的）没有可处理的内容，别在面板里占一张卡片
+            if (nonEmptyCount === 0) { continue; }
             columns.push({
                 index: ci,
                 col: left + ci,
@@ -538,11 +618,7 @@ var MaskEngine = (function () {
                 headerIsAuto: !hasHeader,
                 values: values,
                 distinctCount: distinctCount,
-                nonEmptyCount: (function () {
-                    var n = 0;
-                    for (var z = 0; z < values.length; z++) { if (!isBlank(values[z])) { n++; } }
-                    return n;
-                })()
+                nonEmptyCount: nonEmptyCount
             });
         }
 
@@ -592,19 +668,21 @@ var MaskEngine = (function () {
 
     /* ==================== 映射 / 反映射 ==================== */
 
-    function capacityHint(col, cfg) {
+    function capacityHint(col, cfg, need) {
+        var label = colLabel(col);
         if (cfg.mode === 'number' && cfg.dist === 'uniform' && (!cfg.dec || cfg.dec <= 0)) {
             var cap = Math.floor(cfg.max) - Math.ceil(cfg.min) + 1;
-            if (col.distinctCount > cap) {
-                throw new Error('列「' + (col.header || ('第' + (col.index + 1) + '列')) +
-                    '」有 ' + col.distinctCount + ' 个不同值，但区间只有 ' + cap + ' 个整数可取，无法保证 1 对 1');
+            if (need > cap) {
+                throw new Error(label + '有 ' + need + ' 个不同值，区间 ' + cfg.min + '~' + cfg.max +
+                    ' 只有 ' + cap + ' 个整数可取，做不到 1 对 1。' +
+                    '请在映射面板把这一列的区间放宽，或把它设为「不处理」。');
             }
         }
         if (cfg.mode === 'text') {
             var span = Math.pow(10, Math.max(1, Math.min(8, cfg.digits || 4)));
-            if (col.distinctCount > span) {
-                throw new Error('列「' + (col.header || ('第' + (col.index + 1) + '列')) +
-                    '」不同值数量超过后缀可表示的范围（10^' + cfg.digits + '），请增大后缀位数');
+            if (need > span) {
+                throw new Error(label + '有 ' + need + ' 个不同值，超过 ' + cfg.digits +
+                    ' 位后缀能表示的范围（' + span + ' 个）。请增大后缀位数。');
             }
         }
     }
@@ -712,7 +790,7 @@ var MaskEngine = (function () {
                 continue;
             }
 
-            capacityHint({ header: col.header, index: col.index, distinctCount: needCount }, cfg);
+            capacityHint(col, cfg, needCount);
 
             if (!vault.maps[sig]) { vault.maps[sig] = {}; }
             var bucket = vault.maps[sig];
@@ -726,6 +804,18 @@ var MaskEngine = (function () {
 
             var newVals = [];
             var wrote = 0;
+            // 区间刚好装下这批不同值时，先整列算好错位置换，避免逐个随机取走进死胡同
+            var batch = null;
+            if (cfg.mode === 'number' && (cfg.dist || 'uniform') === 'uniform' && (!cfg.dec || cfg.dec <= 0)) {
+                var pendingKeys = [];
+                for (var pk in distinctNeed) {
+                    if (Object.prototype.hasOwnProperty.call(distinctNeed, pk) &&
+                        !Object.prototype.hasOwnProperty.call(bucket, pk)) {
+                        pendingKeys.push(pk);
+                    }
+                }
+                batch = assignExact(cfg, pendingKeys, used);
+            }
             for (var r = 0; r < col.values.length; r++) {
                 var v = col.values[r];
                 if (isBlank(v) || skipFlags[r]) { newVals.push(v); continue; }
@@ -734,13 +824,21 @@ var MaskEngine = (function () {
                 if (Object.prototype.hasOwnProperty.call(bucket, k)) {
                     mapped = bucket[k];
                 } else {
-                    if (cfg.mode === 'phone') {
-                        mapped = genPhone(String(v), used);
-                    } else if (cfg.mode === 'number') {
-                        var origNum = (typeof v === 'number') ? v : Number(v);
-                        mapped = genNumber(cfg, origNum, used);
-                    } else {
-                        mapped = genText(cfg, String(v), used);
+                    try {
+                        if (cfg.mode === 'phone') {
+                            mapped = genPhone(String(v), used);
+                        } else if (cfg.mode === 'number') {
+                            if (batch && Object.prototype.hasOwnProperty.call(batch, k)) {
+                                mapped = batch[k];
+                            } else {
+                                var origNum = (typeof v === 'number') ? v : Number(v);
+                                mapped = genNumber(cfg, origNum, used);
+                            }
+                        } else {
+                            mapped = genText(cfg, String(v), used);
+                        }
+                    } catch (eGen) {
+                        throw new Error(colLabel(col) + '映射失败：' + eGen.message);
                     }
                     bucket[k] = mapped;
                     used[keyOf(mapped)] = true;

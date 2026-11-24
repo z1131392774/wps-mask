@@ -6,7 +6,8 @@
     'use strict';
 
     var E = MaskEngine;
-    var state = { model: null, vault: null, ready: false };
+    var state = { model: null, vault: null, ready: false, selKey: '' };
+    var POLL_MS = 800;
 
     function $(id) { return document.getElementById(id); }
 
@@ -273,7 +274,42 @@
         return c1 + r1 + ':' + c2 + r2;
     }
 
-    function refresh(useRemember) {
+    // 选区指纹：面板靠它判断"用户换了一块地方"，从而自动重新识别
+    function selSignature(a) {
+        try {
+            var s = a.Selection;
+            if (!s) { return ''; }
+            var ws = null;
+            try { ws = s.Worksheet; } catch (e) { ws = null; }
+            if (!ws) { try { ws = a.ActiveSheet; } catch (e2) { ws = null; } }
+            var nm = ws ? String(ws.Name) : '';
+            if (nm === E.VAULT_SHEET) { return ''; }
+            return nm + '!' + s.Row + ':' + s.Column + ':' + s.Rows.Count + ':' + s.Columns.Count;
+        } catch (e3) {
+            return '';
+        }
+    }
+
+    // 自动刷新会重建卡片，先把用户已经改过的参数按字段名存下来
+    function snapshotCfgs() {
+        var out = {};
+        if (!state.model) { return out; }
+        for (var i = 0; i < state.model.columns.length; i++) {
+            var c = state.model.columns[i];
+            if (c.header && c.cfg) { out[c.header] = c.cfg; }
+        }
+        return out;
+    }
+
+    function applySnapshot(model, snap) {
+        for (var i = 0; i < model.columns.length; i++) {
+            var c = model.columns[i];
+            if (c.header && snap[c.header]) { c.cfg = snap[c.header]; }
+        }
+    }
+
+    function refresh(useRemember, keepEdits) {
+        var snap = keepEdits ? snapshotCfgs() : null;
         try {
             var a = getApp();
             state.vault = E.loadVault(a);
@@ -287,8 +323,10 @@
             } else {
                 E.hydrate(model, state.vault);
             }
+            if (snap) { applySnapshot(model, snap); }
             state.model = model;
             state.ready = true;
+            state.selKey = selSignature(a);
             $('chkHeader').checked = !!model.hasHeader;
             $('selInfo').textContent = model.sheetName + ' · ' + rangeText(model) + ' · ' +
                 model.columns.length + ' 列 × ' + model.dataRows + ' 行' +
@@ -383,7 +421,7 @@
         var text = [
             '用法：',
             '1. 在工作表里选中要脱敏的区域（可以整列、整行或任意块）。',
-            '2. 点「刷新选区」，面板会按字段名与数据自动判断每列映射成什么。',
+            '2. 面板会自己读取选区；之后换选区也会自动跟着更新，不用每次点「刷新选区」。',
             '3. 逐列核对「映射方式」与参数，示例可先看一眼效果。',
             '4. 列多的时候参数默认收起，点这一行或行尾的箭头展开；也可以「展开全部 / 收起全部」。',
             '5. 点「映射并写入」，新值直接写回原区域。',
@@ -396,6 +434,9 @@
             '',
             '关于分布：均匀=在范围内等概率；正态=按均值/标准差聚集，超出范围会被折回；',
             '指数=多数靠近下限、少数拉高，λ 控制平缓程度。',
+            '',
+            '关于整数区间：区间里可取的整数刚好等于这一列的不同值个数时，会把整列做一次错位换算',
+            '（只用这批值本身，1 对 1、不会出现原值），因为这时本来就没有别的排法。',
             '',
             '注意：本文档若被他人拿到，' +
             '对方可以用同一份加载项解开映射表（密钥内置在代码里，属混淆级保护）。'
@@ -470,5 +511,45 @@
     $('btnDrop').addEventListener('click', doDrop);
     $('btnHelp').addEventListener('click', showHelp);
 
-    refresh(true);
+    /* ---------------- 自动读取 ----------------
+     * 两件事：
+     * 1. 面板一打开就自己识别，不用先点「刷新选区」。窗格刚打开时宿主对象
+     *    或选区可能还没就绪，所以先重试几拍再报错。
+     * 2. 之后盯着选区，用户换地方就自动重新识别，已经改过的参数按字段名保留。
+     *    拖选时指纹每拍都在变，所以同一个指纹连续出现两次才真正重算。
+     */
+    var pollTimer = null;
+    var pendingSig = null;
+
+    function startWatch() {
+        if (pollTimer) { return; }
+        pollTimer = setInterval(function () {
+            var a = MaskGetApp();
+            if (!a) { return; }
+            var k = selSignature(a);
+            if (!k || k === state.selKey) { pendingSig = null; return; }
+            if (pendingSig !== k) { pendingSig = k; return; }
+            pendingSig = null;
+            state.selKey = k;
+            refresh(true, true);
+        }, POLL_MS);
+    }
+
+    function boot(tries) {
+        tries = tries || 0;
+        var a = MaskGetApp();
+        if (a && selSignature(a)) {
+            refresh(true);
+            startWatch();
+            return;
+        }
+        if (tries < 20) {
+            setTimeout(function () { boot(tries + 1); }, 250);
+            return;
+        }
+        refresh(true);   // 还是不行就走正常报错路径，别让面板一直卡在"正在读取"
+        startWatch();
+    }
+
+    boot();
 })();

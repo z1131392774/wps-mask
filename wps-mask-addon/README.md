@@ -52,7 +52,7 @@ jsaddons\
        └─ taskpane.js
 ```
 
-If `wpsjs` is installed, its generated `publish.xml` works too: replace the files above by name, and `wpsjs debug` starts WPS with the add-in loaded.
+If `wpsjs` is installed, its generated `publish.xml` works too: replace the files by name; `wpsjs debug` loads the add-in.
 
 ### Develop without copying
 
@@ -67,9 +67,9 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 
 ## Usage
 
-**Panel.** Select the range (whole column, whole row, or any block), open "映射面板", press "刷新选区". Each column gets a card: detected type and a sample value in the header, parameters beneath opened on demand. Check them, then "映射并写入" — the new values replace the range in place. "反映射回原值" puts the originals back.
+**Panel.** Select the range (whole column, whole row, or any block) and open "映射面板": it reads the selection itself and follows you when you move it, with "刷新选区" for a forced re-read. Each column gets a card: detected type and a sample value in the header, parameters beneath opened on demand. Check them, then "映射并写入" — the new values replace the range in place. "反映射回原值" puts the originals back.
 
-**Masking twice is safe.** A cell that already holds a value from the mapping table is skipped, and the status line names the columns it skipped. A partial mask followed by a whole-region mask therefore cannot map the same cells twice; to map the current values again, revert first.
+**Masking twice is safe.** A cell already holding a mapped value is skipped, and the status line names the columns. A partial mask followed by a whole-region mask therefore cannot map the same cells twice; to map the current values again, revert first.
 
 **Quick buttons.** "快速映射" processes the current selection using auto-detection or the remembered settings. Already-mapped cells are skipped here too; when no new cell is left it says so and writes nothing. "反映射" reverses the current selection directly.
 
@@ -93,7 +93,7 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 - Panel: four cards rendered, distribution switch reveals its parameters, type switch rebuilds the card, mask, revert, header toggle, drop the table, and the no-selection error path.
 - Syntax check on every script, XML well-formedness of `ribbon.xml`.
 
-**Needs one run on a real device** — nothing in the local documentation set measures these; they follow official and community samples:
+**Needs one run on a real device** — nothing in the local documentation set measures these; they follow official samples:
 
 1. Whether this WPS build accepts the `publish.xml` fields and the `enable` value. Test: the "数据脱敏" tab appears.
 2. **Whether the task pane page receives `window.Application`.** If the panel reports "未取到 WPS 应用对象", this build does not inject the host object into the pane; the fallback is the ribbon buttons, which run the same engine from the host page.
@@ -110,7 +110,7 @@ A junction needs no elevation, unlike a symlink; a hard link cannot point at a f
 | Panel empty, "未取到 WPS 应用对象" | See item 2 above |
 | Reverse mapping restored only part of the range | The selection must match the one used to mask; or the column parameters changed, in which case the lookup prefers the current signature before falling back to the global table |
 | Re-masking a column changes nothing | Those cells already hold mapped values, so they are skipped. Revert first if you meant to map the current values again |
-| Numbers show as left-aligned text | The cells were text-formatted before; the numeric values kept that format. Change the cell format |
+| Numbers show as left-aligned text | Those cells were text-formatted and kept it. Change the cell format |
 | "区间容量不足" | The integer interval cannot hold that many distinct values (12 distinct amounts inside 1–5). Widen the bounds or add decimal places |
 | "解密失败" | `KEY_TEXT` changed, or the hidden table was edited by hand |
 

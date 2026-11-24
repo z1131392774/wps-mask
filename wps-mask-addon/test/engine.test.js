@@ -190,5 +190,92 @@ ok(s5.written === 1, '只写了改动的那 1 格，实际 ' + s5.written);
 ok(/^备注\d{4}$/.test(app.getCell('Sheet1', 3, 4)), '改动值被映射成 ' + app.getCell('Sheet1', 3, 4));
 ok(app.getCell('Sheet1', 2, 1) === nameAfter1, '同列其他格保持不动');
 
+/* ---------- 12. 表头识别不被空列带偏（线上报错的那一种） ---------- */
+console.log('\n[12] 选区多带一列空白时的表头识别');
+const wide = new MockWPS();
+const wideHead = ['姓名', '手机号', '年龄', '入职日期', '月薪', '部门', '工号', '订单号', '城市', '备注'];
+const wideRows = [];
+for (let i = 0; i < 40; i++) {
+    wideRows.push(['张' + i, '1380013' + String(8000 + i), 20 + (i % 20), 45105 + i,
+        6000 + i * 100, '销售部', 1001 + i, 'SO-2024-' + String(i + 1).padStart(4, '0'), '北京',
+        i % 3 === 0 ? '老客户' : '']);
+}
+wide.setTable('Sheet1', 1, 1, [wideHead].concat(wideRows));
+// 关键：选区多带一列完全空白的 K 列 —— 旧代码因此判定"无表头"，把 "工号" 当成数据，
+// 于是 G 列有 41 个不同值、区间却只有 40 个整数，整次映射直接失败
+wide.select('Sheet1', 1, 1, wideRows.length + 1, 11);
+const wModel = Engine.analyze(wide, {});
+ok(wModel.hasHeader === true, '首行仍识别为表头');
+ok(wModel.columns.length === 10, '空白 K 列不占卡片，实际 ' + wModel.columns.length + ' 列');
+const idCol = wModel.columns.filter(c => c.header === '工号')[0];
+ok(idCol && idCol.distinctCount === 40, '工号 40 个不同值，实际 ' + (idCol && idCol.distinctCount));
+const wVault = Engine.loadVault(wide);
+const wStats = Engine.applyMask(Engine.hydrate(wModel, wVault), wVault, {});
+ok(wStats.written === 374, '十列 374 格全部映射成功（备注有 26 个空格子），实际 ' + wStats.written);
+ok(wide.getCell('Sheet1', 2, 7) !== 1001, '工号已替换成 ' + wide.getCell('Sheet1', 2, 7));
+
+/* ---------- 13. 保存映射表不改变活动工作表 ---------- */
+console.log('\n[13] 建隐藏表不把用户切到别的 sheet');
+const act = new MockWPS();
+act.setTable('Sheet1', 1, 1, [['姓名'], ['张三']]);
+act.select('Sheet1', 1, 1, 2, 1);
+const before = act.ActiveSheet.Name;
+Engine.saveVault(act, Engine.loadVault(act));
+ok(act.ActiveSheet.Name === before, '活动表仍是 ' + act.ActiveSheet.Name);
+ok(act.sheets.some(s => s.Name === '脱敏映射表'), '映射表已建立');
+ok(act.ActiveSheet.Name !== '脱敏映射表', '活动表不是映射表');
+
+/* ---------- 14. 容量报错用列字母，不用"第 N 列" ---------- */
+console.log('\n[14] 容量报错的列标识');
+const tight = new MockWPS();
+const tightRows = [['金额']];
+for (let i = 1; i <= 12; i++) { tightRows.push([i]); }
+tight.setTable('Sheet1', 1, 1, tightRows);
+tight.select('Sheet1', 1, 1, tightRows.length, 1);
+const tVault = Engine.loadVault(tight);
+const tModel = Engine.hydrate(Engine.analyze(tight, {}), tVault);
+tModel.columns[0].cfg.min = 1; tModel.columns[0].cfg.max = 5; tModel.columns[0].cfg.dec = 0;
+let tErr = '';
+try { Engine.applyMask(tModel, tVault, {}); } catch (e) { tErr = e.message; }
+ok(/A 列（金额）/.test(tErr), '报错带列字母与字段名：' + tErr);
+ok(!/第 ?1 ?列/.test(tErr), '不再出现"第 1 列"这种写法');
+
+/* ---------- 15. 自动配置在区间装不下时放宽上界 ---------- */
+console.log('\n[15] 数值列混入文本时的自动放宽');
+const mixed = new MockWPS();
+const mixedRows = [['工号']];
+for (let i = 1; i <= 4; i++) { mixedRows.push([1000 + i]); }
+mixedRows.push(['待定']);
+mixed.setTable('Sheet1', 1, 1, mixedRows);
+mixed.select('Sheet1', 1, 1, mixedRows.length, 1);
+const mMixVault = Engine.loadVault(mixed);
+const mMix = Engine.hydrate(Engine.analyze(mixed, {}), mMixVault);
+const mCfg = Engine.defaultCfg(mMix.columns[0].header, mMix.columns[0].values);
+ok(mCfg.max === 1005, '上界抬到刚好够用的 ' + mCfg.max + '（原数据 1001~1004 + 一个文本值）');
+const mStats = Engine.applyMask(mMix, mMixVault, {});
+ok(mStats.written === 5, '5 格全部映射成功，实际 ' + mStats.written);
+
+/* ---------- 16. 区间刚好够用：错位置换，不能随机失败 ---------- */
+console.log('\n[16] 区间刚好装满时的稳定性');
+let tightBad = 0;
+for (let round = 0; round < 8; round++) {
+    const t = new MockWPS();
+    const tRows = [['工号']];
+    for (let i = 1; i <= 40; i++) { tRows.push([1000 + i]); }
+    t.setTable('Sheet1', 1, 1, tRows);
+    t.select('Sheet1', 1, 1, tRows.length, 1);
+    const tv = Engine.loadVault(t);
+    const tm = Engine.hydrate(Engine.analyze(t, {}), tv);
+    try {
+        const st = Engine.applyMask(tm, tv, {});
+        const outs = [];
+        for (let r = 2; r <= tRows.length; r++) { outs.push(t.getCell('Sheet1', r, 1)); }
+        const noFixed = outs.every((x, i) => x !== 1000 + i + 1);
+        const unique = new Set(outs).size === outs.length;
+        if (!(st.written === 40 && noFixed && unique)) { tightBad++; }
+    } catch (e) { tightBad++; }
+}
+ok(tightBad === 0, '40 个值占满 40 个整数槽：8 轮全部成功、无不动点、列内不重复（失败 ' + tightBad + ' 轮）');
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
