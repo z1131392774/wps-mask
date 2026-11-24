@@ -32,7 +32,7 @@ The interval is part of `sigOf()`, so growing it means a different bucket. `hydr
 
 The move reuses the existing collision rules (drop a record when the target already has that key, or when its fake is already taken) through the same `absorbBucket()` the bucket-name migration now uses. Dropped records do not hurt reversion — lookups go through the global index.
 
-Widening only happens when `dec <= 0` and both sides are number mode: fractional intervals have no capacity constraint, and touching them would only change the signature for nothing.
+Widening was at first limited to `dec <= 0`, on the grounds that fractional intervals have no capacity constraint. That was wrong: a fractional interval has (width ÷ step) slots, so 20.1~20.3 holds three of them. A later change unions both kinds and counts slots the same way — see the next note.
 
 Two quieter holes sit in the same layer, both closed:
 

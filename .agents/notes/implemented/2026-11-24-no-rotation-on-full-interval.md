@@ -21,10 +21,11 @@ The second question does not hold in number mode: capacity there is *how many in
 
 ## Decision
 
-Two changes, neither sufficient alone:
+Three changes, none sufficient alone:
 
 1. **Leave empty slots in the default interval.** The numeric branch of `defaultCfg` no longer aims for "just enough": `want = max(need + 1, ceil(need × 1.1))`, growing the upper bound when needed — ages 20~40 become 20~43 (24 slots for 21 values), IDs 1~300 become 1~330. At least one spare slot guarantees "distinct values < integers", so the fill-up path never happens under automatic mapping. The 10% matches the ruler used for text suffix width.
-2. **Permute as a random cycle.** `assignExact` shuffles the slots with `sattolo()` before pairing: the result is a single cycle, which has no fixed points for length ≥ 2 and leaves no constant offset. This is the path taken when someone narrows the interval by hand until it just fits.
+2. **Decimal columns get spare slots too.** The spare-slot rule only lived in the integer branch, so `20.1 / 20.2 / 20.3` filled its three slots exactly and the first mask died on the last value hitting its own original (`genNumber` reporting "数值区间不够用"). `defaultCfg` and `widenInterval` now count slots with `slotsOf(min, max, step)` — step 1 for integers, 10^-dec for decimals — and require at least one spare slot, so "exactly full" no longer counts as enough.
+3. **Permute as a random cycle.** `assignExact` shuffles the slots with `sattolo()` before pairing: the result is a single cycle, which has no fixed points for length ≥ 2 and leaves no constant offset. This is the path taken when someone narrows the interval by hand until it just fits.
 
 The interval is part of `sigOf()`, so growing it changes the signature — the union plus `absorbBucket()` work from the previous round covers that: records move, old fakes stay valid, new values come from a wider space. No extra migration path was needed.
 
@@ -43,5 +44,7 @@ The interval is part of `sigOf()`, so growing it changes the signature — the u
 `engine.js` gains `sattolo()`; the numeric branch of `defaultCfg` uses `want`; `assignExact` loses the offset. Intervals are about 10% wider than the data (ages 20~43, IDs 1~330) — more spread out, same order of magnitude, still plausible.
 
 Areas already masked in existing documents do not change: that history cannot be recalled, and the fix only affects values written from now on. Saved intervals are recomputed on the next hydrate through the union and spare-slot rules, with records carried along.
+
+A randomized sweep backed this up: three sheets in sequence, same header, 1~150 values each, spanning contiguous, sparse, narrow, wide, offset, one- and two-decimal and negative data — 3000 runs, no throws. A second sweep of 400 two-sheet runs checked the invariants (no fixed points, unique fakes per column, one fake per original across sheets, exact reversion) — all held. That sweep is what surfaced the decimal first-batch failure, which is unrelated to the rotation leak but comes out of the same capacity test.
 
 Tests: group [16] now narrows the interval by hand to force the permutation path and asserts that the position delta is not constant (the old assertion — no fixed points — was satisfied by a rotation too); group [26] runs 300 IDs through the default path and asserts the 1~330 interval, unique fakes, no fixed points, a sorted list different from the original, and a non-constant delta; [24] and [25] update their expected intervals to 43 / 49 / 112. The README's encryption-limits section gained "what the fakes still reveal", spelling out the residuals: min/max, row count, blank positions, row order, and the shape of text values.

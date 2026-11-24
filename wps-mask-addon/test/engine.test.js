@@ -654,5 +654,36 @@ const wideCfg = Engine.defaultCfg('年龄', wideAge);
 ok(wideCfg.min === 20 && wideCfg.max === 60,
     '11 个值铺不满 20~60 时区间不变：' + wideCfg.min + '~' + wideCfg.max);
 
+/* ---------- 27. 小数列第一批就要留空槽 ---------- */
+console.log('\n[27] 小数列也要留空槽');
+// 20.1 / 20.2 / 20.3 三个值铺满三个槽时，逐个生成会在最后一个值上撞自己的原值
+const tinyApp = new MockWPS();
+tinyApp.ActiveWorkbook.addSheet('Sheet2');
+tinyApp.setTable('Sheet1', 1, 1, [['年龄'], [20.1], [20.2], [20.3]]);
+const bigRows = [['年龄']];
+for (let i = 20; i <= 61; i++) { bigRows.push([i]); }
+tinyApp.setTable('Sheet2', 1, 1, bigRows);
+tinyApp.select('Sheet1', 1, 1, 4, 1);
+let tinyVault = Engine.loadVault(tinyApp);
+let tinyModel = Engine.hydrate(Engine.analyze(tinyApp, {}), tinyVault);
+ok(tinyModel.columns[0].cfg.max === 20.4, '三个小数也给四个槽：20.1~' + tinyModel.columns[0].cfg.max);
+let tinyErr = null;
+try { Engine.applyMask(tinyModel, tinyVault, {}); } catch (e) { tinyErr = e.message; }
+ok(tinyErr === null, '第一批不再卡在最后一个值上' + (tinyErr ? '：' + tinyErr : ''));
+const tinyOut = [2, 3, 4].map(r => tinyApp.getCell('Sheet1', r, 1));
+ok(new Set(tinyOut).size === 3, '三个假值互不相同：' + tinyOut.join(','));
+ok(tinyOut.every((x, i) => x !== [20.1, 20.2, 20.3][i]), '没有不动点');
+Engine.saveVault(tinyApp, tinyVault);
+
+// 第二批 42 个整数：区间跟着放宽，不能卡在那三个小数点里
+tinyApp.select('Sheet2', 1, 1, bigRows.length, 1);
+tinyVault = Engine.loadVault(tinyApp);
+const tinyModel2 = Engine.hydrate(Engine.analyze(tinyApp, {}), tinyVault);
+ok(tinyModel2.columns[0].cfg.max === 66,
+    '区间并到本批数据：' + tinyModel2.columns[0].cfg.min + '~' + tinyModel2.columns[0].cfg.max);
+let tinyErr2 = null;
+try { Engine.applyMask(tinyModel2, tinyVault, {}); } catch (e) { tinyErr2 = e.message; }
+ok(tinyErr2 === null, '值域跨两个数量级也不失败' + (tinyErr2 ? '：' + tinyErr2 : ''));
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

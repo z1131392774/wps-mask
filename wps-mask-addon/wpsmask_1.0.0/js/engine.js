@@ -246,16 +246,17 @@ var MaskEngine = (function () {
             var lo = st.min, hi = st.max;
             if (span === 0) { lo = st.min; hi = st.min === 0 ? 100 : st.min * 2; }
             // 数值统计只计算数字，但不同值中可能混有 "无"、"N/A" 这类文本；
-            // 区间容纳不下时把上界提高到刚好够用（1001~1040 差一个就调整为 1041），
+            // 区间容纳不下时把上界提高到够用（1001~1040 差一个就调整为 1041），
             // 避免整次映射失败，也避免直接扩大到 9999 把"年龄"映射成七千岁。
-            // 另外要留出空槽：不同值个数一旦等于整数个数，就只能整列置换，
-            // 那等于把原列整体旋转（排序后一模一样，知道一个值就能反推全部）。
-            // 10% 余量与文本后缀同一把尺子，至少空一格。
-            if (st.dec <= 0) {
-                var need = distinctCountOf(values);
-                var want = Math.max(need + 1, Math.ceil(need * 1.1));
-                var cap = Math.floor(hi) - Math.ceil(lo) + 1;
-                if (cap < want) { hi = Math.ceil(lo) + want - 1; }
+            // 另外要留出空槽：不同值个数一旦等于区间里的槽位数，就只能整列置换，
+            // 那等于把原列整体旋转（排序后一模一样，知道一个值就能反推全部）；
+            // 逐个生成时还会在最后一个值上撞自己的原值。10% 与文本后缀同一把尺子，至少空一格。
+            // 小数列同理：20.1 / 20.2 / 20.3 三个值铺满三个槽，第一批就会失败。
+            var needN = distinctCountOf(values);
+            var wantN = Math.max(needN + 1, Math.ceil(needN * 1.1));
+            var stepN = st.dec > 0 ? Math.pow(10, -st.dec) : 1;
+            if (slotsOf(lo, hi, stepN) < wantN) {
+                hi = st.dec > 0 ? roundTo(lo + (wantN - 1) * stepN, st.dec) : Math.ceil(lo) + wantN - 1;
             }
             return {
                 mode: 'number',
@@ -876,19 +877,16 @@ var MaskEngine = (function () {
     // 记忆里的数值区间记录的是"上次那批数据长什么样"，不是策略。
     // 直接沿用会让下一次映射撞上「区间只有 N 个整数，装不下 M 个不同值」——
     // 同一个工作簿里另一个 sheet 同名列值域更宽、或者补了行，都必然触发。
-    // 所以取并集：上次区间 ∪ 本批数据范围，只扩不缩。本批数据装得下，容量就一定够，
-    // 旧的假值也都落在旧的子区间里，扩完照样有效。
+    // 所以取并集：上次区间 ∪ 本批数据范围，只扩不缩。旧假值都落在旧的子区间里，扩完仍然有效。
     function widenInterval(cfg, base, col, vault, beforeSig) {
         if (!cfg || cfg.mode !== 'number' || base.mode !== 'number') { return; }
-        // 小数区间没有容量约束，也没有装不下的问题，不必动它
-        if ((cfg.dec || 0) > 0) { return; }
         var lo = Number(cfg.min), hi = Number(cfg.max);
         if (!isFinite(lo) || !isFinite(hi)) { return; }
         cfg.min = Math.min(lo, Number(base.min));
         cfg.max = Math.max(hi, Number(base.max));
 
         // 光看数据范围还不够：已经发出去的假值占着槽位，新值只能进剩下的。
-        // 上一批正好把区间用满时（21 个值占满 20~40），再多一个不同值也没有空位。
+        // 上一批正好把区间用满时，再多一个不同值也没有空位。
         var bucket = (vault && vault.maps && vault.maps[beforeSig]) || {};
         var occupied = 0;
         for (var k in bucket) { if (Object.prototype.hasOwnProperty.call(bucket, k)) { occupied++; } }
@@ -902,12 +900,25 @@ var MaskEngine = (function () {
             pending++;
         }
         var required = occupied + pending;
-        var cap = Math.floor(cfg.max) - Math.ceil(cfg.min) + 1;
-        if (cap >= required) { return; }
-        // 上一批没有小数（dec 记成 0），这一批有：恢复小数位，槽位立刻多得多。
-        // 如果数据本来就是整数，就按需要的个数把上界撑开，宁可区间宽一点也不失败。
-        if ((base.dec || 0) > 0) { cfg.dec = base.dec; }
-        else { cfg.max = Math.ceil(cfg.min) + required - 1; }
+
+        // 小数位不同，一个槽的宽度也不同：dec=1 时步长 0.1，槽位数是区间宽度除以步长。
+        // 要求"至少多一个空槽"：正好装满时最后一个值只能取到自身，随机生成必然失败。
+        var dec = Math.max(0, Number(cfg.dec) || 0);
+        var step = dec > 0 ? Math.pow(10, -dec) : 1;
+        if (slotsOf(cfg.min, cfg.max, step) > required) { return; }
+        // 上一批没有小数（dec 记成 0）、这一批有：恢复小数位，槽位立刻多得多。
+        if (dec <= 0 && (base.dec || 0) > 0) {
+            cfg.dec = base.dec;
+            dec = Math.max(0, Number(cfg.dec) || 0);
+            step = Math.pow(10, -dec);
+            if (slotsOf(cfg.min, cfg.max, step) > required) { return; }
+        }
+        // 还不够就按需要的个数把上界撑开，宁可区间宽一点也不失败
+        cfg.max = roundTo(cfg.min + required * step, dec);
+    }
+
+    function slotsOf(lo, hi, step) {
+        return Math.round((hi - lo) / step) + 1;
     }
 
     function rememberSettings(vault, model) {
@@ -924,11 +935,13 @@ var MaskEngine = (function () {
 
     function capacityHint(col, cfg, need) {
         var label = colLabel(col);
-        if (cfg.mode === 'number' && cfg.dist === 'uniform' && (!cfg.dec || cfg.dec <= 0)) {
-            var cap = Math.floor(cfg.max) - Math.ceil(cfg.min) + 1;
+        if (cfg.mode === 'number' && cfg.dist === 'uniform') {
+            var dec = Math.max(0, Number(cfg.dec) || 0);
+            var step = dec > 0 ? Math.pow(10, -dec) : 1;
+            var cap = slotsOf(cfg.min, cfg.max, step);
             if (need > cap) {
-                throw new Error(label + '的区间只有 ' + cap + ' 个整数，装不下 ' + need +
-                    ' 个不同值，请放宽区间或设为「不处理」。');
+                throw new Error(label + '的区间只有 ' + cap + (dec > 0 ? ' 个可用值' : ' 个整数') +
+                    '，装不下 ' + need + ' 个不同值，请放宽区间或设为「不处理」。');
             }
         }
         if (cfg.mode === 'text') {
