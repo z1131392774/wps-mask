@@ -129,14 +129,15 @@ A junction needs no admin rights or developer mode; a hard link cannot point at 
 ```sh
 # from the repository root
 npm install                 # installs jsdom, needed by the panel and utility tests
-npm test                    # aes, engine, taskpane and utils tests, in order
+npm test                    # aes, engine, taskpane, utils and rpc tests, in order
 ```
 
-Or run one file at a time from `wps-mask-addon/`: `node test/aes.test.js`, `node test/engine.test.js`, `node test/taskpane.test.js`, `node test/utils.test.js` (install at the root first for the last two).
+Or run one file at a time from `wps-mask-addon/`: `node test/aes.test.js`, `node test/engine.test.js`, `node test/taskpane.test.js`, `node test/utils.test.js`, `node test/rpc.test.mjs` (install at the root first for taskpane and utils).
 
 - AES matches `node:crypto` byte for byte in both directions: empty string, Chinese, emoji, a 5,000-character body, tamper detection, IV randomness.
 - Engine: field detection, one-to-one and uniqueness, capacity errors, exact reverse mapping including types and blanks, whole-column and whole-row trimming, the header switch and the `headerAuto` flag, ciphertext round-trip through the backup, read-back, and rollback path, loud loading of empty and damaged tables, migration of old-format buckets only, remembered settings, mixed shapes, leading zeros, suffix sizing, the exact-fit permutation and its span guard, the per-cell skip records, and reverse mapping scoped to recorded areas — including the second-click no-op and ambiguous fakes.
 - Panel: cards and parameter reveal, type switch, mask and revert, the two-phase mask that writes no cell when the table cannot be saved, revert saving the trimmed table and the second revert no-op, recovery from a damaged table, the header-auto warning, drop the table, no-selection state, late host object, selection-change re-analysis, column configuration remembered across headerless and same-named columns, interval growth keeping the same fakes.
+- Bridge: one line split across two chunks, several lines in one chunk, CRLF and blank lines, noise lines kept out of the pairing, an `ok:false` reason arriving intact, a timeout staying local to its call, every pending call rejected when the bridge exits, and a real child process round-trip.
 - Nothing here drives a real WPS instance: every test runs against `test/mock-wps.js` and the real panel page under jsdom.
 
 **Not yet verified on a real device.** No local reference measures these; the implementation follows official and community samples:
@@ -148,6 +149,27 @@ Or run one file at a time from `wps-mask-addon/`: `node test/aes.test.js`, `node
 5. Whether a very hidden sheet (`Visible = 2`) survives a save and reads back.
 6. Responsiveness at a hundred thousand rows.
 7. Whether protected, read-only, and merged cells behave as the save-then-write and rollback paths assume.
+
+**Turning those seven into answers:** `tools/live/probe.mjs` asks the real host one question per line.
+
+```sh
+npm run live:probe        # machine-checkable steps only, no window
+npm run live:probe:all    # also shows WPS, opens the pane, writes 100k rows
+```
+
+It writes only into a scratch workbook it creates, never into a document you have open. It ends with an item-to-verdict table you can paste back here.
+
+| Item | What the line asks |
+| --- | --- |
+| 1 | Does `CommandBars` expose the "数据脱敏" buttons, or does UIA see the main window |
+| 2 | Opens a page stating whether `window.Application` exists; one look answers it |
+| 3 | A pane from the `file://` URL of the installed `taskpane\index.html`; on refusal a scratch page separates "URL form rejected" from "page broken" |
+| 4 | Creates a sheet the engine's way, `Missing` then `null`, and reports which form worked |
+| 5 | Hide, save, close, reopen, read back the marker and the visibility |
+| 6 | One 100k × 3 write and one full read-back, timed apart |
+| 7 | Whether a protected sheet rejects a write, where a write to B5 of merged A5:B5 lands, and whether a read-only save is refused |
+
+The probe has not run against a real host yet; the first run is yours. It drives a long-lived PowerShell bridge (`tools/live/wps-bridge.ps1`) speaking one JSON object per line; the bridge only moves data and every verdict is decided in Node, so split lines, noise, timeouts and a bridge dying mid-call are covered by `test/rpc.test.mjs` without WPS.
 
 ## Troubleshooting
 
@@ -181,7 +203,7 @@ Ordered by importance; with these, the unverified items above become measured re
 ```sh
 # from the repository root
 npm install                  # installs jsdom (devDependency), once
-npm test                     # aes, engine, taskpane and utils tests, in order
+npm test                     # aes, engine, taskpane, utils and rpc tests, in order
 node wps-mask-addon/tools/make-icons.mjs
 ```
 
