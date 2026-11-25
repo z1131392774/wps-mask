@@ -1317,5 +1317,19 @@ ok(typeof app42.getCell('Sheet1', 2, 1) === 'number' && typeof app42.getCell('Sh
     app42.getCell('Sheet1', 2, 1) !== 1 && app42.getCell('Sheet1', 3, 1) !== 2000000,
     '两格都换成了数字假值：' + app42.getCell('Sheet1', 2, 1) + ',' + app42.getCell('Sheet1', 3, 1));
 
+console.log('\n[43] 只读文档上拒绝脱敏：映射表存不进去，宁可不做');
+const app43 = new MockWPS();
+app43.setTable('Sheet1', 1, 1, [['姓名'], ['张三'], ['李四']]);
+app43.select('Sheet1', 1, 1, 3, 1);
+// 真机上只读文档的 Save() 既不抛错也不写盘，mtime 不变、写入却进了内存
+app43.ActiveWorkbook.ReadOnly = true;
+const vault43 = Engine.loadVault(app43);
+const plan43 = Engine.prepareMask(Engine.analyze(app43, {}), vault43);
+let err43 = null;
+try { Engine.saveVault(app43, vault43); } catch (e) { err43 = e; }
+ok(err43 != null && /只读/.test(err43.message), '保存之前就拒绝：' + (err43 && err43.message));
+ok(app43.getCell('Sheet1', 2, 1) === '张三', '一格都没写，表格还是原值');
+ok(!app43.sheets.some(function (s) { return s.Name === '脱敏映射表'; }), '连隐藏表都没建，文档没被改动');
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

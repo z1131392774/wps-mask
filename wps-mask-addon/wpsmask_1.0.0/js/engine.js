@@ -797,6 +797,14 @@ var MaskEngine = (function () {
     function saveVault(app, vault) {
         var wb = app.ActiveWorkbook;
         if (!wb) { throw new Error('当前没有打开的工作簿'); }
+        // 只读打开的文档上 Save() 既不抛错也不写盘（真机量过：mtime 不变，写入却进了内存）。
+        // 也就是说映射表会"保存成功"地丢掉，脱敏之后再也还原不回来 —— 宁可在建表之前就拒绝。
+        var readOnly = false;
+        try { readOnly = !!wb.ReadOnly; } catch (eRo) { readOnly = false; }
+        if (readOnly) {
+            throw new Error('文档是只读打开的，映射表存不进去（保存会被静默忽略），脱敏后无法还原。' +
+                '请先另存为新文件，再脱敏。');
+        }
         pruneUnusedBuckets(vault);
         var json;
         try {

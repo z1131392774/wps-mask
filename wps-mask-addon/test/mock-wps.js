@@ -32,6 +32,8 @@ MockWPS.prototype._bind = function () {
 function MockWorkbook(app) {
     this.app = app;
     this.Name = '测试工作簿.xlsx';
+    // 真机上 Save() 在只读文档上静默无效，engine 会先看这个标记；默认不是只读
+    this.ReadOnly = false;
     var self = this;
     this.Worksheets = {
         get Count() { return self.app.sheets.length; },

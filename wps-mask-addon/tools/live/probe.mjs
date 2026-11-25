@@ -291,6 +291,13 @@ async function main() {
         }
     })
 
+    /* 4. 手册 1 的判据本身只能人眼看：两条程序通道都拿不到功能区 */
+    await step(1, '功能区里有「数据脱敏」选项卡', async () => ({
+        verdict: 'MANUAL',
+        detail: '两条程序通道都读不到功能区（CommandBars 186 条里没有，UIA 也列不出选项卡），' +
+            '所以这一条只能看一眼：选项卡在，publish.xml 就被接受了；不在，加载项没装上'
+    }))
+
     /* 4. 按钮能不能被程序点到 —— 决定「点按钮驱动」这条路走不走得通 */
     await step(null, '加载项按钮能被程序点到', async () => {
         const d = await rpc.call('controls')
@@ -309,8 +316,8 @@ async function main() {
         return { verdict: 'OK', detail: items.length + ' 个：' + names.join('，'), data: items }
     })
 
-    /* 5. 手册 1 的退路：UIA 能不能看见主窗口。类名不猜，报它实际是什么 */
-    await step(1, 'UIA 能看见 WPS 主窗口', async () => {
+    /* 5. UIA 能不能看见主窗口 —— 后面「程序去点按钮」的前提，不算手册条目本身的证据 */
+    await step(null, 'UIA 能看见 WPS 主窗口', async () => {
         const d = await rpc.call('uia')
         if (!d.supported) { return { verdict: 'NO', detail: 'UIA 程序集加载失败：' + d.error } }
         if (d.window) {
@@ -562,16 +569,24 @@ async function main() {
             const nb = await rpc.call('newbook')
             try {
                 const d = await rpc.call('bench', { book: nb.name, rows: 100000, cols: 3 })
-                const colOk = !d.colWriteError && !d.colReadError
-                const bits = ['一列 10 万格写入 ' + d.colWriteMs + 'ms，读回 ' + d.colReadMs + 'ms（回来 ' +
-                    d.readShape + ' 格）']
-                if (d.colWriteError) { bits.push('一列写入被拒：' + d.colWriteError) }
-                if (d.colReadError) { bits.push('读回被拒：' + d.colReadError) }
-                if (d.gridWriteError) { bits.push('整块二维写入被拒：' + d.gridWriteError) }
-                else if (d.gridWriteMs !== null && d.gridWriteMs !== undefined) {
-                    bits.push('整块二维 ' + d.rows + '×' + d.cols + ' 写入 ' + d.gridWriteMs + 'ms')
+                const wrote = !d.colWriteError
+                const bits = []
+                if (wrote) {
+                    bits.push('一列 10 万格写入 ' + d.colWriteMs + 'ms')
+                } else {
+                    // 一维和二维都被拒，说明不是维度问题，是 PowerShell 晚绑定送不进数组。
+                    // 这既不能说明 WPS 慢，也不能说明它快 —— 所以这条不算结论。
+                    bits.push('数组写入被拒（' + d.colWriteError + '）：这是 PowerShell 晚绑定送不进数组，' +
+                        '一维二维都一样，不是 WPS 的性能问题')
                 }
-                return { verdict: colOk ? 'OK' : 'NO', detail: bits.join('；'), data: d }
+                bits.push('读回 ' + d.readShape + ' 格用了 ' + d.colReadMs + 'ms')
+                if (d.gridWriteError) { bits.push('整块二维写入同样被拒') }
+                return {
+                    verdict: wrote ? 'OK' : 'UNK',
+                    detail: bits.join('；') + (wrote ? '' : '。这条只能在加载项里测：engine 是在 WPS 自己的 JS 里' +
+                        '做数组赋值，和 PowerShell 晚绑定不是一条路'),
+                    data: d
+                }
             } finally {
                 await rpc.call('close', { book: nb.name }).catch(() => { })
             }

@@ -117,7 +117,7 @@ A junction needs no admin rights or developer mode; a hard link cannot point at 
 - **Formulas are overwritten:** a formula cell receives a constant fake, and the formula is gone. Reverting restores the value, not the formula; keep a copy when the sheet is a working model.
 - **The hidden sheet is not a lock:** anyone with a macro can unhide it or read its ciphertext, and deleting it — or saving a copy without it — loses the mapping for good. The add-in finds the table by name alone: a sheet you named 脱敏映射表 is treated as the mapping table. It cannot restore data whose table is gone. Old-format (v1) documents: if upgrading had to drop records while merging buckets, areas recorded before signatures existed are left untouched and counted ambiguous instead of guessing an original.
 - **Only the last 200 masked areas are remembered:** the vault keeps the 200 most recent masked rectangles and drops the oldest. Once more than 200 areas have been masked, revert can no longer restore the oldest of them from the UI; their fakes stay unless a saved copy of the document is restored.
-- **No pre-flight checks:** protected, read-only, and merged cells are not inspected before writing. A rejected write rolls back the columns already written and reports it; if the rollback also fails, the message says so and the sheet may hold a partial mask.
+- **One pre-flight check only:** a read-only document is refused before the table is saved, because on a real host its `Save()` neither throws nor writes — the table would be dropped while looking saved. Protected and merged cells are not pre-checked; the read-back after writing catches both, so a refusal or a silent drop rolls the whole batch back with an error.
 - **What the fakes still reveal:** fakes are drawn at random from a range with 10% headroom past the data (20~43, not 20~40), so the column is not reshuffled — neither the sorted values nor the frequencies match. Still visible: the range's min and max, row count, blank positions, row order, and the shape of text and phone values.
 - **Cost of changing the key:** every existing document's table becomes undecryptable (the panel reports a decryption failure); do not change it while such documents exist.
 - **Save the file.** The table is saved with the workbook. Close without saving and the masked data stays while the mapping is lost; the originals cannot be recovered.
@@ -140,36 +140,23 @@ Or run one file at a time from `wps-mask-addon/`: `node test/aes.test.js`, `node
 - Bridge: one line split across two chunks, several lines in one chunk, CRLF and blank lines, noise lines kept out of the pairing, an `ok:false` reason arriving intact, a timeout staying local to its call, every pending call rejected when the bridge exits, and a real child process round-trip.
 - Nothing here drives a real WPS instance: every test runs against `test/mock-wps.js` and the real panel page under jsdom.
 
-**Not yet verified on a real device.** No local reference measures these; the implementation follows official and community samples:
+**Measured on a real device** (WPS Spreadsheets 12.1.0.29161, `tools/live/probe.mjs`, 2026-11-25):
 
-1. Whether this WPS build accepts the `publish.xml` fields and the `enable` value — success means the tab appears.
-2. **Whether the pane receives `window.Application`.** A panel reporting "未取到 WPS 应用对象" means the host object is not injected and the panel code must run on the host page. `ribbon.js` calls the same engine, so the "快速映射/反映射" buttons are a temporary fallback.
-3. Whether `CreateTaskPane` accepts a `file://`-style relative URL.
-4. Whether `Worksheets.Add(undefined, <last sheet>)` returns a sheet. The code makes that one call with no fallback; if the host rejects it, the hidden mapping table is never created and masking stops with the error.
-5. Whether a very hidden sheet (`Visible = 2`) survives a save and reads back.
-6. Responsiveness at a hundred thousand rows.
-7. Whether protected, read-only, and merged cells behave as the save-then-write and rollback paths assume.
+| Item | Result | Evidence |
+| --- | --- | --- |
+| The 「数据脱敏」 tab appears | passes | The tab is visible, so `publish.xml` is accepted |
+| `window.Application` inside the pane | untested | Open the panel: if it lists fields, the host object is injected |
+| `CreateTaskPane` takes a `file://` URL | untested | The method is not on the COM surface, so only the add-in itself can answer |
+| `Worksheets.Add(undefined, <last>)` | passes | Passing `Missing` works; the sheet lands at the end |
+| A hidden sheet survives a save | passes | `Visible = 2` survives and the ciphertext reads back intact |
+| 100k-row performance | unmeasured | Late binding cannot pass arrays (one- and two-dimensional both refused), so this needs the add-in itself; reading 100k cells took 72ms |
+| A protected sheet rejects writes | passes | The host refuses it; the engine rolls back and reports |
+| Writes into merged cells | **caution** | Writing a non-anchor cell of a merge neither throws nor takes effect; the engine catches it on read-back and rolls back |
+| Saving a read-only document | **caution** | `Save()` neither throws nor writes; the engine now refuses before saving the table |
 
-**Turning those seven into answers:** `tools/live/probe.mjs` asks the real host one question per line.
+**One finding stands alone: the add-in buttons cannot be clicked from outside.** Nothing in the 186 CommandBars carries them, and UIA lists no tabs either — WPS draws its ribbon itself. So real-machine automation cannot simulate clicks; assertions have to run inside the add-in, or a person clicks.
 
-```sh
-npm run live:probe        # machine-checkable steps only, no window
-npm run live:probe:all    # also shows WPS, opens the pane, writes 100k rows
-```
-
-It writes only into a scratch workbook it creates, never into a document you have open. It ends with an item-to-verdict table you can paste back here.
-
-| Item | What the line asks |
-| --- | --- |
-| 1 | Does `CommandBars` expose the "数据脱敏" buttons, or does UIA see the main window |
-| 2 | Opens a page stating whether `window.Application` exists; one look answers it |
-| 3 | A pane from the `file://` URL of the installed `taskpane\index.html`; on refusal a scratch page separates "URL form rejected" from "page broken" |
-| 4 | Creates a sheet the engine's way, `Missing` then `null`, and reports which form worked |
-| 5 | Hide, save, close, reopen, read back the marker and the visibility |
-| 6 | One 100k × 3 write and one full read-back, timed apart |
-| 7 | Whether a protected sheet rejects a write, where a write to B5 of merged A5:B5 lands, and whether a read-only save is refused |
-
-The probe has not run against a real host yet; the first run is yours. It drives a long-lived PowerShell bridge (`tools/live/wps-bridge.ps1`) speaking one JSON object per line; the bridge only moves data and every verdict is decided in Node, so split lines, noise, timeouts and a bridge dying mid-call are covered by `test/rpc.test.mjs` without WPS.
+To reproduce, run `npm run live:probe:log`: it writes only into a scratch workbook it creates and puts the result in `probe.log`. The bridge (`tools/live/wps-bridge.ps1`) only moves data and every verdict is decided in Node, so split lines, noise, timeouts and a bridge dying mid-call are covered by `test/rpc.test.mjs` without WPS.
 
 ## Troubleshooting
 
@@ -185,6 +172,8 @@ The probe has not run against a real host yet; the first run is yours. It drives
 | A second revert did nothing | The first revert already trimmed those recorded areas; mask again to create new records |
 | Numbers show as left-aligned text | Those cells were text-formatted and kept it. Change the cell format |
 | "装不下 N 个不同值" | The interval cannot hold these distinct values (12 amounts inside 1–5). Auto-mapping widens the bounds, so this only appears after you narrow them by hand |
+| "文档是只读打开的" | A read-only document ignores `Save()` silently, so the table cannot be stored and the mask could never be reverted. Save the file as a new file, then mask |
+| "写入后读回不一致" | A cell did not keep what was written. Merged cells are the usual cause — writing a non-anchor cell of a merge neither throws nor takes effect — so unmerge first; a protected sheet does this too |
 | "解密失败" | `KEY_TEXT` changed, the hidden table was edited by hand, or main and backup ciphertext are both damaged — restore a saved copy of the workbook |
 | A mixed cell came back as "字段名+数字" though it looked like an account | It fits none of the five shapes (Chinese text, one character, a code starting with a digit like `2024abc`, punctuation outside `_ . -` and spaces). The text fallback is still one-to-one and reverts correctly |
 

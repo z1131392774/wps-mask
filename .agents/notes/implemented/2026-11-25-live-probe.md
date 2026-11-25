@@ -40,4 +40,8 @@ The record stays manual: probe output has to be pasted into the manual by hand. 
 
 The probe leaves state when it crashes — a scratch workbook may stay open, since cleanup runs at the end. That is visible and harmless, and the alternative (closing everything in a `finally` over COM) was rejected as the kind of cleanup that itself throws.
 
-The probe has not been run against a real host. The bridge parses, the transport is tested, and every host answer is still unknown; the manual says exactly that rather than implying the seven items are settled.
+The first two runs settled four items and produced three wrong verdicts, all mine: a collapsed single-cell read indexed as a string returned its first character, `KetMainFrame` was a class name this host never had, and a missing `CreateTaskPane` was scored as "the host does not support it" when the method simply lives on the add-in JS API surface rather than on the COM object. The probe now prints the raw payload next to each verdict, which is what made the third one visible.
+
+The run also changed the product: a read-only document ignores `Save()` silently, so the mapping table could be dropped while looking saved, and the engine now refuses before saving it.
+
+What the probe cannot answer is now known too. The add-in's buttons are unreachable from outside — no CommandBars entry and no UIA tabs, because WPS draws its ribbon itself — and late binding cannot pass arrays, so 100k-row timing and the pane items have to be answered from inside the add-in, or by a person. That is the next layer, not a gap in this one.
