@@ -10,6 +10,8 @@ function MockWPS(rows, cols) {
     this.cellBorders = {};   // "sheet!r,c" -> { 边框索引: {ls, w, c} }，和宿主一样按单元格存四条边
     this._maxRow = {};
     this.sheets = [];
+    this._writeHook = null;
+    this._deleteHook = null;
     this.activeSheet = null;
     this.DisplayAlerts = true;
     this.Selection = null;
@@ -97,6 +99,10 @@ MockSheet.prototype.Range = function (a, b) {
 };
 
 MockSheet.prototype.Delete = function () {
+    // 注入删除故障：hook 返回 'throw' 时模拟只读/被保护文档上删除工作表失败
+    if (typeof this.app._deleteHook === 'function' && this.app._deleteHook(this) === 'throw') {
+        throw new Error('模拟删除工作表失败：' + this.Name);
+    }
     var idx = this.app.sheets.indexOf(this);
     if (idx >= 0) { this.app.sheets.splice(idx, 1); }
     this._deleted = true;
@@ -270,6 +276,9 @@ function makeBorder(sheet, row, col, rows, cols, idx) {
             var key = borderKey(sheet.Name, cells[i][0], cells[i][1]);
             var box = app.cellBorders[key] || (app.cellBorders[key] = {});
             var s = box[idx] || (box[idx] = { ls: EDGE_NONE.ls, w: EDGE_NONE.w, c: EDGE_NONE.c });
+            // 宿主语义：给 Weight 赋值会把 LineStyle 顶成 xlSolid（当前为 xlNone 时不动）。
+            // engine 的清边/恢复必须按"颜色 → 粗细 → 线型"顺序写，否则线型会被顶回实线。
+            if (prop === 'w' && s.ls !== EDGE_NONE.ls) { s.ls = 1; }
             s[prop] = val;
         }
     }
@@ -307,6 +316,11 @@ MockWPS.prototype.setWriteHook = function (fn) {
 
 MockWPS.prototype.clearWriteHook = function () {
     this._writeHook = null;
+};
+
+// 注入删除故障：fn(sheet) 返回 'throw' 时该表的 Delete() 抛错（模拟只读/被保护文档）
+MockWPS.prototype.setDeleteHook = function (fn) {
+    this._deleteHook = typeof fn === 'function' ? fn : null;
 };
 
 MockWPS.prototype.setTable = function (sheetName, top, left, data) {
