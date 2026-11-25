@@ -40,6 +40,31 @@
         return a;
     }
 
+    // 只读文档上 Save() 既不抛错也不写盘（真机量过，见 engine.js saveVault）：映射表会静默丢掉。
+    // 引擎在阶段一就可能先画边框，所以必须在调用 prepareMask/revert 之前拒绝，不能等保存失败。
+    // 文案与 engine.js saveVault 的只读提示同义（只读时 Save() 不抛错也不写盘），两处改一处必须同步。
+    function isReadOnly(app) {
+        var wb = null;
+        try { wb = app && app.ActiveWorkbook; } catch (e) { wb = null; }
+        if (!wb) { return false; }
+        try { return !!wb.ReadOnly; } catch (e2) { return false; }
+    }
+
+    function readOnlyText(what, retry) {
+        return '文档是只读打开的，映射表存不进去（保存会被静默忽略），' + what +
+            '。请先另存为新文件，再' + retry + '。';
+    }
+
+    // 引擎按表独立 try/catch，失败放在 errors:[{sheet,message}]：一张表被保护不该埋掉，
+    // 多张表时要逐条列出来，用户才知道去修哪张。
+    function errList(errors) {
+        var parts = [];
+        for (var i = 0; i < errors.length; i++) {
+            parts.push(errors[i].sheet + '：' + errors[i].message);
+        }
+        return parts.join('；');
+    }
+
     // 配置记忆的键：工作表名 + 列位置。表头可能为空（无表头）也可能重名，
     // 只有位置能稳定标出用户改过的那一列。
     function cfgKey(sheetName, col) {
@@ -448,6 +473,10 @@
         if (!state.model) { setStatus('请先读取选区', 'err'); return; }
         try {
             var a = getApp();
+            if (isReadOnly(a)) {
+                setStatus(readOnlyText('脱敏后无法还原', '脱敏'), 'err');
+                return;
+            }
             var vault = E.loadVault(a);
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
             // 轮询还没跟上时选区可能已经换成空区域：重新分析后没有列就直说，别拿旧卡片去写
@@ -456,52 +485,46 @@
             // 跳过它就会拿着扩过的区间去新桶里发假值，同一批人拿到两套结果
             E.hydrate(model, vault);
             applySavedCfgs(model);
-            // 两阶段：prepareMask 只建映射并把区域记录写进 vault，不碰单元格。
-            // 必须先 saveVault 再 writeMask：保存失败时表格里一个单元格都不能动。
+            // 两阶段：prepareMask 建映射、登记区域并画好边框；必须先 saveVault 再 writeMask，
+            // 保存失败时表格里一个单元格都不能动。一次成功映射只保存一次映射表。
             var plan = E.prepareMask(model, vault);
             var stats = plan.stats;
             if (stats.written === 0) {
-                setStatus('这个区域已经映射过，先反映射再映射。', '');
+                setStatus('这个区域已经映射过，先执行「反映射」再映射。', '');
                 return;
             }
             try {
                 E.saveVault(a, plan.vault);
             } catch (saveErr) {
-                setStatus('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，请重新映射。', 'err');
+                // 单元格还没写，但表格上已经画了紫边、vault 里也登记了区域：撤回到 pre-mask 再说
+                var ab = E.abortMask(plan);
+                setStatus('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，' +
+                    (ab.ok ? '已撤回区域边框，请重新映射。'
+                           : '区域边框可能没恢复（' + ab.error + '），请检查表格后重新映射。'), 'err');
                 return;
             }
             try {
                 E.writeMask(plan);
             } catch (writeErr) {
-                // 引擎已按原值回滚写了一半的单元格；再把内存里恢复好的区域记录写回磁盘，
-                // 否则映射表还记着这些没写成功的区域，下次映射会把它们误当成已映射。
+                // writeMask 已按原值回滚单元格，并把 plan.vault 的区域/边框记录恢复到 pre-mask；
+                // 这份"没写成功"的映射表必须写回磁盘，否则下次映射会把这些区域当成已映射。
                 var tail = (writeErr && writeErr.rollback && writeErr.rollback.ok === false)
                     ? '；回滚未完成，请检查表格后重新映射。'
                     : '；已回滚，请重新映射。';
                 var fail = '写入失败：' + MaskErrText(writeErr) + tail;
                 try {
-                    E.saveVault(a, vault);
+                    E.saveVault(a, plan.vault);
                 } catch (resaveErr) {
-                    fail = '写入失败：' + MaskErrText(writeErr) + '；映射表写回失败：' +
-                        MaskErrText(resaveErr) + '，请勿关闭文档，重新映射前先检查映射表。';
+                    fail = '写入失败：' + MaskErrText(writeErr) + '；回滚后的映射表没保存：' +
+                        MaskErrText(resaveErr) + '，请检查映射表。';
                 }
                 setStatus(fail, 'err');
                 return;
             }
             var extra = stats.skipped > 0 ? ('，跳过 ' + stats.skipped + ' 格') : '';
-            // 区域边框的记录是写单元格时才产生的（画之前得先恢复旧标记，才读得准原样式），
-            // 这里再保存一次映射表。失败只影响「去边框」能否恢复原样式：数据已经写好，
-            // 不能因此说映射失败，但必须如实说明后果。
+            var msg = '已映射 ' + stats.written + ' 格' + extra + '，记得保存文档';
+            // 边框画失败是部分失败：数据与映射表已经写好，但成功提示会误导，必须显式说明
             var note = '', bad = false;
-            if (stats.marked > 0) {
-                try {
-                    E.saveVault(a, plan.vault);
-                } catch (eMark) {
-                    note = '；边框记录没写进映射表（' + MaskErrText(eMark) +
-                        '），去掉边框时只能清除、无法恢复原样式';
-                    bad = true;
-                }
-            }
             if (stats.markError) {
                 note += '；区域边框没画上：' + stats.markError;
                 bad = true;
@@ -510,7 +533,7 @@
             // 「重新识别」按钮才应显示。先刷新再设置状态，否则状态会被刷新清除。
             state.vault = vault;
             refresh(true);
-            setStatus('已映射 ' + stats.written + ' 格' + extra + '，记得保存文档。' + note, bad ? 'err' : 'ok');
+            setStatus(msg + note + '。', bad ? 'err' : 'ok');
         } catch (e) {
             setStatus('映射失败：' + MaskErrText(e), 'err');
         }
@@ -520,21 +543,27 @@
         if (!state.model) { setStatus('请先读取选区', 'err'); return; }
         try {
             var a = getApp();
+            if (isReadOnly(a)) {
+                setStatus(readOnlyText('还原结果保存不了', '反映射'), 'err');
+                return;
+            }
             var vault = E.loadVault(a);
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
             applySavedCfgs(model);
             var stats = E.revert(model, vault, {});
-            // 有还原或有歧义都说明映射表的区域记录被裁剪过，必须立刻落盘，否则关掉文档就丢；
-            // 二次点击两者都是 0，保持 no-op：不重复写单元格，也不重复保存。
+            // 二次点击 hit/ambiguous 都是 0，保持 no-op：不重复写单元格，也不重复保存。
             if (stats.hit === 0 && stats.ambiguous === 0) {
                 setStatus('没有可还原的映射，选区要和映射时一致。', 'err');
                 return;
             }
+            // 只有确实还原了值（hit>0）才裁剪了区域记录，才需要落盘；hit=0 时 vault 没变
             var saveErr = null;
-            try {
-                E.saveVault(a, vault);
-            } catch (e2Save) {
-                saveErr = e2Save;
+            if (stats.hit > 0) {
+                try {
+                    E.saveVault(a, vault);
+                } catch (e2Save) {
+                    saveErr = e2Save;
+                }
             }
             state.vault = vault;
             refresh(true);
@@ -560,8 +589,19 @@
         }
         try {
             var a = getApp();
-            var dropped = E.dropVault(a);
-            if (!dropped) {
+            var res = E.dropVault(a);
+            if (!res.dropped) {
+                // 删表失败（只读/被保护文档）时表还在、映射记录也还在，不能误报成「没有映射表」
+                if (res.errors && res.errors.length) {
+                    // engine 的 message 已以「删除映射表失败：」开头，这里只拼工作表名，避免重复
+                    var failMsg = errList(res.errors);
+                    if (res.missing && res.missing.length) {
+                        failMsg += '；这些工作表已不存在：' + res.missing.join('、');
+                    }
+                    setStatus(failMsg, 'err');
+                    MaskAlert(failMsg);
+                    return;
+                }
                 setStatus('本文档没有映射表', '');
                 return;
             }
@@ -569,7 +609,18 @@
             state.vault = null;
             state.edited = {};
             refresh(true);
-            setStatus('映射表已删除', 'ok');
+            var msg = '映射表已删除';
+            if (res.cleared > 0) { msg += '，已恢复 ' + res.cleared + ' 块区域的边框'; }
+            var problems = [];
+            if (res.errors.length) { problems.push('以下工作表恢复边框失败：' + errList(res.errors)); }
+            if (res.missing.length) { problems.push('这些工作表已不存在：' + res.missing.join('、')); }
+            if (problems.length) {
+                // 部分失败不能只留在状态栏：可能还有紫边没清掉，用户要看到具体哪张表
+                setStatus(msg + '，但没有全部处理完：' + problems.join('；'), 'err');
+                MaskAlert(msg + '。' + problems.join('；') + '。');
+                return;
+            }
+            setStatus(msg, 'ok');
         } catch (e) {
             setStatus('删除失败：' + MaskErrText(e), 'err');
         }
