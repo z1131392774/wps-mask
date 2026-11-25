@@ -77,6 +77,7 @@ function spyEngine(win) {
         prepareMask: E.prepareMask,
         saveVault: E.saveVault,
         writeMask: E.writeMask,
+        abortMask: E.abortMask,
         revert: E.revert
     };
     E.prepareMask = function (model, vault) {
@@ -91,6 +92,10 @@ function spyEngine(win) {
         calls.push('writeMask');
         return orig.writeMask.call(E, plan);
     };
+    E.abortMask = function (plan) {
+        calls.push('abortMask');
+        return orig.abortMask.call(E, plan);
+    };
     E.revert = function (model, vault, opts) {
         calls.push('revert');
         return orig.revert.call(E, model, vault, opts);
@@ -102,6 +107,7 @@ function spyEngine(win) {
             E.prepareMask = orig.prepareMask;
             E.saveVault = orig.saveVault;
             E.writeMask = orig.writeMask;
+            E.abortMask = orig.abortMask;
             E.revert = orig.revert;
         }
     };
@@ -479,8 +485,10 @@ function spyEngine(win) {
         const d = b.dom.window.document;
         const spy = spyEngine(b.dom.window);
         d.getElementById('btnMask').click();
-        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask > saveVault',
-            '调用顺序（写单元格后补存一次边框记录）：' + spy.calls.join(' > '));
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask',
+            '调用顺序（一次保存：阶段二不再补存边框记录）：' + spy.calls.join(' > '));
+        ok(spy.calls.filter(c => c === 'saveVault').length === 1,
+            '成功路径 saveVault 恰好 1 次：' + spy.calls.filter(c => c === 'saveVault').length);
         ok(/已映射/.test(d.getElementById('status').textContent),
             '状态栏：' + d.getElementById('status').textContent);
         ok(b.app.getCell('Sheet1', 2, 2) !== table[1][1],
@@ -494,16 +502,26 @@ function spyEngine(win) {
         await waitLoad(b.dom);
         const d = b.dom.window.document;
         const spy = spyEngine(b.dom.window);
+        const THIN_B = { ls: 1, w: 2, c: 0 };
+        for (let r = 1; r <= table.length; r++) {
+            for (let c = 1; c <= table[0].length; c++) {
+                [7, 8, 9, 10].forEach(idx => b.app.setBorder('Sheet1', r, c, idx, THIN_B));
+            }
+        }
         b.app.setWriteHook(info => info.sheet === '脱敏映射表' ? 'throw' : undefined);
         d.getElementById('btnMask').click();
-        ok(spy.calls.join(' > ') === 'prepareMask > saveVault',
-            '保存失败后不再调用 writeMask，实际：' + spy.calls.join(' > '));
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > abortMask',
+            '保存失败后 abortMask 撤回边框、不调用 writeMask，实际：' + spy.calls.join(' > '));
         ok(b.app.getCell('Sheet1', 2, 1) === table[1][0] &&
             b.app.getCell('Sheet1', 2, 2) === table[1][1],
             '映射表没保存成功时一个单元格都没写');
+        const topB = b.app.getBorder('Sheet1', 2, 1, 8);
+        ok(topB.ls === THIN_B.ls && topB.w === THIN_B.w && topB.c === THIN_B.c,
+            'abortMask 把已画的边框恢复到映射前：' + JSON.stringify(topB));
         const st = d.getElementById('status').textContent;
-        ok(/映射表保存失败/.test(st) && /请重新映射/.test(st),
-            '状态栏报保存失败并提示重新映射：' + st);
+        ok(/映射表保存失败/.test(st) && /没有写入任何单元格/.test(st) &&
+            /已撤回区域边框/.test(st) && /请重新映射/.test(st),
+            '状态栏说明保存失败、已撤回边框并提示重映射：' + st);
         ok(!/已映射/.test(st), '不误报成功');
         b.app.clearWriteHook();
         spy.restore();
@@ -517,14 +535,15 @@ function spyEngine(win) {
         const spy = spyEngine(b.dom.window);
         b.app.setWriteHook(info => info.sheet === 'Sheet1' ? 'throw' : undefined);
         d.getElementById('btnMask').click();
-        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask > saveVault',
-            '写入失败后把恢复好的映射表写回磁盘，实际：' + spy.calls.join(' > '));
         ok(b.app.getCell('Sheet1', 2, 1) === table[1][0] &&
             b.app.getCell('Sheet1', 2, 2) === table[1][1],
             '写入失败后单元格仍是原值');
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask > saveVault',
+            '写入失败后把回滚好的映射表写回磁盘（恰好一次），实际：' + spy.calls.join(' > '));
         const st = d.getElementById('status').textContent;
         ok(/写入失败/.test(st) && /重新映射/.test(st),
             '状态栏报写入失败并提示重新映射：' + st);
+        ok(/回滚未完成/.test(st), '回滚写也被同一条写通道挡住时如实说回滚未完成：' + st);
         ok(!/已映射/.test(st), '不误报成功');
         b.app.clearWriteHook();
         spy.restore();
@@ -645,22 +664,29 @@ function spyEngine(win) {
         b.dom.window.close();
     }
 
-    console.log('\n[17] 已映射区域列表已撤掉，只留表格里的标记边框');
+    console.log('\n[22] 已映射区域列表已撤掉：页脚按钮仍在，面板确实加载过');
     {
         const b = boot();
         await waitLoad(b.dom);
         const d = b.dom.window.document;
+        // 先确认页面真的跑起来了：否则「没有区域列表」这类否定断言在空文档上也成立
+        ok(d.querySelectorAll('.card').length > 0,
+            '面板已加载出字段卡片，实际 ' + d.querySelectorAll('.card').length + ' 张');
         ok(!d.getElementById('btnAreas') && !d.querySelector('.areas'),
             '面板里不再有区域列表入口');
+        const footBtns = ['btnMask', 'btnRevert', 'btnDrop', 'btnHelp'];
+        ok(footBtns.every(function (id) { return !!d.getElementById(id); }),
+            '页脚按钮（映射/反映射/清除/说明）都还在');
         b.dom.window.close();
     }
 
-    console.log('\n[22] 映射后自动套标记边框，反映射恢复原样式');
+    console.log('\n[23] 映射后自动套标记边框，反映射恢复原样式');
     {
         const b = boot();
         await waitLoad(b.dom);
         const d = b.dom.window.document;
-        const MARK = { ls: -4115, w: -4138, c: 8141549 };   // 紫色中等虚线
+        // 宿主的 Color 按 RGB 打包（R + G*256 + B*65536）：15547004 解码为 RGB(124,58,237)。
+        const MARK = { ls: -4115, w: -4138, c: 15547004 };   // 紫色中等虚线
         const THIN = { ls: 1, w: 2, c: 0 };                  // 用户原来的细实线
         for (let r = 1; r <= 4; r++) {
             for (let c = 1; c <= 4; c++) {
@@ -669,18 +695,197 @@ function spyEngine(win) {
         }
         d.getElementById('btnMask').click();
         await sleep(200);
-        const top = b.app.getBorder('Sheet1', 2, 1, 8);
-        ok(top.ls === MARK.ls && top.w === MARK.w && top.c === MARK.c,
-            '映射后区域自动出现紫色虚线边框：' + JSON.stringify(top));
+        // 区域是 A2:D4（首行表头），四边都要是紫色虚线，不只盯上边
+        const edges = { top: [2, 1, 8], left: [2, 1, 7], bottom: [4, 1, 9], right: [2, 4, 10] };
+        const badEdges = Object.keys(edges).filter(function (name) {
+            const e = edges[name];
+            const bd = b.app.getBorder('Sheet1', e[0], e[1], e[2]);
+            return bd.ls !== MARK.ls || bd.w !== MARK.w || bd.c !== MARK.c;
+        });
+        ok(badEdges.length === 0, '映射后区域外圈四边都是紫色虚线（top/left/bottom/right）' +
+            (badEdges.length ? '，不对的是 ' + badEdges.join(',') : ''));
         ok(/已映射/.test(d.getElementById('status').textContent),
             '状态栏仍报映射成功：' + d.getElementById('status').textContent);
+        ok(!/。；/.test(d.getElementById('status').textContent),
+            '成功提示没有「句号+分号」拼接：' + d.getElementById('status').textContent);
         ok(b.app.getBorder('Sheet1', 2, 2, 7).ls === THIN.ls, '区域内部的网格线不动');
 
         d.getElementById('btnRevert').click();
         await sleep(200);
-        const afterRev = b.app.getBorder('Sheet1', 2, 1, 8);
-        ok(afterRev.ls === THIN.ls && afterRev.w === THIN.w && afterRev.c === THIN.c,
-            '反映射后边框恢复成原样：' + JSON.stringify(afterRev));
+        const badRestore = Object.keys(edges).filter(function (name) {
+            const e = edges[name];
+            const bd = b.app.getBorder('Sheet1', e[0], e[1], e[2]);
+            return bd.ls !== THIN.ls || bd.w !== THIN.w || bd.c !== THIN.c;
+        });
+        const firstRestore = b.app.getBorder('Sheet1', 2, 1, 8);
+        ok(badRestore.length === 0, '反映射后区域外圈四边都恢复成原样：' +
+            JSON.stringify(firstRestore) + (badRestore.length ? '，不对的是 ' + badRestore.join(',') : ''));
+        b.dom.window.close();
+    }
+
+    console.log('\n[24] 只读文档：面板在调用引擎之前就拒绝，单元格不动');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+
+        b.app.ActiveWorkbook.ReadOnly = true;
+        d.getElementById('btnMask').click();
+        await sleep(50);
+        const stMask = d.getElementById('status').textContent;
+        ok(/文档是只读打开的/.test(stMask) && /脱敏后无法还原/.test(stMask) &&
+            /另存为新文件/.test(stMask), '只读时映射直接拒绝并说明原因：' + stMask);
+        ok(d.getElementById('status').className.includes('err'),
+            '状态是 error 样式：' + d.getElementById('status').className);
+        ok(spy.calls.length === 0,
+            '没有调用任何引擎阶段（阶段二 prepareMask 会先画边框）：' + spy.calls.join(' > '));
+        ok(b.app.getCell('Sheet1', 2, 1) === table[1][0] &&
+            b.app.getCell('Sheet1', 2, 2) === table[1][1], '单元格一个都没写');
+        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '没有生成映射表');
+
+        // 解除只读后照常映射，记下真实的脱敏值，供下面「只读反映射不许悄悄还原」对比
+        b.app.ActiveWorkbook.ReadOnly = false;
+        spy.reset();
+        d.getElementById('btnMask').click();
+        await sleep(200);
+        const masked = b.app.getCell('Sheet1', 2, 2);
+        ok(masked !== table[1][1] && spy.calls.indexOf('writeMask') !== -1,
+            '解除只读后照常映射：' + masked);
+
+        spy.reset();
+        b.app.ActiveWorkbook.ReadOnly = true;
+        d.getElementById('btnRevert').click();
+        await sleep(50);
+        const stRev = d.getElementById('status').textContent;
+        ok(/文档是只读打开的/.test(stRev) && /还原结果保存不了/.test(stRev),
+            '只读时反映射直接拒绝：' + stRev);
+        ok(spy.calls.length === 0, '只读时没有调用 revert：' + spy.calls.join(' > '));
+        ok(b.app.getCell('Sheet1', 2, 2) === masked,
+            '只读反映射没有偷偷还原单元格：' + b.app.getCell('Sheet1', 2, 2));
+
+        b.app.ActiveWorkbook.ReadOnly = false;
+        spy.restore();
+        b.dom.window.close();
+    }
+
+
+    console.log('\n[25] 写单元格失败且回滚后的映射表也保存不了：必须 loud');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        const E = b.dom.window.MaskEngine;
+        const realSave = E.saveVault;
+        let saves = 0;
+        E.saveVault = function () {
+            saves++;
+            if (saves === 2) { throw new Error('模拟二次保存失败'); }
+            return realSave.apply(E, arguments);
+        };
+        // 写单元格失败（引擎回滚也走同一条写通道，会报回滚未完成）；回滚后的那次保存被桩打断
+        b.app.setWriteHook(info => info.sheet === 'Sheet1' ? 'throw' : undefined);
+        d.getElementById('btnMask').click();
+        b.app.clearWriteHook();
+        E.saveVault = realSave;
+        ok(saves === 2, '回滚后又尝试写回一次映射表：' + saves);
+        const st = d.getElementById('status').textContent;
+        ok(/写入失败/.test(st) && /回滚后的映射表没保存：模拟二次保存失败/.test(st) &&
+            /请检查映射表/.test(st), '状态栏 loud 说明映射表没写回：' + st);
+        spy.restore();
+        b.dom.window.close();
+    }
+
+    console.log('\n[26] 删除映射表：用新返回对象报告 dropped/cleared/errors/missing');
+    {
+        // a) 没有映射表：dropped=false，直接说没有
+        const b0 = boot();
+        await waitLoad(b0.dom);
+        const d0 = b0.dom.window.document;
+        d0.getElementById('btnDrop').click();
+        ok(/本文档没有映射表/.test(d0.getElementById('status').textContent),
+            'dropped=false 时提示没有映射表：' + d0.getElementById('status').textContent);
+        b0.dom.window.close();
+
+        // b) 有映射表：删除前先清掉紫边，报表恢复了几块区域
+        const b1 = boot();
+        await waitLoad(b1.dom);
+        const d1 = b1.dom.window.document;
+        const THIN_D = { ls: 1, w: 2, c: 0 };
+        for (let r = 1; r <= table.length; r++) {
+            for (let c = 1; c <= table[0].length; c++) {
+                [7, 8, 9, 10].forEach(idx => b1.app.setBorder('Sheet1', r, c, idx, THIN_D));
+            }
+        }
+        d1.getElementById('btnMask').click();
+        ok(b1.app.getBorder('Sheet1', 2, 1, 8).ls !== THIN_D.ls, '删除前区域已套紫边');
+        d1.getElementById('btnDrop').click();
+        const st1 = d1.getElementById('status').textContent;
+        ok(/映射表已删除/.test(st1) && /已恢复 1 块区域的边框/.test(st1),
+            '删除后报告恢复的边框：' + st1);
+        ok(!b1.app.sheets.some(s => s.Name === '脱敏映射表'), '工作表已删除');
+        ok(b1.app.getBorder('Sheet1', 2, 1, 8).ls === THIN_D.ls, '紫边已恢复成原样式');
+        b1.dom.window.close();
+
+        // c) 部分失败：errors/missing 要弹窗 + err 状态逐条列出，不能只留一句「已删除」
+        const b2 = boot();
+        await waitLoad(b2.dom);
+        const d2 = b2.dom.window.document;
+        const E2 = b2.dom.window.MaskEngine;
+        const origDrop2 = E2.dropVault;
+        E2.dropVault = function () {
+            return {
+                dropped: true, cleared: 2, missing: ['Sheet9'],
+                errors: [{ sheet: 'Sheet2', message: '模拟保护' }]
+            };
+        };
+        d2.getElementById('btnDrop').click();
+        E2.dropVault = origDrop2;
+        const alerts2 = b2.dom.window.__alerts || [];
+        const st2 = d2.getElementById('status').textContent;
+        ok(alerts2.length === 1 && /映射表已删除/.test(alerts2[0]) &&
+            /以下工作表恢复边框失败：Sheet2：模拟保护/.test(alerts2[0]) &&
+            /这些工作表已不存在：Sheet9/.test(alerts2[0]),
+            '部分失败弹窗逐条列出：' + JSON.stringify(alerts2));
+        ok(/没有全部处理完/.test(st2) && d2.getElementById('status').className.includes('err'),
+            '状态栏也标成 err：' + st2);
+        b2.dom.window.close();
+    }
+
+
+    console.log('\n[27] 删除映射表失败（只读/保护文档）：不能误报成「没有映射表」');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const E = b.dom.window.MaskEngine;
+        d.getElementById('btnMask').click();
+        await sleep(200);
+        ok(E.loadVault(b.app).ranges.length > 0, '先映射出映射表');
+
+        // 模拟只读/被保护文档：删工作表抛错
+        b.app.setDeleteHook(function (s) { return s.Name === '脱敏映射表' ? 'throw' : undefined; });
+        const alertsBefore = (b.dom.window.__alerts || []).length;
+        d.getElementById('btnDrop').click();
+        await sleep(50);
+        const st = d.getElementById('status').textContent;
+        const alerts = (b.dom.window.__alerts || []).slice(alertsBefore);
+        ok(/删除映射表失败/.test(st) && d.getElementById('status').className.includes('err'),
+            '状态栏报删除失败且是 err：' + st);
+        ok(alerts.length === 1 && /删除映射表失败/.test(alerts[0]),
+            '弹窗也说明删除失败：' + JSON.stringify(alerts));
+        ok(!/本文档没有映射表/.test(st), '不把删除失败说成没有映射表');
+        ok(b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表仍在');
+        ok(E.loadVault(b.app).ranges.length > 0, '映射记录仍在（错误没有吞掉状态）');
+
+        // 解除删除故障后重试：真的删掉
+        b.app.setDeleteHook(null);
+        d.getElementById('btnDrop').click();
+        await sleep(50);
+        ok(/映射表已删除/.test(d.getElementById('status').textContent),
+            '重试删除成功：' + d.getElementById('status').textContent);
+        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表已删掉');
         b.dom.window.close();
     }
 

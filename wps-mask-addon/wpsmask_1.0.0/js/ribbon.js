@@ -84,16 +84,39 @@ function MaskTogglePane() {
     pane.Visible = true;
 }
 
+/* ---------- 只读文档 ----------
+ * 只读打开时 Save() 既不抛错也不写盘（真机量过，见 engine.js saveVault）：映射表会"保存成功"地丢掉。
+ * 映射、反映射、加/去边框都要改映射表，所以在动任何单元格或边框之前就拒绝。
+ * 文案与 engine.js saveVault 的只读提示同义（只读时 Save() 不抛错也不写盘），两处改一处必须同步。
+ */
+
+function MaskReadOnly(app) {
+    var wb = null;
+    try { wb = app && app.ActiveWorkbook; } catch (e) { wb = null; }
+    if (!wb) { return false; }
+    try { return !!wb.ReadOnly; } catch (e2) { return false; }
+}
+
+function MaskReadOnlyText(what, retry) {
+    return '文档是只读打开的，映射表存不进去（保存会被静默忽略），' + what +
+        '。请先另存为新文件，再' + retry + '。';
+}
+
 /* ---------- 快捷操作（不打开面板，用自动识别或上次记住的设置） ---------- */
 
 function MaskQuickApply() {
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
+    if (MaskReadOnly(app)) {
+        MaskAlert(MaskReadOnlyText('脱敏后无法还原', '脱敏'));
+        return;
+    }
 
     var vault = MaskEngine.loadVault(app);
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
 
-    // 两阶段：先建映射并把区域记录写进 vault，保存成功之后才写单元格
+    // 两阶段：prepareMask 建映射、登记区域并画好边框；保存成功之后才写单元格。
+    // 一次成功映射只保存一次映射表（区域与边框记录在 saveVault 时同批落盘）。
     var plan = MaskEngine.prepareMask(model, vault);
     if (plan.stats.written === 0) {
         MaskAlert('这个区域已经映射过，先执行「反映射」再映射。');
@@ -102,46 +125,49 @@ function MaskQuickApply() {
     try {
         MaskEngine.saveVault(app, plan.vault);
     } catch (saveErr) {
-        MaskAlert('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，请重新映射。');
+        // 单元格还没写，但表格上已经画了紫边、vault 里也登记了区域：撤回到 pre-mask 再说
+        var ab = MaskEngine.abortMask(plan);
+        MaskAlert('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，' +
+            (ab.ok ? '已撤回区域边框，请重新映射。'
+                   : '区域边框可能没恢复（' + ab.error + '），请检查表格后重新映射。'));
         return;
     }
     try {
         MaskEngine.writeMask(plan);
     } catch (writeErr) {
-        // 引擎已按原值回滚；把内存里恢复好的区域记录写回磁盘，失败要 loud
+        // writeMask 已按原值回滚单元格，并把 plan.vault 的区域/边框记录恢复到 pre-mask；
+        // 这份"没写成功"的映射表必须写回磁盘，否则下次映射会把这些区域当成已映射。
         var tail = (writeErr && writeErr.rollback && writeErr.rollback.ok === false)
             ? '；回滚未完成，请检查表格后重新映射。'
             : '；已回滚，请重新映射。';
         var fail = '写入失败：' + MaskErrText(writeErr) + tail;
         try {
-            MaskEngine.saveVault(app, vault);
+            MaskEngine.saveVault(app, plan.vault);
         } catch (resaveErr) {
-            fail = '写入失败：' + MaskErrText(writeErr) + '；映射表写回失败：' +
-                MaskErrText(resaveErr) + '，请勿关闭文档，重新映射前先检查映射表。';
+            fail = '写入失败：' + MaskErrText(writeErr) + '；回滚后的映射表没保存：' +
+                MaskErrText(resaveErr) + '，请检查映射表。';
         }
         MaskAlert(fail);
         return;
     }
 
     var skip = plan.stats.skipped > 0 ? '，跳过 ' + plan.stats.skipped + ' 格' : '';
-    var msg = '已映射 ' + plan.stats.written + ' 格' + skip + '，记得保存文档。';
-    // 区域边框的记录是写单元格时才产生的，要再保存一次；失败只影响「去边框」能否恢复原样式
-    var note = '';
-    if (plan.stats.marked > 0) {
-        try {
-            MaskEngine.saveVault(app, plan.vault);
-        } catch (eMark) {
-            note = '；边框记录没写进映射表（' + MaskErrText(eMark) + '），去掉边框时只能清除';
-        }
+    var msg = '已映射 ' + plan.stats.written + ' 格' + skip + '，记得保存文档';
+    // 边框画失败是部分失败：数据与映射表已经写好，但成功提示会误导，必须显式说明
+    if (plan.stats.markError) {
+        MaskAlert(msg + '；区域边框没画上：' + plan.stats.markError + '。');
+        return;
     }
-    if (plan.stats.markError) { note += '；区域边框没画上：' + plan.stats.markError; }
-    if (note) { MaskAlert(msg + note); return; }
-    MaskToast(msg);
+    MaskToast(msg + '。');
 }
 
 function MaskQuickRevert() {
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
+    if (MaskReadOnly(app)) {
+        MaskAlert(MaskReadOnlyText('还原结果保存不了', '反映射'));
+        return;
+    }
 
     var vault = MaskEngine.loadVault(app);
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
@@ -152,17 +178,24 @@ function MaskQuickRevert() {
         MaskAlert('没有可还原的映射，选区要和映射时一致。');
         return;
     }
-    // 区域记录被裁剪过，必须落盘；保存失败要 loud，不能让用户以为已经保存
-    try {
-        MaskEngine.saveVault(app, vault);
-    } catch (saveErr) {
-        MaskAlert('映射表未保存：' + MaskErrText(saveErr) +
-            '，请勿关闭文档，重新映射前先检查映射表。');
-        return;
+    // 区域记录被裁剪过，必须落盘；保存失败要 loud，不能让用户以为已经保存。
+    // 只有确实还原了值（hit>0）才裁剪记录；hit=0 时 vault 没变，不必再写一次。
+    if (stats.hit > 0) {
+        try {
+            MaskEngine.saveVault(app, vault);
+        } catch (saveErr) {
+            MaskAlert('映射表未保存：' + MaskErrText(saveErr) +
+                '，请勿关闭文档，重新映射前先检查映射表。');
+            return;
+        }
     }
     var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有映射记录') : '';
     if (stats.ambiguous > 0) { tail += '，' + stats.ambiguous + ' 格有歧义未还原'; }
-    if (stats.markError) { tail += '；区域边框没更新：' + stats.markError; }
+    // 边框没更新是部分失败：状态栏 4 秒就清掉，用户容易以为全部还原成功，必须弹窗
+    if (stats.markError) {
+        MaskAlert('已还原 ' + stats.hit + ' 格' + tail + '；区域边框没更新：' + stats.markError);
+        return;
+    }
     MaskToast('已还原 ' + stats.hit + ' 格' + tail);
 }
 
@@ -177,36 +210,65 @@ function MaskMarkTail(r) {
         : '';
 }
 
+// 引擎按表独立 try/catch，失败放在 errors:[{sheet,message}]：一张表被保护不该埋掉，
+// 多张表时要逐条列出来，用户才知道去修哪张。
+function MaskErrList(errors) {
+    var parts = [];
+    for (var i = 0; i < errors.length; i++) {
+        parts.push(errors[i].sheet + '：' + errors[i].message);
+    }
+    return parts.join('；');
+}
+
 function MaskQuickMarkAll() {
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
+    if (MaskReadOnly(app)) {
+        MaskAlert(MaskReadOnlyText('边框变化保存不了', '加边框'));
+        return;
+    }
 
     var vault = MaskEngine.loadVault(app);
     var r = MaskEngine.markAllAreas(app, vault);
-    if (r.marked === 0) {
-        MaskAlert(r.missing.length
+    // marked=0 也可能清理了旧记录/旧紫线：真正的"没动"是 changed=false
+    if (!r.changed) {
+        MaskAlert((r.missing.length
             ? ('这些工作表已不存在：' + r.missing.join('、'))
-            : '没有可加边框的区域，先执行「快速映射」或打开面板映射一块。');
+            : '没有可加边框的区域，先执行「快速映射」或打开面板映射一块。') +
+            (r.errors.length ? '；没画上的工作表：' + MaskErrList(r.errors) : ''));
         return;
     }
     // 加边框前读到的原样式必须落盘，「去边框」才能恢复用户自己的表格边框
     try {
         MaskEngine.saveVault(app, vault);
     } catch (saveErr) {
-        MaskAlert('边框已加上，但映射表没保存：' + MaskErrText(saveErr) +
-            '，去掉边框时只能清除。');
+        MaskAlert((r.marked > 0 ? '边框已加上，但映射表没保存：' : '边框记录没保存：') +
+            MaskErrText(saveErr) + '，去掉边框时只能清除。');
         return;
     }
-    MaskToast('已给 ' + r.marked + ' 块区域加上边框' + MaskMarkTail(r) + '，记得保存文档。');
+    var tail = MaskMarkTail(r);
+    var msg = r.marked > 0
+        ? ('已给 ' + r.marked + ' 块区域加上边框' + tail)
+        : ('没有需要重画边框的区域，已清理过期的边框记录' + tail);
+    if (r.errors.length) {
+        MaskAlert(msg + '；没画上的工作表：' + MaskErrList(r.errors) + '，记得保存文档。');
+        return;
+    }
+    MaskToast(msg + '，记得保存文档。');
 }
 
 function MaskQuickClearMarks() {
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
+    if (MaskReadOnly(app)) {
+        MaskAlert(MaskReadOnlyText('边框变化保存不了', '去边框'));
+        return;
+    }
 
     var vault = MaskEngine.loadVault(app);
     var r = MaskEngine.clearAllMarks(app, vault);
-    if (r.cleared === 0) {
+    // errors 非空时即便 cleared=0 也要落盘：失败的表保留记录，成功清掉的部分得记住
+    if (r.cleared === 0 && !r.errors.length) {
         MaskAlert(r.missing.length
             ? ('这些工作表已不存在：' + r.missing.join('、'))
             : '没有加过边框的区域，先映射一块。');
@@ -219,5 +281,13 @@ function MaskQuickClearMarks() {
         MaskAlert('边框已去掉，但映射表没保存：' + MaskErrText(saveErr) + '，请检查映射表。');
         return;
     }
-    MaskToast('已去掉 ' + r.cleared + ' 块区域的边框' + MaskMarkTail(r));
+    var tail = MaskMarkTail(r);
+    var msg = r.cleared > 0
+        ? ('已去掉 ' + r.cleared + ' 块区域的边框' + tail)
+        : ('没有去掉边框' + tail);
+    if (r.errors.length) {
+        MaskAlert(msg + '；没去掉的工作表：' + MaskErrList(r.errors) + '，记得保存文档。');
+        return;
+    }
+    MaskToast(msg + '，记得保存文档。');
 }
