@@ -699,19 +699,6 @@ var MaskEngine = (function () {
         throw vaultParseError(a.reason, a.error);
     }
 
-    // 面板的轮询靠它发现映射表被别的入口改过（快捷按钮、另一个窗口）：
-    // 每次保存都会换一个新的 IV，第一段密文跟着变；只读一格，代价可以忽略。
-    function vaultFingerprint(app) {
-        var wb = null;
-        try { wb = app.ActiveWorkbook; } catch (eWb) { wb = null; }
-        if (!wb) { return ''; }
-        var ws = findSheet(wb, VAULT_SHEET);
-        if (!ws) { return ''; }
-        var a2 = readCellText(ws, 2, 1);
-        if (!a2) { return ''; }
-        return a2.length + ':' + a2.slice(0, 16) + ':' + a2.slice(-16);
-    }
-
     // 把一个桶的记录搬到另一个桶名下，然后删掉来源桶。
     // 目标桶已有同名键、或这个假值已被占用，就不搬：宁可丢一条记录，也不能让两个原值指向同一个假值。
     // 丢掉的记录不影响反映射——反查走的是全局索引，旧假值仍在别的桶里找得到原值。
@@ -2013,7 +2000,6 @@ var MaskEngine = (function () {
         clearAllMarks: clearAllMarks,
         sample: sample,
         loadVault: loadVault,
-        vaultFingerprint: vaultFingerprint,
         saveVault: saveVault,
         dropVault: dropVault,
         defaultCfg: defaultCfg,

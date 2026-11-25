@@ -79,7 +79,7 @@ A junction needs no admin rights or developer mode, and a hard link cannot point
 
 **Repeated masking does not stack.** A cell is skipped only when it lies in a range this add-in has already written and its value reverses through the table; the status line reports the count. Reverting subtracts the restored parts, so a second revert finds nothing to write. To map current values again, revert first.
 
-**Seeing what is masked.** Mapped blocks get a purple dashed outline in the sheet, so no panel is needed to see them; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click. The panel's footer always shows 「已映射区域（N）」 — the number of recorded blocks, 0 included. A quick mask updates the list by itself, no reopen; the records live in memory as soon as you mask, and only saving keeps them across sessions.
+**Seeing what is masked.** Mapped blocks get a purple dashed outline in the sheet, so no panel is needed to see them; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click. The records live in the hidden table as soon as you mask — revert and the outline read them — and only saving keeps them across sessions.
 
 **Quick buttons.** "快速映射" uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. "反映射" restores the areas recorded in the selection; cells it never masked keep their values, and with nothing to restore it says so instead of writing.
 

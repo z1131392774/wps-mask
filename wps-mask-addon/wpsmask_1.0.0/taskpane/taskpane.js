@@ -6,7 +6,7 @@
     'use strict';
 
     var E = MaskEngine;
-    var state = { model: null, vault: null, ready: false, headerTouched: false, selKey: '', edited: {}, areasOpen: false, vaultFp: '' };
+    var state = { model: null, vault: null, ready: false, headerTouched: false, selKey: '', edited: {} };
     var POLL_MS = 800;
 
     function $(id) { return document.getElementById(id); }
@@ -379,86 +379,6 @@
         return '；首行自动判定为字段名，若首行其实是数据，请取消勾选「首行是表头」';
     }
 
-    /* ---------------- 已映射区域 ----------------
-     * 映射表按列记录写过假值的矩形；列表把它们并成块，点一条就跳到那块区域。
-     * 入口只在有记录时出现，展开状态跨自动刷新保留。
-     */
-    function areaLabel(rec) {
-        return rec.sheet + '!' + colLetter(rec.c1) + rec.r1 + ':' + colLetter(rec.c2) + rec.r2;
-    }
-
-    // 入口一直显示：0 条也算一种状态，能分清"这份文档没有记录"和"面板没读到"。
-    function renderAreas() {
-        var list = E.maskedAreas(state.vault);
-        var link = $('btnAreas');
-        var box = $('areas');
-        link.style.display = '';
-        link.textContent = (state.areasOpen ? '收起已映射区域' : '已映射区域') + '（' + list.length + '）';
-        if (!state.areasOpen) {
-            box.style.display = 'none';
-            $('areaList').innerHTML = '';
-            return;
-        }
-        box.style.display = '';
-        if (!list.length) {
-            $('areasHd').textContent = '这份文档还没有映射记录。映射后不用保存也能在这里看到；要跨关文档保留，记得保存文档。';
-            $('areaList').innerHTML = '';
-            return;
-        }
-        $('areasHd').textContent = '已映射区域（' + list.length + '）· 点一条跳到那块区域';
-        var html = '';
-        for (var i = 0; i < list.length; i++) {
-            var r = list[i];
-            html += '<button type="button" class="area" data-sheet="' + esc(r.sheet) + '"' +
-                ' data-r1="' + r.r1 + '" data-c1="' + r.c1 + '"' +
-                ' data-r2="' + r.r2 + '" data-c2="' + r.c2 + '">' + esc(areaLabel(r)) + '</button>';
-        }
-        $('areaList').innerHTML = html;
-    }
-
-    // 这一行是否落在某条区域记录里：跳转前判断上面一行能不能一起选。
-    function rowRecorded(vault, sheet, row, c1, c2) {
-        var list = (vault && vault.ranges) || [];
-        for (var i = 0; i < list.length; i++) {
-            var it = list[i];
-            if (!it || it.s !== sheet) { continue; }
-            if (row >= it.r1 && row <= it.r2 && c2 >= it.c1 && c1 <= it.c2) { return true; }
-        }
-        return false;
-    }
-
-    // 工作表可能在映射后被删除：记录还留在映射表里，这里如实说，不静默失败。
-    function gotoArea(el) {
-        var name = el.getAttribute('data-sheet');
-        var rec = {
-            sheet: name,
-            r1: Number(el.getAttribute('data-r1')), c1: Number(el.getAttribute('data-c1')),
-            r2: Number(el.getAttribute('data-r2')), c2: Number(el.getAttribute('data-c2'))
-        };
-        try {
-            var a = getApp();
-            var wb = a.ActiveWorkbook;
-            var ws = null;
-            for (var i = 1; i <= wb.Worksheets.Count; i++) {
-                var s = wb.Worksheets.Item(i);
-                if (String(s.Name) === name) { ws = s; break; }
-            }
-            if (!ws) {
-                setStatus('工作表「' + name + '」已不存在，这条区域记录还在映射表里；确认不再需要后可以清除映射表', 'err');
-                return;
-            }
-            // 记录块从第一条数据开始；把上面一行一起选中，「首行是表头」才判断得对，
-            // 否则整块还原会漏掉第一行。上面一行若本身也是记录，就不碰，免得一次还原两块。
-            var top = rec.r1;
-            if (top > 1 && !rowRecorded(state.vault, name, top - 1, rec.c1, rec.c2)) { top = top - 1; }
-            ws.Activate();
-            ws.Range(ws.Cells.Item(top, rec.c1), ws.Cells.Item(rec.r2, rec.c2)).Select();
-            setStatus('已选中 ' + name + '!' + colLetter(rec.c1) + top + ':' + colLetter(rec.c2) + rec.r2, '');
-        } catch (e) {
-            setStatus('跳转失败：' + MaskErrText(e), 'err');
-        }
-    }
-
     function refresh(useRemember, keepEdits) {
         // keepEdits 为假时按映射表重读：面板上的临时改动不再带回，包括"哪些列被改过"这件事
         if (!keepEdits) { state.edited = {}; }
@@ -468,13 +388,9 @@
             try {
                 state.vault = E.loadVault(a);
             } catch (eVault) {
-                // 映射表本身读不出来：列表不能再展示上一次读到的区域，否则像在说"这些都还在"
                 state.vault = null;
-                renderAreas();
                 throw eVault;
             }
-            try { state.vaultFp = E.vaultFingerprint(a); } catch (eFp) { state.vaultFp = ''; }
-            renderAreas();
             var opts = {};
             if (state.ready) { opts.hasHeader = $('chkHeader').checked; }
             var model = E.analyze(a, opts);
@@ -671,7 +587,6 @@
             '已映射的单元格会被跳过，对同一区域重复执行「映射」不会叠加。',
             '映射过的区域会自动套一圈紫色虚线边框，不用打开面板也看得到。',
             '功能区的「全部加边框」「全部去边框」可以手动重画或一次去掉；反映射后边框跟着区域一起消失。',
-            '「已映射区域」列出本文档记录过的区域，点一条就跳到那块区域。',
             '要基于映射后的值再映射一遍，先「反映射」。',
             '',
             '同一原值始终映射为同一结果，不同原值映射为不同结果。',
@@ -765,25 +680,6 @@
     $('btnRevert').addEventListener('click', doRevert);
     $('btnDrop').addEventListener('click', doDrop);
     $('btnHelp').addEventListener('click', showHelp);
-    $('btnAreas').addEventListener('click', function () {
-        state.areasOpen = !state.areasOpen;
-        if (state.areasOpen) {
-            // 打开前重读一次：快捷按钮刚改过映射表时，列表不该等到下一次选区变化
-            try {
-                var a = getApp();
-                state.vault = E.loadVault(a);
-                state.vaultFp = E.vaultFingerprint(a);
-            } catch (eV) {
-                setStatus('读取映射表失败：' + MaskErrText(eV), 'err');
-            }
-        }
-        renderAreas();
-    });
-    $('areaList').addEventListener('click', function (ev) {
-        var el = ev.target;
-        while (el && el !== this && !(el.classList && el.classList.contains('area'))) { el = el.parentNode; }
-        if (el && el !== this) { gotoArea(el); }
-    });
 
     /* ---------------- 自动读取 ----------------
      * 两件事：
@@ -796,23 +692,11 @@
     var pollTimer = null;
     var pendingSig = null;
 
-    // 快捷按钮、另一个窗口改了映射表时，面板自己更新区域列表，不必重开面板。
-    // 每个轮询只读一格密文做指纹；指纹变了才解密整张表。
-    function watchVault(a) {
-        var fp;
-        try { fp = E.vaultFingerprint(a); } catch (eFp) { return; }
-        if (fp === state.vaultFp) { return; }
-        state.vaultFp = fp;
-        try { state.vault = E.loadVault(a); } catch (eV) { return; }
-        renderAreas();
-    }
-
     function startWatch() {
         if (pollTimer) { return; }
         pollTimer = setInterval(function () {
             var a = MaskGetApp();
             if (!a) { return; }
-            watchVault(a);
             var k = selSignature(a);
             if (k === state.selKey) { pendingSig = null; return; }
             if (pendingSig !== k) { pendingSig = k; return; }

@@ -1331,8 +1331,8 @@ ok(err43 != null && /只读/.test(err43.message), '保存之前就拒绝：' + (
 ok(app43.getCell('Sheet1', 2, 1) === '张三', '一格都没写，表格还是原值');
 ok(!app43.sheets.some(function (s) { return s.Name === '脱敏映射表'; }), '连隐藏表都没建，文档没被改动');
 
-/* ---------- 44. 已映射区域：按列记录合并成看得懂的块 ---------- */
-console.log('\n[44] 已映射区域列表');
+/* ---------- 44. 已映射区域：按列记录合并成块（边框按块画） ---------- */
+console.log('\n[44] 已映射区域按列记录合并成块');
 const areas44 = Engine.maskedAreas({
     ranges: [
         { s: 'Sheet1', r1: 2, c1: 1, r2: 11, c2: 1 },

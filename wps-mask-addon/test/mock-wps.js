@@ -160,12 +160,6 @@ function makeRange(sheet, row, col, rows, cols) {
                     delete sheet.app.grid[sheet.Name + '!' + r + ',' + c];
                 }
             }
-        },
-        // 面板的「已映射区域」点一条就跳到那块区域：宿主上是 range.Select()
-        Select: function () {
-            sheet.app.Selection = rng;
-            sheet.app.ActiveSheet = sheet;
-            sheet.app.activeSheet = sheet;
         }
     };
 
