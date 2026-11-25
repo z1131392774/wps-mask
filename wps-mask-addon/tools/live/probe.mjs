@@ -212,7 +212,19 @@ async function main() {
     if (appStep.verdict !== 'OK') { await finish(1) }
     const members = asList(appStep.data && appStep.data.members).map(String)
 
-    /* 2. 手册 1：功能区控件能不能被程序看见 */
+    /* 2. 先把窗口显示出来，功能区和 CommandBars 才会被真实构建 */
+    if (WANT_UI) {
+        await step(null, '显示 WPS 窗口', async () => {
+            const d = await rpc.call('show', { visible: true })
+            return {
+                verdict: d.visible ? 'OK' : 'UNK',
+                detail: d.visible ? '窗口已显示，功能区这一步扫的才是真实构建过的界面'
+                    : '设了 Visible=true 但读回 false，下面扫 CommandBars 的结果要打折扣'
+            }
+        })
+    }
+
+    /* 3. 手册 1：功能区控件能不能被程序看见 */
     await step(1, '功能区控件在 CommandBars 里看得到', async () => {
         const d = await rpc.call('controls')
         const items = asList(d.items)
@@ -222,14 +234,15 @@ async function main() {
         if (!items.length) {
             return {
                 verdict: 'UNK',
-                detail: 'CommandBars 里没有加载项控件：可能加载项没装进这个版本，也可能控件只在功能区（UIA）里'
+                detail: 'CommandBars 里没有加载项控件：可能加载项没装进这个版本，也可能控件只在功能区（UIA）里' +
+                    (WANT_UI ? '' : '；本次没显示窗口，隐藏实例可能本来就是空的，加 --ui 再试一次')
             }
         }
         const names = items.map(c => [c.bar, c.Caption || c.Tag || c.Id].filter(Boolean).join('/')).slice(0, 6)
         return { verdict: 'OK', detail: items.length + ' 个：' + names.join('，'), data: items }
     })
 
-    /* 3. 手册 1 的退路：UIA 能不能看见主窗口 */
+    /* 4. 手册 1 的退路：UIA 能不能看见主窗口 */
     await step(1, 'UIA 能看见 WPS 主窗口', async () => {
         const d = await rpc.call('uia')
         if (!d.supported) { return { verdict: 'NO', detail: 'UIA 程序集加载失败：' + d.error } }
@@ -237,14 +250,14 @@ async function main() {
         return { verdict: 'OK', detail: '窗口「' + d.window + '」' }
     })
 
-    /* 4. 自己建一张临时表，后面所有写入都在它身上 */
+    /* 5. 自己建一张临时表，后面所有写入都在它身上 */
     await step(null, '新建临时工作簿', async () => {
         const d = await rpc.call('newbook')
         book = d.name
         return { verdict: 'OK', detail: book }
     })
 
-    /* 5. 手册 4：engine 用的建表形态 */
+    /* 6. 手册 4：engine 用的建表形态 */
     await step(4, 'Worksheets.Add(undefined, 末表) 返回工作表', async () => {
         const d = await rpc.call('addsheet', { name: V, marker: 'probe' })
         sheetReady = Boolean(d && d.name)
@@ -269,7 +282,7 @@ async function main() {
         await finish(1)
     }
 
-    /* 6. 手册 5 前半：隐藏。顺带验「活动表不能隐藏」这个 engine 依赖的行为 */
+    /* 7. 手册 5 前半：隐藏。顺带验「活动表不能隐藏」这个 engine 依赖的行为 */
     const hide = await step(5, '工作表能隐藏，且隐藏前必须切走', async () => {
         let activeHideThrew = null
         try {
@@ -291,7 +304,7 @@ async function main() {
         }
     })
 
-    /* 7. 手册 5 后半：存盘、关掉、重开，密文和可见性都还在吗 */
+    /* 8. 手册 5 后半：存盘、关掉、重开，密文和可见性都还在吗 */
     await step(5, '隐藏表存盘重开还能读回密文', async () => {
         if (hide.verdict === 'NO') { throw new Error('隐藏没成功，先修上一条') }
         await rpc.call('set', { sheet: V, r: 1, c: 1, rows: [[MARKER]] })
@@ -313,7 +326,7 @@ async function main() {
         }
     })
 
-    /* 8. 手册 7a：受保护的表写入会不会被拒 */
+    /* 9. 手册 7a：受保护的表写入会不会被拒 */
     await step(7, '受保护工作表拒绝写入', async () => {
         if (!openBook) { throw new Error('第 7 条没拿到工作簿') }
         await rpc.call('protect', { name: openBook, sheet: V, password: 'probe' })
@@ -329,7 +342,7 @@ async function main() {
         }
     })
 
-    /* 9. 手册 7b：合并单元格的写入落在哪一格 */
+    /* 10. 手册 7b：合并单元格的写入落在哪一格 */
     await step(7, '合并单元格写入落在锚点格', async () => {
         if (!openBook) { throw new Error('第 7 条没拿到工作簿') }
         await rpc.call('merge', { name: openBook, sheet: V, r1: 5, c1: 1, r2: 5, c2: 2 })
@@ -344,7 +357,7 @@ async function main() {
         }
     })
 
-    /* 10. 手册 7c：只读打开后保存会不会被拒 */
+    /* 11. 手册 7c：只读打开后保存会不会被拒 */
     await step(7, '只读打开后保存被拒', async () => {
         if (openBook) { await rpc.call('close', { name: openBook }).catch(() => { }); openBook = null }
         const d = await rpc.call('open', { path: sampleFile, readOnly: true })
@@ -356,7 +369,7 @@ async function main() {
         return { verdict: 'NO', detail: 'ReadOnly=true 但 Save() 没报错，要确认是不是静默存去了别处' }
     })
 
-    /* 11. 手册 3 与 2：任务窗格。这两条要看得见窗口，默认不做 */
+    /* 12. 手册 3 与 2：任务窗格。这两条要看得见窗口，默认不做 */
     const paneUrl = installedPaneUrl()
     if (WANT_UI) {
         await step(3, 'CreateTaskPane 接受 file:// URL', async () => {
@@ -406,7 +419,7 @@ async function main() {
         skip(2, '任务窗格里 window.Application 是否注入', '加 --ui 才做（要人眼看窗格里的那行字）')
     }
 
-    /* 12. 手册 6：十万行，默认不做 */
+    /* 13. 手册 6：十万行，默认不做 */
     if (WANT_PERF) {
         await step(6, '十万行 × 3 列的写入与读回耗时', async () => {
             const nb = await rpc.call('newbook')

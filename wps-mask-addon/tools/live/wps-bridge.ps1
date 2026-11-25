@@ -136,6 +136,13 @@ function Invoke-Op($op, $a) {
             # 在拿不到 WPS 的机器上也跑得起来。
             return @{ text = [string]$a.text; len = ([string]$a.text).Length }
         }
+        'show' {
+            $app = Get-App
+            $app.Visible = [bool]$a.visible
+            $now = $null
+            try { $now = [bool]$app.Visible } catch { }
+            return @{ visible = $now }
+        }
         'app' {
             $app = Get-App
             # 顺手报告宿主到底暴露了哪些成员：任务窗格和功能区在有的版本上是"属性不存在"，
