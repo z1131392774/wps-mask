@@ -1,11 +1,13 @@
 /*
  * 极简 WPS 对象模型 mock，用于在 node 里回归 engine.js 的逻辑。
- * 只实现 engine.js 真正用到的成员：Value2 / Resize / Cells.Item / End / Rows.Count / Columns.Count
+ * 只实现 engine.js 真正用到的成员：Value2 / Resize / Cells.Item / End / Rows.Count / Columns.Count /
+ * Borders.Item（已映射区域的标记边框）
  */
 function MockWPS(rows, cols) {
     this.maxRows = rows || 1048576;
     this.maxCols = cols || 16384;
     this.grid = {};   // "sheet!r,c" -> value
+    this.cellBorders = {};   // "sheet!r,c" -> { 边框索引: {ls, w, c} }，和宿主一样按单元格存四条边
     this._maxRow = {};
     this.sheets = [];
     this.activeSheet = null;
@@ -125,6 +127,10 @@ function makeRange(sheet, row, col, rows, cols) {
         Resize: function (r, c) {
             return makeRange(sheet, row, col, r == null ? rows : r, c == null ? cols : c);
         },
+        // 边框集合：和宿主一样按"单元格的四条边"存，整条边不一致时读取返回 null
+        Borders: {
+            Item: function (idx) { return makeBorder(sheet, row, col, rows, cols, idx); }
+        },
         End: function (dir) {
             var app = sheet.app;
             if (dir === -4162) { // xlUp
@@ -154,6 +160,12 @@ function makeRange(sheet, row, col, rows, cols) {
                     delete sheet.app.grid[sheet.Name + '!' + r + ',' + c];
                 }
             }
+        },
+        // 面板的「已映射区域」点一条就跳到那块区域：宿主上是 range.Select()
+        Select: function () {
+            sheet.app.Selection = rng;
+            sheet.app.ActiveSheet = sheet;
+            sheet.app.activeSheet = sheet;
         }
     };
 
@@ -213,6 +225,86 @@ function makeRange(sheet, row, col, rows, cols) {
 
     return rng;
 }
+
+/* ---------------- 边框 ----------------
+ * 宿主把边框按单元格存（每个单元格四条边），区域上的 Borders.Item(idx) 是这一圈边的视图：
+ * 读取时整条边不一致返回 null，写入时写到范围内每个单元格上。mock 照这个模型实现，
+ * 「标记边框」的记录与恢复才有和真机一样的语义。
+ */
+var EDGE_NONE = { ls: -4142, w: 1, c: 0 };   // xlLineStyleNone
+
+function edgeCells(row, col, rows, cols, idx) {
+    var out = [], i;
+    if (idx === 8) {              // xlEdgeTop
+        for (i = col; i < col + cols; i++) { out.push([row, i]); }
+    } else if (idx === 9) {       // xlEdgeBottom
+        for (i = col; i < col + cols; i++) { out.push([row + rows - 1, i]); }
+    } else if (idx === 7) {       // xlEdgeLeft
+        for (i = row; i < row + rows; i++) { out.push([i, col]); }
+    } else if (idx === 10) {      // xlEdgeRight
+        for (i = row; i < row + rows; i++) { out.push([i, col + cols - 1]); }
+    } else {
+        throw new Error('mock 不支持该边框索引：' + idx);
+    }
+    return out;
+}
+
+function borderKey(sheetName, r, c) {
+    return sheetName + '!' + r + ',' + c;
+}
+
+function getEdge(app, sheetName, r, c, idx) {
+    var box = app.cellBorders[borderKey(sheetName, r, c)];
+    var s = box && box[idx];
+    return s ? { ls: s.ls, w: s.w, c: s.c } : { ls: EDGE_NONE.ls, w: EDGE_NONE.w, c: EDGE_NONE.c };
+}
+
+function makeBorder(sheet, row, col, rows, cols, idx) {
+    var app = sheet.app;
+    var cells = edgeCells(row, col, rows, cols, idx);
+    function read(prop) {
+        var first, v;
+        for (var i = 0; i < cells.length; i++) {
+            v = getEdge(app, sheet.Name, cells[i][0], cells[i][1], idx)[prop];
+            if (i === 0) { first = v; }
+            else if (v !== first) { return null; }   // 整条边不一致：宿主给 null
+        }
+        return first;
+    }
+    function write(prop, val) {
+        for (var i = 0; i < cells.length; i++) {
+            var key = borderKey(sheet.Name, cells[i][0], cells[i][1]);
+            var box = app.cellBorders[key] || (app.cellBorders[key] = {});
+            var s = box[idx] || (box[idx] = { ls: EDGE_NONE.ls, w: EDGE_NONE.w, c: EDGE_NONE.c });
+            s[prop] = val;
+        }
+    }
+    var b = {};
+    Object.defineProperty(b, 'LineStyle', {
+        get: function () { return read('ls'); },
+        set: function (v) { write('ls', v); }
+    });
+    Object.defineProperty(b, 'Weight', {
+        get: function () { return read('w'); },
+        set: function (v) { write('w', v); }
+    });
+    Object.defineProperty(b, 'Color', {
+        get: function () { return read('c'); },
+        set: function (v) { write('c', v); }
+    });
+    return b;
+}
+
+// 测试用：读/写某个单元格某条边的样式（8=上 9=下 7=左 10=右）
+MockWPS.prototype.getBorder = function (sheetName, r, c, idx) {
+    return getEdge(this, sheetName, r, c, idx);
+};
+
+MockWPS.prototype.setBorder = function (sheetName, r, c, idx, spec) {
+    var key = borderKey(sheetName, r, c);
+    var box = this.cellBorders[key] || (this.cellBorders[key] = {});
+    box[idx] = { ls: spec.ls, w: spec.w, c: spec.c };
+};
 
 // 注入宿主写入故障：fn(info) 返回 'throw' 抛错、'ignore' 静默吞掉赋值，其它值正常写入
 MockWPS.prototype.setWriteHook = function (fn) {

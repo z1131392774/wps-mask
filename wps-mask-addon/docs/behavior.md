@@ -28,7 +28,15 @@ When the guess is weak — the header was detected, every column would be plain 
 
 **Panel.** Select the range (whole column, whole row, or any block) and open "映射面板". It reads the selection and updates when it changes; there is no refresh button. Each column gets a card — detected type and a sample in the header, parameters on demand. 「映射并写入」 replaces the range in place; 「反映射回原值」 restores the areas this add-in masked in the selection, and cells it never wrote are left untouched. Card settings you edit survive a selection refresh: they are remembered per sheet and column position.
 
-**Repeated masking does not stack.** A cell is skipped only when it lies in a range this add-in has already written and its value reverses through the table; the status line reports the count, so masking part then the whole never processes a cell twice. Reverting subtracts the restored parts from those records, so a second revert finds nothing to write. To map current values again, revert first.
+**Repeated masking does not stack.** A cell is skipped only when it lies in a range this add-in has already written and its value reverses through the table; the status line reports the count, so masking part then the whole never processes a cell twice. Reverting subtracts what it restored, so a second revert finds nothing to write. To map current values again, revert first.
+
+**Seeing what is masked.** The footer shows 「已映射区域（N）」, 0 included, so "no records" is not read as "not loaded". It lists one entry per block — same-sheet records with equal row spans and adjacent columns merge, e.g. `Sheet1!A2:D11`; a click activates the sheet and selects the block plus the row above, so the header is read correctly. Reverting trims what it restores, so a fully restored block leaves the list; clearing the table empties it. A record whose sheet is gone stays, and the status line says so.
+
+The list follows the table: each poll reads one ciphertext cell, and any change reloads it. Records exist in the hidden table as soon as you mask, so they show without saving; only saving keeps them.
+
+**The marker outline.** A mask leaves a purple dashed outline around the block, so masked areas show without the panel; inner grid lines stay untouched. Reverting trims the outline with the block, and a fully restored block gets its original border back. 全部加边框 / 全部去边框 on the ribbon repaint or remove every outline — appearance only, never the masked state or a cell value.
+
+Each edge's style, weight and colour are recorded before painting (one more save) and written back on removal, so the user's own borders survive. An inconsistent edge reads as null; removal clears the dashes instead of guessing a style. If a protected sheet blocks it, values are still written and the status appends `；区域边框没画上：…`.
 
 **Quick buttons.** 「快速映射」 uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. 「反映射」 restores the areas recorded in the selection; cells it never masked keep their values, and with nothing to restore it says so instead of writing.
 

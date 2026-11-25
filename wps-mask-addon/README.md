@@ -17,6 +17,7 @@ Select a range and replace every value with realistic fake data; the originals a
 | Auto-detect the field name and type | Field-name keywords, email and landline shapes, a mobile or numeric majority, then a text fallback — the exact order is under [Detection order](docs/behavior.md#detection-order). Whole-column and whole-row selections are trimmed to their used cells first |
 | One-click reverse mapping, mapping stored encrypted | 「反映射回原值」 looks each cell up in the encrypted table and writes the original back, preserving number/text type and blanks. It only touches areas this add-in recorded as masked: expanding a selection is safe, and a second click is a no-op. A fake value that two originals could own is left alone and counted. The table is AES-128-CBC ciphertext in a hidden worksheet ([storage](docs/storage.md)) |
 | Remember the last settings for this document | Per-field type, distribution, parameters, and prefix are stored in the same encrypted blob, keyed by field name; a numeric interval only grows (union with the current data), so a wider column elsewhere never trips the old range; "重新识别" ignores them and re-detects |
+| See what is masked at a glance | Mapped areas get a purple dashed outline automatically, no panel needed; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click, changing appearance only |
 
 Detection, the header guess, messages and mixed columns are in [masking behavior](docs/behavior.md); the hidden table and its encryption limits are in [storage](docs/storage.md).
 
@@ -45,7 +46,7 @@ jsaddons\
    ├─ index.html        entry page
    ├─ main.js           script loader
    ├─ ribbon.xml        ribbon definition
-   ├─ images\           ribbon icons: panel, quick, revert, each with an @2x copy
+   ├─ images\           ribbon icons: panel, quick, revert, mark, unmark, each with an @2x copy
    ├─ js\
    │   ├─ utils.js      host object, resource path
    │   ├─ aes.js        AES-128-CBC, plain JS
@@ -78,6 +79,8 @@ A junction needs no admin rights or developer mode, and a hard link cannot point
 
 **Repeated masking does not stack.** A cell is skipped only when it lies in a range this add-in has already written and its value reverses through the table; the status line reports the count. Reverting subtracts the restored parts, so a second revert finds nothing to write. To map current values again, revert first.
 
+**Seeing what is masked.** Mapped blocks get a purple dashed outline in the sheet, so no panel is needed to see them; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click. The panel's footer always shows 「已映射区域（N）」 — the number of recorded blocks, 0 included. A quick mask updates the list by itself, no reopen; the records live in memory as soon as you mask, and only saving keeps them across sessions.
+
 **Quick buttons.** "快速映射" uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. "反映射" restores the areas recorded in the selection; cells it never masked keep their values, and with nothing to restore it says so instead of writing.
 
 Messages, conventions and mixed columns are in [masking behavior](docs/behavior.md).
@@ -96,7 +99,7 @@ Everything else — the algorithm, the failure messages, who can restore, the fu
 ```sh
 # from the repository root
 npm install                 # installs jsdom, needed by the panel and utility tests
-npm test                    # aes, engine, taskpane, utils and rpc tests, in order
+npm test                    # aes, engine, ribbon, taskpane, utils and rpc tests, in order
 ```
 
 All local tests run against a mock WPS object model and the real panel page under jsdom. On a real device (WPS Spreadsheets 12.1.0.29161) the tab, the pane's host object, `CreateTaskPane` with a `file://` URL, the hidden sheet surviving a save and 100k rows (about 7 s) passed; merged cells and read-only documents need care. The test inventory, the measured table, reproduction steps, troubleshooting and the reference material still missing are in [verification](docs/verification.md).
@@ -106,7 +109,7 @@ All local tests run against a mock WPS object model and the real panel page unde
 ```sh
 # from the repository root
 npm install                  # installs jsdom (devDependency), once
-npm test                     # aes, engine, taskpane, utils and rpc tests, in order
+npm test                     # aes, engine, ribbon, taskpane, utils and rpc tests, in order
 node wps-mask-addon/tools/make-icons.mjs
 ```
 

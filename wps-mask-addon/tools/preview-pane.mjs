@@ -45,7 +45,8 @@ const DATA = `/* 预览用数据，由 tools/preview-pane.mjs 生成，不入库
     app.select('Sheet1', 1, 1, rows.length + 1, head.length);
     window.Application = app;
 
-    // 状态开关：?open=0,4 展开指定列；?noselect 让选区读不到；?mask 走一遍映射看成功提示
+    // 状态开关：?open=0,4 展开指定列；?noselect 让选区读不到；?mask 走一遍映射看成功提示；
+    // ?areas 展开「已映射区域」（看列表与两个边框按钮）
     var q = String(location.search || '');
     if (q.indexOf('noselect') >= 0) { app.Selection = null; }
     window.addEventListener('load', function () {
@@ -62,6 +63,10 @@ const DATA = `/* 预览用数据，由 tools/preview-pane.mjs 生成，不入库
             if (q.indexOf('mask') >= 0) {
                 var m = document.getElementById('btnMask');
                 if (m) { m.click(); }
+            }
+            if (q.indexOf('areas') >= 0) {
+                var b = document.getElementById('btnAreas');
+                if (b) { b.click(); }
             }
         }, 250);
     });

@@ -11,6 +11,12 @@
                     <button id="btnMaskQuick" label="快速映射" onAction="OnAction" getImage="GetImage" size="large"/>
                     <button id="btnMaskRevert" label="反映射" onAction="OnAction" getImage="GetImage" size="large"/>
                 </group>
+                <!-- 已映射区域在表格里自动套一圈紫色虚线边框；这两个按钮是手动重画/一次性去掉，
+                     放在功能区而不是面板里：不用先打开面板、再展开列表。 -->
+                <group id="grpMark" label="标记边框">
+                    <button id="btnMaskMark" label="全部加边框" onAction="OnAction" getImage="GetImage" size="large"/>
+                    <button id="btnMaskUnmark" label="全部去边框" onAction="OnAction" getImage="GetImage" size="large"/>
+                </group>
             </tab>
         </tabs>
     </ribbon>

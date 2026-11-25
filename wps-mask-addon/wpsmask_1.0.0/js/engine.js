@@ -24,6 +24,14 @@ var MaskEngine = (function () {
     var XL_UP = -4162;
     var XL_TO_LEFT = -4159;
 
+    // 已映射区域的标记边框：紫色中等虚线。只画区域外圈的四条边，不碰内部网格，
+    // 一眼就能和数据表自带的细实线分开（常量见 WPS《表格 API 参考》的枚举表）。
+    var BORDER_EDGES = [8, 9, 7, 10];   // xlEdgeTop / xlEdgeBottom / xlEdgeLeft / xlEdgeRight
+    var XL_LINE_DASH = -4115;
+    var XL_LINE_NONE = -4142;
+    var MARK_WEIGHT = -4138;            // xlMedium
+    var MARK_COLOR = 8141549;           // BGR：R124 G58 B237（#7C3AED）
+
     /* ==================== 基础工具 ==================== */
 
     function rndInt(min, max) {
@@ -540,7 +548,7 @@ var MaskEngine = (function () {
     /* ==================== 映射表（加密存储） ==================== */
 
     function emptyVault() {
-        return { v: VAULT_VERSION, settings: {}, maps: {}, ranges: [] };
+        return { v: VAULT_VERSION, settings: {}, maps: {}, ranges: [], marks: [] };
     }
 
     function findSheet(wb, name) {
@@ -643,6 +651,8 @@ var MaskEngine = (function () {
         }
         obj.settings = obj.settings || {};
         if (!isArr(obj.ranges)) { obj.ranges = []; }
+        // 标记边框的记录是后加的字段：旧映射表没有它，按"没画过边框"处理
+        if (!isArr(obj.marks)) { obj.marks = []; }
         return { ok: true, vault: migrateVault(obj) };
     }
 
@@ -687,6 +697,19 @@ var MaskEngine = (function () {
             throw new Error('映射表密文为空，为保护数据不返回空映射表（如果这是新建的映射表，请用「删除映射表」重建）');
         }
         throw vaultParseError(a.reason, a.error);
+    }
+
+    // 面板的轮询靠它发现映射表被别的入口改过（快捷按钮、另一个窗口）：
+    // 每次保存都会换一个新的 IV，第一段密文跟着变；只读一格，代价可以忽略。
+    function vaultFingerprint(app) {
+        var wb = null;
+        try { wb = app.ActiveWorkbook; } catch (eWb) { wb = null; }
+        if (!wb) { return ''; }
+        var ws = findSheet(wb, VAULT_SHEET);
+        if (!ws) { return ''; }
+        var a2 = readCellText(ws, 2, 1);
+        if (!a2) { return ''; }
+        return a2.length + ':' + a2.slice(0, 16) + ':' + a2.slice(-16);
     }
 
     // 把一个桶的记录搬到另一个桶名下，然后删掉来源桶。
@@ -873,6 +896,13 @@ var MaskEngine = (function () {
         var wb = app.ActiveWorkbook;
         var ws = wb ? findSheet(wb, VAULT_SHEET) : null;
         if (!ws) { return false; }
+        // 先按记录把标记边框恢复掉：区域记录就在这张表里，删完就再也找不到画过哪些格子
+        try {
+            clearAllMarks(app, loadVault(app));
+        } catch (eMarks) {
+            // 映射表本身读不出来（损坏/解密失败）时不再纠缠：用户要删的是映射表，
+            // 不能因为边框恢复不了就让他删不掉；残留的边框比删不掉的映射表好收拾
+        }
         var prev = null;
         try { prev = app.ActiveSheet; } catch (e0) { prev = null; }
         try { ws.Visible = true; } catch (e) {}
@@ -1225,6 +1255,41 @@ var MaskEngine = (function () {
         return false;
     }
 
+    // 面板要回答「哪些区域已经映射过」：区域记录按列存（一列一条），
+    // 这里把同表、同起止行、列相邻的记录并成一块，坏记录跳过而不是让列表崩掉。
+    // 只做展示用的合并：行不同不合并，避免把没写过假值的格子画进同一块。
+    function maskedAreas(vault) {
+        var list = (vault && isArr(vault.ranges)) ? vault.ranges : [];
+        var recs = [];
+        for (var i = 0; i < list.length; i++) {
+            var it = list[i];
+            if (!it || typeof it.s !== 'string') { continue; }
+            var r1 = Math.floor(Number(it.r1)), r2 = Math.floor(Number(it.r2));
+            var c1 = Math.floor(Number(it.c1)), c2 = Math.floor(Number(it.c2));
+            if (!isFinite(r1) || !isFinite(r2) || !isFinite(c1) || !isFinite(c2)) { continue; }
+            if (r1 < 1 || r2 < r1 || c1 < 1 || c2 < c1) { continue; }
+            recs.push({ sheet: it.s, r1: r1, c1: c1, r2: r2, c2: c2 });
+        }
+        recs.sort(function (a, b) {
+            if (a.sheet !== b.sheet) { return a.sheet < b.sheet ? -1 : 1; }
+            if (a.r1 !== b.r1) { return a.r1 - b.r1; }
+            if (a.c1 !== b.c1) { return a.c1 - b.c1; }
+            return a.c2 - b.c2;
+        });
+        var out = [];
+        for (var j = 0; j < recs.length; j++) {
+            var cur = recs[j];
+            var last = out.length ? out[out.length - 1] : null;
+            if (last && last.sheet === cur.sheet && last.r1 === cur.r1 && last.r2 === cur.r2 &&
+                cur.c1 <= last.c2 + 1) {
+                if (cur.c2 > last.c2) { last.c2 = cur.c2; }
+                continue;
+            }
+            out.push(cur);
+        }
+        return out;
+    }
+
     function rangeSigs(rec) {
         return (rec && rec.sigs && typeof rec.sigs === 'object' && !isArr(rec.sigs)) ? rec.sigs : null;
     }
@@ -1340,6 +1405,176 @@ var MaskEngine = (function () {
             subtractRange(it, r1, c1, r2, c2, keep);
         }
         vault.ranges = keep;
+    }
+
+    /* ==================== 已映射区域的标记边框 ==================== */
+
+    // 标记画在区域外圈的每条边上；画之前先把那条边原来的样式记进 vault.marks，
+    // 「去掉边框」时按记录写回去——用户自己的表格边框不能被标记吃掉。
+    // 记录按"整条边"存：宿主在整条边不一致时返回 null，这种边记为 null，
+    // 去掉时只清掉标记本身，绝不拿一个猜出来的样式覆盖用户后来的修改。
+
+    function marksOf(vault) {
+        if (!vault) { return []; }
+        if (!isArr(vault.marks)) { vault.marks = []; }
+        return vault.marks;
+    }
+
+    function areaRange(ws, rec) {
+        return ws.Range(ws.Cells.Item(rec.r1, rec.c1), ws.Cells.Item(rec.r2, rec.c2));
+    }
+
+    // 读一条边：整条边不一致时宿主返回 null，原样传出去
+    function readEdge(rng, idx) {
+        var b = rng.Borders.Item(idx);
+        var ls = b.LineStyle;
+        if (ls == null) { return null; }
+        var n = Number(ls);
+        if (!isFinite(n) || n === XL_LINE_NONE) { return { ls: XL_LINE_NONE, w: 0, c: 0 }; }
+        var w = Number(b.Weight), c = Number(b.Color);
+        return { ls: n, w: isFinite(w) ? w : 0, c: isFinite(c) ? c : 0 };
+    }
+
+    // 先颜色、再粗细、最后线型：WPS 文档写明改 Weight 会把线型顶成 xlSolid，
+    // 线型必须最后写，否则虚线会被改成实线。
+    function writeEdge(rng, idx, spec) {
+        var b = rng.Borders.Item(idx);
+        if (!spec || spec.ls === XL_LINE_NONE) { b.LineStyle = XL_LINE_NONE; return; }
+        b.Color = spec.c;
+        if (spec.w) { b.Weight = spec.w; }
+        b.LineStyle = spec.ls;
+    }
+
+    function paintEdge(rng, idx) {
+        var b = rng.Borders.Item(idx);
+        b.Color = MARK_COLOR;
+        b.Weight = MARK_WEIGHT;
+        b.LineStyle = XL_LINE_DASH;
+    }
+
+    // 只动"还是标记样式"的边：用户后来自己改过的边框不动。
+    // 线宽不作为判据——宿主可能按线型把粗细归一化，颜色 + 虚线才是标记的身份。
+    function edgeIsMarked(rng, idx) {
+        var b = rng.Borders.Item(idx);
+        return Number(b.LineStyle) === XL_LINE_DASH && Number(b.Color) === MARK_COLOR;
+    }
+
+    function restoreMark(ws, mark) {
+        var rng = areaRange(ws, mark);
+        var saved = (mark && mark.b && typeof mark.b === 'object') ? mark.b : {};
+        for (var i = 0; i < BORDER_EDGES.length; i++) {
+            var idx = BORDER_EDGES[i];
+            var spec = hasOwn(saved, String(idx)) ? saved[String(idx)] : null;
+            if (spec && typeof spec.ls === 'number') {
+                writeEdge(rng, idx, spec);
+            } else if (edgeIsMarked(rng, idx)) {
+                // 原来那条边不一致、没记下来：至少把标记清掉，不留下半条紫线
+                writeEdge(rng, idx, { ls: XL_LINE_NONE, w: 0, c: 0 });
+            }
+        }
+    }
+
+    // 把一张表的标记整体刷新：先按记录恢复旧边框，再按区域记录重画。
+    // 必须先恢复再读原样式，否则读到的"原样式"就是上一次画的标记。
+    function refreshSheetMarks(ws, vault) {
+        var name = String(ws.Name);
+        var marks = marksOf(vault);
+        var kept = [], restored = 0;
+        for (var i = 0; i < marks.length; i++) {
+            if (marks[i] && marks[i].s === name) { restoreMark(ws, marks[i]); restored++; }
+            else { kept.push(marks[i]); }
+        }
+        var areas = maskedAreas(vault), painted = 0;
+        for (var j = 0; j < areas.length; j++) {
+            var rec = areas[j];
+            if (rec.sheet !== name) { continue; }
+            var rng = areaRange(ws, rec);
+            var saved = {};
+            for (var r = 0; r < BORDER_EDGES.length; r++) {
+                saved[String(BORDER_EDGES[r])] = readEdge(rng, BORDER_EDGES[r]);
+            }
+            for (var p = 0; p < BORDER_EDGES.length; p++) { paintEdge(rng, BORDER_EDGES[p]); }
+            kept.push({ s: name, r1: rec.r1, c1: rec.c1, r2: rec.r2, c2: rec.c2, b: saved });
+            painted++;
+        }
+        vault.marks = kept;
+        return { painted: painted, restored: restored };
+    }
+
+    // 边框失败不能连累已经写好的数据：错误交给调用方挂到 stats 上如实报告
+    function tryRefreshMarks(ws, vault) {
+        if (!ws) { return { painted: 0, error: '' }; }
+        try {
+            return { painted: refreshSheetMarks(ws, vault).painted, error: '' };
+        } catch (e) {
+            return { painted: 0, error: String((e && e.message) || e) };
+        }
+    }
+
+    // 区域记录和工作表名两处都要看：区域被裁掉之后，标记记录可能还挂在一张空表上
+    function sheetsWithMarks(vault) {
+        var names = {}, i;
+        var ranges = (vault && isArr(vault.ranges)) ? vault.ranges : [];
+        for (i = 0; i < ranges.length; i++) {
+            if (ranges[i] && typeof ranges[i].s === 'string') { names[ranges[i].s] = true; }
+        }
+        var marks = (vault && isArr(vault.marks)) ? vault.marks : [];
+        for (i = 0; i < marks.length; i++) {
+            if (marks[i] && typeof marks[i].s === 'string') { names[marks[i].s] = true; }
+        }
+        return names;
+    }
+
+    // 面板的两个按钮。工作表被删掉的记录跳过并如实报告，不静默丢掉。
+    function markAllAreas(app, vault) {
+        var wb = app.ActiveWorkbook;
+        var names = sheetsWithMarks(vault);
+        var out = { marked: 0, missing: [] };
+        for (var name in names) {
+            if (!hasOwn(names, name)) { continue; }
+            var ws = findSheet(wb, name);
+            if (!ws) { out.missing.push(name); continue; }
+            out.marked += refreshSheetMarks(ws, vault).painted;
+        }
+        return out;
+    }
+
+    function clearAllMarks(app, vault) {
+        var wb = app.ActiveWorkbook;
+        var marks = marksOf(vault);
+        var kept = [], seen = {}, out = { cleared: 0, missing: [] };
+        for (var i = 0; i < marks.length; i++) {
+            var m = marks[i];
+            if (!m || typeof m.s !== 'string') { continue; }
+            var ws = findSheet(wb, m.s);
+            if (!ws) {
+                kept.push(m);
+                if (!seen[m.s]) { seen[m.s] = true; out.missing.push(m.s); }
+                continue;
+            }
+            restoreMark(ws, m);
+            out.cleared++;
+        }
+        // 没有记录的块（升级前映射的、或补存映射表失败的那一次）也要清掉：
+        // 它们只剩"表上有紫色线"，按区域记录把仍然是标记样式的边清掉，按钮才不会看着没反应
+        var areas = maskedAreas(vault);
+        for (var j = 0; j < areas.length; j++) {
+            var area = areas[j];
+            var ws2 = findSheet(wb, area.sheet);
+            if (!ws2) {
+                if (!seen[area.sheet]) { seen[area.sheet] = true; out.missing.push(area.sheet); }
+                continue;
+            }
+            var rng = areaRange(ws2, area), hit = false;
+            for (var e = 0; e < BORDER_EDGES.length; e++) {
+                if (!edgeIsMarked(rng, BORDER_EDGES[e])) { continue; }
+                writeEdge(rng, BORDER_EDGES[e], { ls: XL_LINE_NONE, w: 0, c: 0 });
+                hit = true;
+            }
+            if (hit) { out.cleared++; }
+        }
+        vault.marks = kept;
+        return out;
     }
 
     // 判断该值是否为"某个原值的映射结果"（先查本列签名，再退到全局表）
@@ -1545,6 +1780,12 @@ var MaskEngine = (function () {
             throw err;
         }
         // 区域记录与区间记忆已在 prepareMask 落库；这里只写单元格，失败时不留下"写到一半"的表格
+        // 写完顺手给这块区域套上标记边框：不用开面板，表格本身就能看出哪里已经脱敏。
+        // 画之前要先恢复旧标记，所以标记记录只能这时候才产生，调用方需再保存一次映射表。
+        var mark = { painted: 0, error: '' };
+        if (plan.stats.written > 0) { mark = tryRefreshMarks(model.sheet, plan.vault); }
+        plan.stats.marked = mark.painted;
+        plan.stats.markError = mark.error;
         return plan.stats;
     }
 
@@ -1615,7 +1856,7 @@ var MaskEngine = (function () {
     function revert(model, vault, opts) {
         opts = opts || {};
         var idx = buildIndex(vault);
-        var stats = { cells: 0, hit: 0, miss: 0, columns: 0, ambiguous: 0 };
+        var stats = { cells: 0, hit: 0, miss: 0, columns: 0, ambiguous: 0, marked: 0, markError: '' };
         var outputs = [];
         var trims = [];
         var ranges = vault.ranges || [];
@@ -1717,6 +1958,12 @@ var MaskEngine = (function () {
                         base + part.start, tc.col.col, base + part.end, tc.col.col);
                 }
             }
+            // 还原过的块不再是"已映射"：标记边框跟着区域记录重画，剩下的块保持有边框
+            if (outputs.length || trims.length) {
+                var mark = tryRefreshMarks(model.sheet, vault);
+                stats.marked = mark.painted;
+                stats.markError = mark.error;
+            }
         }
         stats.preview = outputs;
         return stats;
@@ -1761,8 +2008,12 @@ var MaskEngine = (function () {
         writeMask: writeMask,
         applyMask: applyMask,
         revert: revert,
+        maskedAreas: maskedAreas,
+        markAllAreas: markAllAreas,
+        clearAllMarks: clearAllMarks,
         sample: sample,
         loadVault: loadVault,
+        vaultFingerprint: vaultFingerprint,
         saveVault: saveVault,
         dropVault: dropVault,
         defaultCfg: defaultCfg,

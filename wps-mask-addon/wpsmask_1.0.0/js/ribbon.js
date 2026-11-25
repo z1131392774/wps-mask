@@ -26,6 +26,10 @@ function OnAction(control) {
             MaskQuickApply();
         } else if (id === 'btnMaskRevert') {
             MaskQuickRevert();
+        } else if (id === 'btnMaskMark') {
+            MaskQuickMarkAll();
+        } else if (id === 'btnMaskUnmark') {
+            MaskQuickClearMarks();
         } else {
             try { console.log('未处理的按钮：' + id); } catch (e3) { }
         }
@@ -42,7 +46,9 @@ function OnAction(control) {
 var MASK_ICONS = {
     btnMaskPane: 'images/panel.png',
     btnMaskQuick: 'images/quick.png',
-    btnMaskRevert: 'images/revert.png'
+    btnMaskRevert: 'images/revert.png',
+    btnMaskMark: 'images/mark.png',
+    btnMaskUnmark: 'images/unmark.png'
 };
 
 function GetImage(control) {
@@ -118,7 +124,19 @@ function MaskQuickApply() {
     }
 
     var skip = plan.stats.skipped > 0 ? '，跳过 ' + plan.stats.skipped + ' 格' : '';
-    MaskToast('已映射 ' + plan.stats.written + ' 格' + skip + '，记得保存文档。');
+    var msg = '已映射 ' + plan.stats.written + ' 格' + skip + '，记得保存文档。';
+    // 区域边框的记录是写单元格时才产生的，要再保存一次；失败只影响「去边框」能否恢复原样式
+    var note = '';
+    if (plan.stats.marked > 0) {
+        try {
+            MaskEngine.saveVault(app, plan.vault);
+        } catch (eMark) {
+            note = '；边框记录没写进映射表（' + MaskErrText(eMark) + '），去掉边框时只能清除';
+        }
+    }
+    if (plan.stats.markError) { note += '；区域边框没画上：' + plan.stats.markError; }
+    if (note) { MaskAlert(msg + note); return; }
+    MaskToast(msg);
 }
 
 function MaskQuickRevert() {
@@ -144,5 +162,62 @@ function MaskQuickRevert() {
     }
     var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有映射记录') : '';
     if (stats.ambiguous > 0) { tail += '，' + stats.ambiguous + ' 格有歧义未还原'; }
+    if (stats.markError) { tail += '；区域边框没更新：' + stats.markError; }
     MaskToast('已还原 ' + stats.hit + ' 格' + tail);
+}
+
+/* ---------- 标记边框（功能区，不打开面板） ----------
+ * 映射/反映射本来就会自己画边框；这两个按钮用于手动重画，或者一次性去掉。
+ * 只改表格外观与映射表里的边框记录，不动单元格的值，也不改「已映射」状态。
+ */
+
+function MaskMarkTail(r) {
+    return (r && r.missing && r.missing.length)
+        ? ('；' + r.missing.length + ' 张工作表已不存在（' + r.missing.join('、') + '）')
+        : '';
+}
+
+function MaskQuickMarkAll() {
+    var app = MaskGetApp();
+    if (!app) { throw new Error('未取到 WPS 应用对象'); }
+
+    var vault = MaskEngine.loadVault(app);
+    var r = MaskEngine.markAllAreas(app, vault);
+    if (r.marked === 0) {
+        MaskAlert(r.missing.length
+            ? ('这些工作表已不存在：' + r.missing.join('、'))
+            : '没有可加边框的区域，先执行「快速映射」或打开面板映射一块。');
+        return;
+    }
+    // 加边框前读到的原样式必须落盘，「去边框」才能恢复用户自己的表格边框
+    try {
+        MaskEngine.saveVault(app, vault);
+    } catch (saveErr) {
+        MaskAlert('边框已加上，但映射表没保存：' + MaskErrText(saveErr) +
+            '，去掉边框时只能清除。');
+        return;
+    }
+    MaskToast('已给 ' + r.marked + ' 块区域加上边框' + MaskMarkTail(r) + '，记得保存文档。');
+}
+
+function MaskQuickClearMarks() {
+    var app = MaskGetApp();
+    if (!app) { throw new Error('未取到 WPS 应用对象'); }
+
+    var vault = MaskEngine.loadVault(app);
+    var r = MaskEngine.clearAllMarks(app, vault);
+    if (r.cleared === 0) {
+        MaskAlert(r.missing.length
+            ? ('这些工作表已不存在：' + r.missing.join('、'))
+            : '没有加过边框的区域，先映射一块。');
+        return;
+    }
+    // 记录已经用掉，去掉的记录要落盘，否则下次「去边框」还会再找一遍
+    try {
+        MaskEngine.saveVault(app, vault);
+    } catch (saveErr) {
+        MaskAlert('边框已去掉，但映射表没保存：' + MaskErrText(saveErr) + '，请检查映射表。');
+        return;
+    }
+    MaskToast('已去掉 ' + r.cleared + ' 块区域的边框' + MaskMarkTail(r));
 }

@@ -11,7 +11,7 @@ Rules for the add-in. Standing orders: [root file](../AGENTS.md). Manual: [READM
 - **A mixed column is classified per cell.** `shapeOf()` returns mobile/email/landline/digits/alnum/text and `genMixed` keeps that shape; a new shape needs a `shapeOf` branch, a generator and a test for what must survive ([mixed-column shapes](docs/implementation.md#mixed-column-shapes)).
 - **The vault is a file format.** `M1:`, `sigOf()` and `KEY_TEXT` are read by existing documents; a change needs a version field and migration. Bucket retention, migration and save rules: [vault format](docs/implementation.md#vault-format).
 - **`engine.js` stays host-agnostic.** No DOM, no `window`, no top-level `require`: it must run unchanged in the pane, the host page and Node. `aes.js` uses no `crypto`.
-- **Behaviour changes run the tests.** Engine: `node test/engine.test.js`, `node test/aes.test.js`. Clickable or visible: `test/taskpane.test.js`, `test/utils.test.js` under jsdom.
+- **Behaviour changes run the tests.** Engine: `node test/engine.test.js`, `node test/aes.test.js`. Clickable or visible: `test/ribbon.test.js`, `test/taskpane.test.js`, `test/utils.test.js` under jsdom.
 - **The AES key is obfuscation, not a credential.** `KEY_TEXT` is a constant; moving it into a passphrase or env var means changing the storage format in the same change.
 - **Edit files here, never under `%APPDATA%`.** `tools/link-addon.ps1` makes the installed `jsaddons\wpsmask_1.0.0` a junction onto this folder. `-Rollback` restores the `.bak-<timestamp>` folder.
 - **The real-host answers live in `tools/live/HANDOFF.md`.** It records what WPS 12.1 was measured doing, how, and the traps that make a COM-only run misread it; `npm run live:probe:log` reproduces the machine-checkable part.

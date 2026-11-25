@@ -479,8 +479,8 @@ function spyEngine(win) {
         const d = b.dom.window.document;
         const spy = spyEngine(b.dom.window);
         d.getElementById('btnMask').click();
-        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask',
-            '调用顺序：' + spy.calls.join(' > '));
+        ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask > saveVault',
+            '调用顺序（写单元格后补存一次边框记录）：' + spy.calls.join(' > '));
         ok(/已映射/.test(d.getElementById('status').textContent),
             '状态栏：' + d.getElementById('status').textContent);
         ok(b.app.getCell('Sheet1', 2, 2) !== table[1][1],
@@ -642,6 +642,88 @@ function spyEngine(win) {
         const d = b.dom.window.document;
         ok(!/首行自动判定为字段名/.test(d.getElementById('selInfo').textContent),
             '常规表头数据不显示表头警告：' + d.getElementById('selInfo').textContent);
+        b.dom.window.close();
+    }
+
+    console.log('\n[17] 已映射区域：列出、跳转、外部改动后自己更新');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const link = d.getElementById('btnAreas');
+        ok(link.style.display !== 'none' && /已映射区域（0）/.test(link.textContent),
+            '没有记录时入口也在，数量是 0：' + link.textContent);
+
+        link.click();
+        ok(d.getElementById('areas').style.display !== 'none', '空表也能展开');
+        ok(/还没有映射记录/.test(d.getElementById('areasHd').textContent),
+            '空列表说明还没有记录');
+
+        d.getElementById('btnMask').click();
+        await sleep(200);
+        ok(/已映射区域（1）/.test(link.textContent), '映射后数量变成 1：' + link.textContent);
+        const rows = d.querySelectorAll('#areaList .area');
+        ok(rows.length === 1, '列表里 1 块区域，实际 ' + rows.length);
+        ok(rows[0] && rows[0].textContent === 'Sheet1!A2:D4',
+            '相邻四列并成一块：' + (rows[0] && rows[0].textContent));
+
+        rows[0].click();
+        const sel = b.app.Selection;
+        ok(b.app.ActiveSheet.Name === 'Sheet1' && sel && sel.Row === 1 && sel.Column === 1 &&
+            sel.Rows.Count === 4 && sel.Columns.Count === 4,
+            '点一条跳过去，连上面那行表头一起选中（A1:D4），实际 ' +
+            (sel ? [sel.Row, sel.Column, sel.Rows.Count, sel.Columns.Count].join(',') : '无选区'));
+
+        // 记录块从 A2 开始，跳转选中 A1:D4：面板按表头处理第 1 行，还原覆盖 A2:D4
+        await sleep(1900);
+        ok(d.getElementById('chkHeader').checked === true, '跳过去后第 1 行仍判为表头');
+
+        // 另一个入口（快捷按钮、另一个窗口）写了映射表：轮询自己发现，不必重开面板
+        const E = b.dom.window.MaskEngine;
+        const vault = E.loadVault(b.app);
+        vault.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 4, c2: 2, sig: 'x' }];
+        E.saveVault(b.app, vault);
+        await sleep(1600);
+        const rows2 = d.querySelectorAll('#areaList .area');
+        ok(rows2.length === 1 && rows2[0].textContent === 'Sheet1!A2:B4',
+            '外部写入后列表自己换成新的一块：' +
+            (rows2[0] && rows2[0].textContent));
+
+        d.getElementById('btnRevert').click();
+        await sleep(300);
+        ok(/已映射区域（0）/.test(link.textContent), '还原后记录被裁掉，数量回到 0');
+        ok(d.querySelectorAll('#areaList .area').length === 0, '列表清空');
+        b.dom.window.close();
+    }
+
+    console.log('\n[22] 映射后自动套标记边框，反映射恢复原样式');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const MARK = { ls: -4115, w: -4138, c: 8141549 };   // 紫色中等虚线
+        const THIN = { ls: 1, w: 2, c: 0 };                  // 用户原来的细实线
+        for (let r = 1; r <= 4; r++) {
+            for (let c = 1; c <= 4; c++) {
+                [7, 8, 9, 10].forEach(idx => b.app.setBorder('Sheet1', r, c, idx, THIN));
+            }
+        }
+        d.getElementById('btnMask').click();
+        await sleep(200);
+        const top = b.app.getBorder('Sheet1', 2, 1, 8);
+        ok(top.ls === MARK.ls && top.w === MARK.w && top.c === MARK.c,
+            '映射后区域自动出现紫色虚线边框：' + JSON.stringify(top));
+        ok(/已映射/.test(d.getElementById('status').textContent),
+            '状态栏仍报映射成功：' + d.getElementById('status').textContent);
+        ok(b.app.getBorder('Sheet1', 2, 2, 7).ls === THIN.ls, '区域内部的网格线不动');
+        ok(/已映射区域（1）/.test(d.getElementById('btnAreas').textContent),
+            '边框不改变已映射状态：' + d.getElementById('btnAreas').textContent);
+
+        d.getElementById('btnRevert').click();
+        await sleep(200);
+        const afterRev = b.app.getBorder('Sheet1', 2, 1, 8);
+        ok(afterRev.ls === THIN.ls && afterRev.w === THIN.w && afterRev.c === THIN.c,
+            '反映射后边框恢复成原样：' + JSON.stringify(afterRev));
         b.dom.window.close();
     }
 

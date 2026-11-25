@@ -1331,5 +1331,144 @@ ok(err43 != null && /只读/.test(err43.message), '保存之前就拒绝：' + (
 ok(app43.getCell('Sheet1', 2, 1) === '张三', '一格都没写，表格还是原值');
 ok(!app43.sheets.some(function (s) { return s.Name === '脱敏映射表'; }), '连隐藏表都没建，文档没被改动');
 
+/* ---------- 44. 已映射区域：按列记录合并成看得懂的块 ---------- */
+console.log('\n[44] 已映射区域列表');
+const areas44 = Engine.maskedAreas({
+    ranges: [
+        { s: 'Sheet1', r1: 2, c1: 1, r2: 11, c2: 1 },
+        { s: 'Sheet1', r1: 2, c1: 2, r2: 11, c2: 2 },
+        { s: 'Sheet1', r1: 2, c1: 3, r2: 11, c2: 3 },
+        { s: 'Sheet1', r1: 2, c1: 5, r2: 11, c2: 5 },   // 空一列，不合并
+        { s: 'Sheet2', r1: 2, c1: 1, r2: 11, c2: 1 },
+        { s: 'Sheet1', r1: 14, c1: 1, r2: 15, c2: 1 },  // 行不同，不合并
+        { s: 'Sheet1', r1: 0, c1: 1, r2: 5, c2: 1 },    // 坏记录跳过
+        { s: 42 }
+    ]
+});
+ok(areas44.length === 4, '合并后 4 块，实际 ' + areas44.length + '：' + JSON.stringify(areas44));
+ok(areas44[0].sheet === 'Sheet1' && areas44[0].r1 === 2 && areas44[0].c1 === 1 &&
+    areas44[0].c2 === 3 && areas44[0].r2 === 11, '相邻三列并成 A2:C11');
+ok(areas44[1] && areas44[1].c1 === 5 && areas44[1].c2 === 5, '隔一列不合并');
+ok(areas44[2] && areas44[2].r1 === 14 && areas44[2].r2 === 15, '行范围不同不合并');
+ok(areas44[3] && areas44[3].sheet === 'Sheet2', '跨工作表分开列出');
+ok(Engine.maskedAreas(null).length === 0 && Engine.maskedAreas({}).length === 0,
+    '没有映射表或没有区域记录时返回空列表');
+
+/* ---------- 45. 已映射区域自动套标记边框 ---------- */
+console.log('\n[45] 映射后区域自动套标记边框，反映射/去边框恢复原样式');
+const EDGE_TOP = 8, EDGE_BOTTOM = 9, EDGE_LEFT = 7, EDGE_RIGHT = 10;
+const MARK_EDGE = { ls: -4115, w: -4138, c: 8141549 };   // 紫色中等虚线
+const THIN_EDGE = { ls: 1, w: 2, c: 0 };                  // 用户原来的细实线
+
+function paintUserBorders(a, sheet, r1, c1, r2, c2, spec) {
+    for (let r = r1; r <= r2; r++) {
+        for (let c = c1; c <= c2; c++) {
+            a.setBorder(sheet, r, c, EDGE_TOP, spec);
+            a.setBorder(sheet, r, c, EDGE_BOTTOM, spec);
+            a.setBorder(sheet, r, c, EDGE_LEFT, spec);
+            a.setBorder(sheet, r, c, EDGE_RIGHT, spec);
+        }
+    }
+}
+function sameEdge(got, want) {
+    return !!got && got.ls === want.ls && got.w === want.w && got.c === want.c;
+}
+function mapNow(a, v) {
+    return Engine.applyMask(Engine.hydrate(Engine.analyze(a, {}), v), v, {});
+}
+
+const bApp45 = freshApp();
+paintUserBorders(bApp45, 'Sheet1', 1, 1, table.length, 4, THIN_EDGE);
+const bVault45 = Engine.loadVault(bApp45);
+const bStats45 = mapNow(bApp45, bVault45);
+ok(bStats45.marked === 1, '映射后给 1 块区域画上标记边框，实际 ' + bStats45.marked);
+ok(sameEdge(bApp45.getBorder('Sheet1', 2, 1, EDGE_TOP), MARK_EDGE),
+    '区域上边换成紫色虚线：' + JSON.stringify(bApp45.getBorder('Sheet1', 2, 1, EDGE_TOP)));
+ok(sameEdge(bApp45.getBorder('Sheet1', 11, 4, EDGE_BOTTOM), MARK_EDGE), '区域下边也是标记');
+ok(sameEdge(bApp45.getBorder('Sheet1', 5, 2, EDGE_LEFT), THIN_EDGE), '区域内部的网格线一个都没动');
+ok(bVault45.marks.length === 1 && bVault45.marks[0].r1 === 2 && bVault45.marks[0].c1 === 1 &&
+    bVault45.marks[0].r2 === 11 && bVault45.marks[0].c2 === 4, '记录下这块区域（A2:D11）');
+ok(sameEdge(bVault45.marks[0].b[String(EDGE_TOP)], THIN_EDGE) &&
+    sameEdge(bVault45.marks[0].b[String(EDGE_LEFT)], THIN_EDGE),
+    '记的是加边框前的原样式，不是标记本身');
+
+const rev45 = Engine.revert(Engine.hydrate(Engine.analyze(bApp45, {}), bVault45), bVault45, {});
+ok(rev45.hit === 38 && bVault45.marks.length === 0,
+    '还原后标记记录清空，实际 ' + bVault45.marks.length);
+ok(sameEdge(bApp45.getBorder('Sheet1', 2, 1, EDGE_TOP), THIN_EDGE) &&
+    sameEdge(bApp45.getBorder('Sheet1', 11, 4, EDGE_BOTTOM), THIN_EDGE),
+    '区域四条边恢复成原来的细实线');
+
+const reStats45 = mapNow(bApp45, bVault45);
+ok(reStats45.written === 38 && bVault45.marks.length === 1, '重新映射后又画上边框');
+const clear45 = Engine.clearAllMarks(bApp45, bVault45);
+ok(clear45.cleared === 1 && bVault45.marks.length === 0, '「全部去边框」清掉 1 块');
+ok(sameEdge(bApp45.getBorder('Sheet1', 2, 1, EDGE_TOP), THIN_EDGE), '去掉后恢复成原样式');
+ok(bVault45.ranges.length === 4, '去边框不动区域记录，还是已映射状态');
+const mark45 = Engine.markAllAreas(bApp45, bVault45);
+ok(mark45.marked === 1 && bVault45.marks.length === 1, '「全部加边框」把记录过的区域都画回来');
+ok(sameEdge(bApp45.getBorder('Sheet1', 2, 1, EDGE_TOP), MARK_EDGE), '又变回标记样式');
+
+// 先映射两列、再映射整个区域：放大后的块必须先恢复旧标记再读原样式，
+// 否则会把上一次画的紫色当成"原来的边框"记下来，去掉时永远恢复不回去。
+const growApp45 = freshApp();
+paintUserBorders(growApp45, 'Sheet1', 1, 1, table.length, 4, THIN_EDGE);
+const growVault45 = Engine.loadVault(growApp45);
+growApp45.select('Sheet1', 1, 1, table.length, 2);
+mapNow(growApp45, growVault45);
+growApp45.select('Sheet1', 1, 1, table.length, 4);
+mapNow(growApp45, growVault45);
+const wide45 = growVault45.marks.filter(m => m.c1 === 1 && m.c2 === 4)[0];
+ok(growVault45.marks.length === 1 && wide45 && wide45.r2 === 11,
+    '两列与整块并成一个标记：' + JSON.stringify(growVault45.marks.map(m => [m.c1, m.c2])));
+ok(wide45 && sameEdge(wide45.b[String(EDGE_TOP)], THIN_EDGE) &&
+    sameEdge(wide45.b[String(EDGE_LEFT)], THIN_EDGE) &&
+    sameEdge(wide45.b[String(EDGE_RIGHT)], THIN_EDGE),
+    '放大后的区域记下的仍是细实线，不是紫色标记');
+Engine.revert(Engine.hydrate(Engine.analyze(growApp45, {}), growVault45), growVault45, {});
+ok(sameEdge(growApp45.getBorder('Sheet1', 2, 1, EDGE_TOP), THIN_EDGE) &&
+    sameEdge(growApp45.getBorder('Sheet1', 11, 4, EDGE_BOTTOM), THIN_EDGE),
+    '放大过的区域整块还原后，边框也回到原样');
+
+// 记录丢了（升级前映射的，或补存映射表失败）也要能去掉边框：按区域记录认出紫色线
+const noRecApp45 = freshApp();
+const noRecVault45 = Engine.loadVault(noRecApp45);
+mapNow(noRecApp45, noRecVault45);
+noRecVault45.marks = [];   // 模拟标记记录没保存
+const noRecClear45 = Engine.clearAllMarks(noRecApp45, noRecVault45);
+ok(noRecClear45.cleared === 1 && noRecApp45.getBorder('Sheet1', 2, 1, EDGE_TOP).ls === -4142,
+    '没有边框记录时也按区域记录把紫色线清掉，按钮不会看着没反应');
+
+// 整条边原本就不一致：宿主读回 null，记 null；去掉时只清标记，不猜一个样式盖回去
+const mixApp45 = freshApp();
+mixApp45.setBorder('Sheet1', 2, 1, EDGE_TOP, THIN_EDGE);
+mixApp45.setBorder('Sheet1', 2, 2, EDGE_TOP, { ls: -4119, w: 4, c: 255 });
+const mixVault45 = Engine.loadVault(mixApp45);
+mapNow(mixApp45, mixVault45);
+ok(mixVault45.marks[0].b[String(EDGE_TOP)] === null,
+    '整条边不一致时记为 null，不假装知道原样式');
+Engine.clearAllMarks(mixApp45, mixVault45);
+ok(mixApp45.getBorder('Sheet1', 2, 1, EDGE_TOP).ls === -4142 &&
+    mixApp45.getBorder('Sheet1', 2, 4, EDGE_TOP).ls === -4142,
+    '去掉边框时不留下紫色虚线');
+
+// 清除映射表也要先把边框恢复掉：区域记录只在隐藏表里，删完就再也找不到画过哪些格子
+const dropApp45 = freshApp();
+paintUserBorders(dropApp45, 'Sheet1', 1, 1, table.length, 4, THIN_EDGE);
+const dropVault45 = Engine.loadVault(dropApp45);
+mapNow(dropApp45, dropVault45);
+Engine.saveVault(dropApp45, dropVault45);
+ok(Engine.dropVault(dropApp45) === true, '映射表被删除');
+ok(sameEdge(dropApp45.getBorder('Sheet1', 2, 1, EDGE_TOP), THIN_EDGE), '删表前先把标记边框恢复成原样式');
+
+// 边框画不上（工作表被保护之类）不能连累已经写好的数据：错误挂在 stats 上如实报告
+const errApp45 = freshApp();
+const errVault45 = Engine.loadVault(errApp45);
+const errPlan45 = Engine.prepareMask(Engine.hydrate(Engine.analyze(errApp45, {}), errVault45), errVault45);
+errApp45.sheets[0].Range = function () { throw new Error('工作表被保护'); };
+const errStats45 = Engine.writeMask(errPlan45);
+ok(errStats45.written === 38 && /工作表被保护/.test(errStats45.markError),
+    '边框失败不影响写入，错误如实报出：' + (errStats45.markError || '(空)'));
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

@@ -11,7 +11,7 @@
 - **混合列按单元格分类。** `shapeOf()` 返回手机号/邮箱/固话/纯数字/字母数字/文本，`genMixed` 保持该形态；新增形态需要 `shapeOf` 分支、生成器，以及一条断言什么必须保住的测试（[混合列形态](docs/implementation_zh.md#混合列形态)）。
 - **映射表是文件格式。** `M1:`、`sigOf()`、`KEY_TEXT` 会被已有文档读取；改动就要在同一改动里加版本字段和迁移。桶的保留、迁移与保存规则见[映射表格式](docs/implementation_zh.md#映射表格式)。
 - **`engine.js` 保持宿主无关。** 无 DOM、无 `window`、无顶层 `require`：面板、宿主页和 Node 里不改编就能跑。`aes.js` 不用 `crypto`。
-- **改行为就跑测试。** `node test/engine.test.js` 与 `node test/aes.test.js` 覆盖引擎；可点击或可见的改动跑 `test/taskpane.test.js` 与 `test/utils.test.js`（jsdom）。
+- **改行为就跑测试。** `node test/engine.test.js` 与 `node test/aes.test.js` 覆盖引擎；可点击或可见的改动跑 `test/ribbon.test.js`、`test/taskpane.test.js` 与 `test/utils.test.js`（jsdom）。
 - **AES 密钥是混淆，不是凭据。** `KEY_TEXT` 是常量；改成口令或环境变量必须在同一改动里更换存储格式。
 - **只改这里，永远不直接改 `%APPDATA%`。** `tools/link-addon.ps1` 把已安装的 `jsaddons\wpsmask_1.0.0` 换成指向本目录的目录联接；`-Rollback` 恢复 `.bak-<时间戳>` 备份。
 - **真机答案在 `tools/live/HANDOFF.md`。** 那里记录 WPS 12.1 上实测到什么、怎么测的，以及哪些坑会让只走 COM 的运行误判宿主；`npm run live:probe:log` 可在不碰已打开文档的情况下复现可机器判定的部分。
