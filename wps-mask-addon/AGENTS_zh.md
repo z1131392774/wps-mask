@@ -14,4 +14,5 @@
 - **改行为就要跑测试。** 引擎靠 `node test/engine.test.js` 与 `node test/aes.test.js`；用户可点击、可看见的东西还要过 jsdom 下的 `test/taskpane.test.js` 与 `test/utils.test.js`。
 - **AES 密钥是混淆常量，不是凭据。** `KEY_TEXT` 就是个常量。要把它换成口令或环境变量，必须同时改存储格式。
 - **改这里，别改 `%APPDATA%` 下面。** `tools/link-addon.ps1` 把装好的 `jsaddons\wpsmask_1.0.0` 变成指向本目录的目录联接。`-Rollback` 把当时存下的 `.bak-<时间戳>` 文件夹还原。
+- **真机的活从 `tools/live/HANDOFF.md` 开始。** 那份交接写明哪些条目已经在 WPS 12.1 上量过、哪些只有能创建 COM 对象的执行者才能继续答；`npm run live:probe:log` 能复现这套测量，且不碰已打开的文档。
 - **界面改动要在真实渲染里看。** `node tools/preview-pane.mjs` 会用十列的假工作簿生成预览页；按 260、300、380 px 三个窗格宽度各截一张图。jsdom 测试验证的是行为，不是版式。窗格里不要使用 flex 的 `gap`、CSS 变量和 grid：内嵌浏览器版本未知，这些特性会静默失效而不报错。只显示面板必需的信息：类型、一个示例、参数；计数由 WPS 状态栏显示。每个状态一句话——如果需要再补一句说明，说明这句话本身写错了。功能区图标：SVG 源在 `assets/icons/`，PNG 由 `tools/make-icons.mjs` 生成；图标只能由 `getImage` 回调给出，button 的 `image=` 属性会被静默忽略；组内按钮要横排得写 `size="large"`。
