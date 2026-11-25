@@ -1,12 +1,16 @@
 /*
- * 桥的 Node 侧回归：帧拼接、噪音、超时、桥退出、真子进程。
+ * 桥的 Node 侧回归：帧拼接、噪音、超时、桥退出、真子进程，以及 --log 的旁路。
  *
  * 这些行为本来只能"开着 WPS"才验，所以把收发和 Promise 配对从桥驱动里拆出来，
  * 用假管道和假子进程覆盖 —— 真机只负责回答宿主问题，传输层出问题不该等到真机才发现。
  */
 import { PassThrough } from 'node:stream'
 import { spawn } from 'node:child_process'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRpc } from '../tools/live/rpc.mjs'
+import { teeConsole } from '../tools/live/log.mjs'
 
 let fail = 0
 function ok(cond, msg) {
@@ -160,6 +164,32 @@ function settled(promise) {
         const gotDead = await settled(dead)
         ok(!gotDead.ok && /退出/.test(gotDead.error), '子进程退出时未决调用被拒绝：' + gotDead.error);
         child.kill();
+    }
+
+    console.log('\n[10] --log 旁路：屏幕上有什么，文件里就有什么');
+    {
+        const dir = mkdtempSync(join(tmpdir(), 'wps-mask-log-'))
+        const file = join(dir, 'probe.log')
+        const fake = { lines: [], errors: [], log(...p) { this.lines.push(p.join(' ')) }, error(...p) { this.errors.push(p.join(' ')) } }
+        const tee = teeConsole(file, fake)
+        ok(tee && tee.path === file, '挂上了日志');
+        fake.log('桥：' + 'x', '第二段');
+        fake.log({ a: 1 });
+        fake.error('炸了');
+        const text = readFileSync(file, 'utf8');
+        ok(text.includes('桥：x 第二段'), '多参数的 log 拼成一行：' + JSON.stringify(text.split('\n')[0]));
+        ok(text.includes('{"a":1}'), '对象被序列化而不是写成 [object Object]');
+        ok(/\[stderr\] 炸了/.test(text), '错误行带标记，能和自己翻回来区分');
+        ok(fake.lines.length === 2 && fake.errors.length === 1, '屏幕照常输出，日志只是旁路，不吞不改');
+
+        tee.restore();
+        fake.log('恢复之后');
+        ok(!readFileSync(file, 'utf8').includes('恢复之后'), 'restore 之后不再写文件');
+        ok(fake.lines.length === 3, 'restore 之后屏幕仍然正常');
+
+        const missing = teeConsole(join(dir, 'no-such-dir', 'x.log'), fake);
+        ok(missing === null, '路径不可写时返回 null，不抛错、不拖垮探查');
+        ok(teeConsole('', fake) === null, '没给路径就什么都不做');
     }
 
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');

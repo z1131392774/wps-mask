@@ -17,3 +17,6 @@ desktop.ini
 
 # 图标光栅化时的临时页面
 wps-mask-addon/assets/.icons-tmp/
+
+# 真机探查的日志：由 tools/live/probe.mjs --log 生成，里面是本机路径和宿主版本
+probe*.log

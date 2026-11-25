@@ -12,6 +12,7 @@
  *   node wps-mask-addon/tools/live/probe.mjs --ui       # 加上任务窗格两条
  *   node wps-mask-addon/tools/live/probe.mjs --perf     # 加十万行耗时
  *   node wps-mask-addon/tools/live/probe.mjs --json     # 机器可读
+ *   node wps-mask-addon/tools/live/probe.mjs --log probe.log   # 同时写一份日志，不用手工复制
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
@@ -19,6 +20,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRpc } from './rpc.mjs'
+import { teeConsole } from './log.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const BRIDGE = path.join(HERE, 'wps-bridge.ps1')
@@ -34,6 +36,14 @@ const WANT_UI = flag('ui')
 const WANT_PERF = flag('perf')
 const WANT_QUIT = flag('quit')
 const AS_JSON = flag('json')
+
+/*
+ * --log：把印到屏幕上的每一行同时写进文件。
+ * 理由是配合人跑：跑的人那台机器上才有 WPS，命令行窗口一关输出就没了；
+ * 写成文件之后，判定的人直接读文件，不必让对面复制粘贴、也不必担心截断。
+ */
+const LOG_PATH = valueOf('log', '')
+teeConsole(LOG_PATH)
 const SHELLS = valueOf('ps') ? [valueOf('ps')] : ['pwsh', 'powershell']
 
 /* 手册第 174 行起的七条，用条目编号互相照应 */
@@ -184,6 +194,7 @@ async function main() {
     let openBook = null
 
     console.log('桥：' + BRIDGE)
+    if (LOG_PATH) { console.log('日志：' + path.resolve(LOG_PATH)) }
     if (!AS_JSON) { console.log('临时文件：' + tmp + '\n') }
 
     const { child, rpc, shell } = await startBridge()
