@@ -201,8 +201,17 @@ async function main() {
     const finish = async code => {
         try { rpc.close() } catch { }
         try { child.kill() } catch { }
-        if (AS_JSON) { console.log(JSON.stringify({ shell, results }, null, 2)) }
-        else { summary() }
+        if (AS_JSON) {
+            console.log(JSON.stringify({ shell, results }, null, 2))
+        } else {
+            summary()
+            // 读日志的人可能是另一台机器（我做不了 COM，只能说这个），
+            // 所以日志里再附一份结构化结果，省得从散文里抽数字。
+            if (LOG_PATH) {
+                console.log('\n--- 结构化结果（--log 附带，判定用）---')
+                console.log(JSON.stringify(results, null, 1))
+            }
+        }
         process.exit(code)
     }
 
