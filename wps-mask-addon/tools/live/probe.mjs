@@ -101,6 +101,33 @@ function asList(v) {
     return [v]
 }
 
+/*
+ * 取一格。读单个格子时宿主回来的可能是 [[v]]，也可能被折成裸值，
+ * 早先写成 (rows[0] || [''])[0] —— 遇到裸字符串就是对字符串取下标，拿到首字符，
+ * 于是 15 个字符的密文被读成 "P"，把一条通过的结论报成了不通过。
+ */
+function cellOf(rows) {
+    const list = asList(rows)
+    if (!list.length) { return '' }
+    const first = list[0]
+    if (Array.isArray(first)) { return String(first[0] == null ? '' : first[0]) }
+    return String(first == null ? '' : first)
+}
+
+/* 取一行，供多列读回比对；形状折平了也不会把字符串拆成字符 */
+function rowOf(rows) {
+    const list = asList(rows)
+    if (!list.length) { return [] }
+    const first = list[0]
+    const cells = Array.isArray(first) ? first : list
+    return cells.map(v => String(v == null ? '' : v))
+}
+
+function brief(v, max = 120) {
+    const text = JSON.stringify(v)
+    return text && text.length > max ? text.slice(0, max) + '…' : String(text)
+}
+
 /* 试 shell：Windows PowerShell 5.1 与 pwsh 都可能只装了一个 */
 function startBridge() {
     return new Promise((resolve, reject) => {
@@ -393,13 +420,14 @@ async function main() {
         const list = asList((await rpc.call('sheets', { book: o.name })).items)
         const rec = list.filter(s => s.name === V)[0]
         if (!rec) { return { verdict: 'NO', detail: '重开后没有「' + V + '」，隐藏表在存盘时就丢了' } }
-        const back = asList((await rpc.call('read', { book: o.name, sheet: V, r: 1, c: 1, rows: 1, cols: 1 })).rows)
-        const cell = String((back[0] || [''])[0])
+        const raw = (await rpc.call('read', { book: o.name, sheet: V, r: 1, c: 1, rows: 1, cols: 1 })).rows
+        const cell = cellOf(raw)
         const cellOk = cell === MARKER
         return {
             verdict: cellOk ? 'OK' : 'NO',
-            detail: '重开后可见性 ' + rec.visible + '，密文' + (cellOk ? '原样读回' : '变成了「' + cell + '」'),
-            data: { visible: rec.visible, cell: cell }
+            detail: '重开后可见性 ' + rec.visible + '，密文' + (cellOk ? '原样读回' : '变成了「' + cell + '」') +
+                '（读回形状 ' + brief(raw, 60) + '）',
+            data: { visible: rec.visible, cell: cell, raw: raw }
         }
     })
 
@@ -424,38 +452,57 @@ async function main() {
         if (!openBook) { throw new Error('第 7 条没拿到工作簿') }
         await rpc.call('merge', { book: openBook, sheet: V, r1: 5, c1: 1, r2: 5, c2: 2 })
         await rpc.call('set', { book: openBook, sheet: V, r: 5, c: 2, rows: [['写进B']] })
-        const back = asList((await rpc.call('read', { book: openBook, sheet: V, r: 5, c: 1, rows: 1, cols: 2 })).rows)
-        const pair = (back[0] || []).map(v => String(v == null ? '' : v))
+        const raw = (await rpc.call('read', { book: openBook, sheet: V, r: 5, c: 1, rows: 1, cols: 2 })).rows
+        const pair = rowOf(raw)
         const hitAnchor = pair[0] === '写进B'
+        const hitB = pair[1] === '写进B'
         return {
-            verdict: hitAnchor ? 'OK' : 'UNK',
+            verdict: hitAnchor ? 'OK' : 'NO',
             detail: '写 B5 之后 A5=' + JSON.stringify(pair[0]) + ' B5=' + JSON.stringify(pair[1]) +
-                (hitAnchor ? '，落回锚点，和 engine 的假设一致' : '，没落到锚点，engine 的写入要重新想')
+                (hitAnchor ? '，落回锚点，和 engine 的假设一致'
+                    : hitB ? '，值停在了 B5 自己身上，合并区没生效'
+                        : '，两格都空：写入被静默丢掉，engine 会以为自己写了') +
+                '（读回形状 ' + brief(raw, 60) + '）',
+            data: { pair: pair, raw: raw }
         }
     })
 
-    /* 13. 手册 7c：只读打开后保存会不会被拒 */
+    /* 11. 手册 7c：只读打开后保存会不会被拒。不靠"没抛错"猜，比对文件时间戳 */
     await step(7, '只读打开后保存被拒', async () => {
         if (openBook) { await rpc.call('close', { book: openBook }).catch(() => { }); openBook = null }
+        const before = await rpc.call('stat', { path: sampleFile })
         const d = await rpc.call('open', { path: sampleFile, readOnly: true })
         openBook = d.name
+        let wrote = null
+        try {
+            await rpc.call('set', { book: d.name, sheet: V, r: 7, c: 1, rows: [['只读里写一格']] })
+        } catch (err) { wrote = err }
         let threw = null
         try { await rpc.call('save', { book: d.name }) } catch (err) { threw = err }
+        const after = await rpc.call('stat', { path: sampleFile })
+        const touched = before.mtime !== after.mtime
         if (!d.readOnly) { return { verdict: 'UNK', detail: '请求了只读，但宿主回 ReadOnly=' + d.readOnly } }
         if (threw) { return { verdict: 'OK', detail: 'ReadOnly=true，保存被拒：' + threw.message } }
-        return { verdict: 'NO', detail: 'ReadOnly=true 但 Save() 没报错，要确认是不是静默存去了别处' }
+        if (touched) {
+            return {
+                verdict: 'NO',
+                detail: 'ReadOnly=true，Save() 没报错，文件时间戳却变了 —— 只读副本也能写盘，"失败回滚"的前提不成立'
+            }
+        }
+        return {
+            verdict: 'NO',
+            detail: 'ReadOnly=true，Save() 没报错也没动文件（mtime 未变）：保存是静默空转' +
+                (wrote ? '；连写入都被拒了：' + wrote.message : '；写入本身却进了内存')
+        }
     })
 
     /* 14. 手册 3 与 2：任务窗格。这两条要看得见窗口，默认不做 */
     const paneUrl = installedPaneUrl()
-    if (WANT_UI) {
+    // 上一版把"COM 对象上没有 CreateTaskPane"记成了"宿主不支持"，那是量错了对象：
+    // 这个方法在加载项自己的 JS API 面上，PowerShell 的晚绑定看不到它，看不到不等于不存在。
+    const paneViaCom = members.some(m => /CreateTaskPane/i.test(m))
+    if (WANT_UI && paneViaCom) {
         await step(3, 'CreateTaskPane 接受 file:// URL', async () => {
-            if (!members.some(m => /CreateTaskPane/i.test(m))) {
-                return {
-                    verdict: 'NO',
-                    detail: '宿主成员里没有 CreateTaskPane（匹配到的成员：' + (members.join(',') || '无') + '）'
-                }
-            }
             if (!paneUrl.url) { return { verdict: 'UNK', detail: paneUrl.where } }
             let d = null
             let firstErr = null
@@ -491,6 +538,19 @@ async function main() {
                     '拿不到宿主对象，面板只能改由宿主页执行'
             }
         })
+    } else if (WANT_UI) {
+        // 没有 --ui 之外的原因：宿主的 COM 面确实看不到 CreateTaskPane，只能人眼看面板
+        push({
+            item: 3, ask: 'CreateTaskPane 接受 file:// URL', verdict: 'UNK',
+            detail: '这个方法的 COM 对象上没有：PowerShell 晚绑定看不到它，但它在加载项自己的 JS API 面上，' +
+                '看不到不等于不存在。只能在加载项里验 —— 点「数据脱敏 → 面板」，看面板是正常渲染还是' +
+                '显示「未取到 WPS 应用对象」', ms: 0
+        })
+        push({
+            item: 2, ask: '任务窗格里 window.Application 是否注入', verdict: 'MANUAL',
+            detail: '手动点功能区「数据脱敏 → 面板」：面板能列出字段就是注入了；显示「未取到 WPS 应用对象」' +
+                '就是没有，操作要改由宿主页执行', ms: 0
+        })
     } else {
         skip(3, 'CreateTaskPane 接受 file:// URL', '加 --ui 才做（会显示 WPS 窗口并弹出任务窗格）')
         skip(2, '任务窗格里 window.Application 是否注入', '加 --ui 才做（要人眼看窗格里的那行字）')
@@ -498,23 +558,26 @@ async function main() {
 
     /* 15. 手册 6：十万行，默认不做 */
     if (WANT_PERF) {
-        await step(6, '十万行 × 3 列的写入与读回耗时', async () => {
+        await step(6, '十万行写入与读回的耗时', async () => {
             const nb = await rpc.call('newbook')
             try {
                 const d = await rpc.call('bench', { book: nb.name, rows: 100000, cols: 3 })
-                const cellsOk = d.cells === d.rows * d.cols
-                return {
-                    verdict: cellsOk ? 'OK' : 'UNK',
-                    detail: d.rows + '×' + d.cols + ' 一次写入 ' + d.writeMs + 'ms，读回 ' + d.readMs + 'ms' +
-                        (cellsOk ? '' : '（读回只有 ' + d.cells + ' 格，不是 ' + d.rows * d.cols + '）'),
-                    data: d
+                const colOk = !d.colWriteError && !d.colReadError
+                const bits = ['一列 10 万格写入 ' + d.colWriteMs + 'ms，读回 ' + d.colReadMs + 'ms（回来 ' +
+                    d.readShape + ' 格）']
+                if (d.colWriteError) { bits.push('一列写入被拒：' + d.colWriteError) }
+                if (d.colReadError) { bits.push('读回被拒：' + d.colReadError) }
+                if (d.gridWriteError) { bits.push('整块二维写入被拒：' + d.gridWriteError) }
+                else if (d.gridWriteMs !== null && d.gridWriteMs !== undefined) {
+                    bits.push('整块二维 ' + d.rows + '×' + d.cols + ' 写入 ' + d.gridWriteMs + 'ms')
                 }
+                return { verdict: colOk ? 'OK' : 'NO', detail: bits.join('；'), data: d }
             } finally {
                 await rpc.call('close', { book: nb.name }).catch(() => { })
             }
         })
     } else {
-        skip(6, '十万行 × 3 列的写入与读回耗时', '加 --perf 才做（会往临时表写 30 万格）')
+        skip(6, '十万行写入与读回的耗时', '加 --perf 才做（会往临时表写 30 万格）')
     }
 
     /* 收尾：只关自己开的，绝不替你关已经开着的文档 */

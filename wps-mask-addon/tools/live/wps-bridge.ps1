@@ -169,7 +169,9 @@ function Ensure-Uia {
 
 function Get-MainWindow {
     $root = [System.Windows.Automation.AutomationElement]::RootElement
-    foreach ($cls in @('KetMainFrame', 'XLMAIN', 'ETMainFrame', 'OpusApp')) {
+    # KPromeMainWindow 是真机上量到的：WPS 12.1 主窗口的类名就是它，
+    # KetMainFrame 那套是社区样例里的写法，这台机器上没有。
+    foreach ($cls in @('KPromeMainWindow', 'KetMainFrame', 'ETMainFrame', 'XLMAIN', 'OpusApp')) {
         $cond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ClassNameProperty, $cls)
         $w = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
@@ -255,22 +257,45 @@ function Invoke-Op($op, $a) {
             $cols = 3
             if ($a.rows) { $rows = [int]$a.rows }
             if ($a.cols) { $cols = [int]$a.cols }
-            $arr = New-Object 'object[,]' $rows, $cols
-            for ($i = 0; $i -lt $rows; $i++) {
-                for ($j = 0; $j -lt $cols; $j++) { $arr[$i, $j] = ('r' + $i + 'c' + $j) }
-            }
-            $rng = $ws.Range($ws.Cells.Item(1, 1), $ws.Cells.Item($rows, $cols))
+
+            # 先量 engine 真正用的那个形状：一列一个一维数组，整列赋值。
+            # 上一版直接上 object[,]，宿主回了一句 "cannot cast Object[,] to String"，
+            # 那既可能是宿主不收二维，也可能是我送参数的方式不对 —— 所以两种形状都试，
+            # 让"宿主收哪种"变成结论，而不是让整条探查失败。
+            $col = New-Object 'object[]' $rows
+            for ($i = 0; $i -lt $rows; $i++) { $col[$i] = ('r' + $i) }
+            $rng = $ws.Range($ws.Cells.Item(1, 1), $ws.Cells.Item($rows, 1))
             $w = [Diagnostics.Stopwatch]::StartNew()
-            $rng.Value2 = $arr
+            $colErr = $null
+            try { $rng.Value2 = $col } catch { $colErr = $_.Exception.Message }
             $w.Stop()
             $r = [Diagnostics.Stopwatch]::StartNew()
-            $back = $rng.Value2
+            $back = $null
+            $readErr = $null
+            try { $back = $rng.Value2 } catch { $readErr = $_.Exception.Message }
             $r.Stop()
             $shape = -1
-            try { $shape = [int]$back.GetLength(0) * [int]$back.GetLength(1) } catch { $shape = -1 }
+            try { $shape = @($back).Count } catch { }
+
+            $gridErr = $null
+            $gridMs = $null
+            if ($cols -gt 1) {
+                $grid = New-Object 'object[,]' $rows, $cols
+                for ($i = 0; $i -lt $rows; $i++) {
+                    for ($j = 0; $j -lt $cols; $j++) { $grid[$i, $j] = ('r' + $i + 'c' + $j) }
+                }
+                $grng = $ws.Range($ws.Cells.Item(1, 1), $ws.Cells.Item($rows, $cols))
+                $g = [Diagnostics.Stopwatch]::StartNew()
+                try { $grng.Value2 = $grid } catch { $gridErr = $_.Exception.Message }
+                $g.Stop()
+                $gridMs = $g.ElapsedMilliseconds
+            }
+
             return @{
-                rows = $rows; cols = $cols; cells = $shape
-                writeMs = $w.ElapsedMilliseconds; readMs = $r.ElapsedMilliseconds
+                rows = $rows; cols = $cols
+                colWriteMs = $w.ElapsedMilliseconds; colReadMs = $r.ElapsedMilliseconds
+                colWriteError = $colErr; colReadError = $readErr; readShape = $shape
+                gridWriteMs = $gridMs; gridWriteError = $gridErr
             }
         }
         'merge' {
@@ -314,7 +339,10 @@ function Invoke-Op($op, $a) {
                 try { $cn = [string]$e.Current.ClassName } catch { }
                 try { $nm = [string]$e.Current.Name } catch { }
                 if (-not $cn -and -not $nm) { continue }
-                if (-not (($cn + ' ' + $nm) -match 'WPS|Excel|Ket|Kingsoft|表格|工作簿|et\.exe|wps\.exe')) { continue }
+                # 类名要像 WPS 的窗口，或者标题像，才收；只靠 "wps" 三个字会混进
+                # 名字里带 wps-mask 的资源管理器窗口
+                $isWps = ($cn -match 'Prome|Ket|^ET|XLMAIN|Opus') -or ($nm -match 'WPS Office|WPS 表格|Excel|工作簿')
+                if (-not $isWps) { continue }
                 $windows += , @{ cls = $cn; title = $nm }
                 if ($windows.Count -ge 10) { break }
             }
@@ -498,11 +526,25 @@ function Invoke-Op($op, $a) {
             if ($a.off) { $ws.Unprotect($a.password) } else { $ws.Protect($a.password) }
             return @{ sheet = [string]$ws.Name; protected = [bool]$ws.ProtectContents }
         }
+        'stat' {
+            # 只读打开的文档 Save() 可能悄悄不写盘，也可能照写 —— 用文件时间戳分辨，
+            # 别靠"没抛错"猜。
+            $p = [string]$a.path
+            if (-not $p) { throw 'stat 需要 args.path' }
+            if (-not (Test-Path -LiteralPath $p)) { return @{ exists = $false } }
+            $i = Get-Item -LiteralPath $p
+            return @{ exists = $true; size = $i.Length; mtime = $i.LastWriteTimeUtc.ToString('o') }
+        }
         'save' {
             $wb = Get-Workbook $a
             if ($a.as) { $wb.SaveAs([string]$a.as) } else { $wb.Save() }
+            $path = [string]$wb.FullName
+            $dirty = $null
+            try { $dirty = [bool]$wb.Saved } catch { }
+            $stamp = $null
+            try { $stamp = (Get-Item -LiteralPath $path).LastWriteTimeUtc.ToString('o') } catch { }
             # SaveAs 之后 Name 就变了（工作簿1 → probe.xlsx），要把它带回去，否则下一步按旧名找不到
-            return @{ path = [string]$wb.FullName; name = [string]$wb.Name }
+            return @{ path = $path; name = [string]$wb.Name; saved = $dirty; mtime = $stamp }
         }
         'activate' {
             $wb = Get-Workbook $a
