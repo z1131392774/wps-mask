@@ -28,13 +28,13 @@ Budgets, counted in words:
 | Subtree `AGENTS.md` | 400 |
 | Each document in `docs/` | 1,200 |
 
-Budgets exist to stop growth, not to be filled. The manifest [`scripts/doc-budgets.json`](../scripts/doc-budgets.json) is authoritative and overrides the fallbacks above; `npm run check` reads it: word budgets, bilingual pairs, links and heading anchors, the fixed note header, one trailing newline, and no link leaving the repository. When a file goes over, relocate content to its proper home first, condense second, and raise the ceiling last, in a change that explains why the words are needed. A file permanently at its ceiling is no longer a summary. Notes are unbudgeted: one decision per file, and a note grows only when the decision needs more explanation.
+Budgets exist to stop growth, not to be filled. The manifest [`scripts/doc-budgets.json`](../scripts/doc-budgets.json) is authoritative and overrides the fallbacks above; `npm run check` reads it: word budgets, bilingual pairs, links and heading anchors, the fixed note header, one trailing newline, and no link leaving the repository. When a file goes over, move the overflow into a new governed page with its own ceiling, or condense; a raise is a product decision recorded in a note, never a routine edit. Notes are unbudgeted: one decision per file, and a note grows only when the decision needs more explanation.
 
-The test for the root file: if an agent skipped the rule, would it plausibly do the wrong thing? If the answer is "only when working on X", the rule belongs in X's subtree file, not here.
+The root-file test: would skipping the rule plausibly cause the wrong action? If only on task X, it belongs in X's subtree file.
 
 ## How instructions load
 
-Most agent harnesses load instruction files automatically, and the mechanics explain the rules above.
+Harnesses load instruction files automatically; the mechanics explain the rules above.
 
 - **Broad to specific.** The chain runs from the repository root down to the directory the agent is working in. Nearer files load later and win conflicts.
 - **Deduplicated.** A `CLAUDE.md` that repeats its `AGENTS.md` renders once.
@@ -43,7 +43,7 @@ Most agent harnesses load instruction files automatically, and the mechanics exp
 
 Two practical consequences:
 
-1. Do not duplicate a rule across tiers to make it more visible. Duplication consumes budget twice and creates two copies that will disagree.
+1. Do not duplicate a rule across tiers for visibility: it costs budget twice and the copies will disagree.
 2. Put a rule as deep as it can go while still reaching everyone who needs it. A rule for the deploy script belongs next to the deploy script.
 
 ## Writing a rule
@@ -56,7 +56,7 @@ Two practical consequences:
 - **Reserve emphasis.** If everything is bold, capitalised, or "critical", nothing is. Emphasis marks the clause that changes behavior.
 - **Write for a reader who is competent but new.** No metaphors, no inherited shorthand, no references to a meeting or a chat.
 
-Keep a rule only if it changes a decision the agent would otherwise get wrong. Delete rules that restate practices every competent engineer already follows; they dilute the ones that matter.
+Keep a rule only if it changes a decision the agent would otherwise get wrong; delete rules restating common practice, which dilute the ones that matter.
 
 ## Bilingual documents
 
@@ -64,7 +64,7 @@ Keep a rule only if it changes a decision the agent would otherwise get wrong. D
 - **Link both ways in the opening lines.** A reader who lands on either file reaches the other in one click; the check fails when the link is missing.
 - **Translate the meaning, not the syntax.** A Chinese twin that keeps English word order reads as machine translation. Rewrite the sentence in Chinese, keep the facts, the numbers, and the commands exact.
 - **Refresh the twin when the source moves.** A translation whose English half changed afterwards fails `npm run check`; retranslate the affected paragraphs instead of leaving a stale copy, or list the file under `pendingTranslations` while the rewrite is in progress.
-- **Move, rename, and delete both halves in one commit.** A pair that disagrees is worse than a single language, because the reader may trust the outdated half.
+- **Move, rename, and delete both halves in one commit.** A pair that disagrees is worse than one language: a reader may trust the outdated half.
 - **Both halves obey the same budget.** Chinese is longer than English, so its ceiling is the English budget times `zhMultiplier` in `scripts/doc-budgets.json`, measured one unit per CJK character plus one per Latin word.
 - **Exempt only what is generated.** Files listed in `excludePairs` may stay single-language; everything hand-written is paired.
 
@@ -72,8 +72,8 @@ Keep a rule only if it changes a decision the agent would otherwise get wrong. D
 
 - **Review quarterly, and after any incident** where an agent did the wrong thing. Add the missing rule or remove the rule that misled it.
 - **Grow downward.** When a file approaches its budget, move a paragraph into the subtree file or the procedure document it belongs to, and leave one line behind.
-- **Prefer deletion.** Two years of accreted rules make an unreadable file. If a rule no longer matches reality, fix or delete it; an outdated rule misleads every reader who trusts it.
-- **Check links and age mechanically.** `npm run check` resolves every local link and heading anchor, and reports a twin whose English half moved afterwards. A broken link in an instruction file sends the agent to the wrong place or to nothing.
+- **Prefer deletion.** Two years of accreted rules make an unreadable file. Fix or delete a rule that no longer matches reality; an outdated rule misleads its readers.
+- **Check links and age mechanically.** `npm run check` resolves every local link and heading anchor, and reports a twin whose English half moved afterwards. A broken instruction link sends the agent to the wrong place.
 - **A rule with no executor is advice.** If violating the rule cannot fail a check, say so in the rule, or accept that it depends on review.
 - **Treat a violation as a documentation bug first.** If an agent repeatedly ignores a rule, the rule is probably vague, buried, or contradicted elsewhere. Fix the writing before blaming the agent.
 

@@ -1,18 +1,18 @@
-# AGENTS.md —— wps-mask-addon
+# AGENTS.md — wps-mask-addon
 
 *[English](AGENTS.md)*
 
-加载项自身的规则。常驻规则在[根文件](../AGENTS_zh.md)，产品手册在 [README_zh.md](README_zh.md)。
+加载项自身的规则。常驻规则在[根文件](../AGENTS_zh.md)；产品手册在 [README_zh.md](README_zh.md)；规则背后的细节在 [docs/implementation_zh.md](docs/implementation_zh.md)。
 
-- **取宿主对象只走 `MaskGetApp()`。** 加载项里没有裸的 `Range("A1")`：所有对象都从它返回的应用对象获取。
-- **判数组用 `Array.isArray`。** 宿主返回的值跨越了 JavaScript 上下文，`instanceof Array` 会返回 false，二维区域会静默退化成单个单元格。`analyze` 曾因此出过一次 bug。
-- **整块搬运走 `Value2`。** 整块读成二维数组、在 JS 里改完、一次赋值写回。逐格循环慢一个数量级，失败时还会留下写了一半的状态。
-- **映射必须一对一 —— 且必须走 `keyOf()` —— 否则抛错。** 两个原值映射到同一个值，反映射就有歧义。映射表按 `n:`/`s:`/`b:` 分键，所以用 `used[原值]` 查重的生成器检测不到碰撞；`genPhone`/`genText` 曾这样实现，每十六次运行就有一次还原出错误的原值。查重一律使用 `used[keyOf(候选)]`。区间刚好容纳这批不同值时，用整列随机置换（`sattolo()`，成环且无不动点）：逐个生成时最后一个候选只剩自身，必然失败；固定偏移等于整体旋转，能被反推。区间容纳不下时报错，用列字母加字段名指出是哪一列。
-- **混合列按格判形态。** `shapeOf()` 给出 手机号/邮箱/固话/纯数字/字母数字/文本，`genMixed` 分派给保持该形态的生成器，无法识别的回落到 `genText`。新增一种形态要同时添加 `shapeOf` 分支、对应生成器，以及一条断言"哪些部分必须保留"的测试：域名、区号、位数、前导零。
-- **映射表是文件格式。** `M1:` 前缀、`sigOf()`、`KEY_TEXT` 都被已有文档读取。改动其中任何一处，旧桶就会对不上键：必须在同一次改动里加上版本字段和迁移路径，或者在决策记录里写清为什么可以留下孤儿桶。`sigOf()` 里的每个字段都必须改变输出；只改签名不改输出的字段，就是一个会静默给所有人改名的开关——`lang` 正是如此，它还把劈出来的新区间与原区间叠在了一起。记忆里的 `min`/`max` 是数据不是策略：`hydrate()` 拿它和本批取并集（只扩不缩），扩了就用 `absorbBucket()` 搬记录——区间一变就是新签名。但只要还有区域记录引用旧签名就保留旧桶；记录签名找不到桶时绝不退回全局索引，而是计入歧义、保持不动。
-- **`engine.js` 不依赖宿主。** 不碰 DOM、不碰 `window`、顶层不用 `require`：它必须能在任务窗格、加载项宿主页和 Node 测试中原样运行。`aes.js` 不用 `crypto`。
-- **改行为就要跑测试。** 引擎靠 `node test/engine.test.js` 与 `node test/aes.test.js`；用户可点击、可看见的东西还要过 jsdom 下的 `test/taskpane.test.js` 与 `test/utils.test.js`。
-- **AES 密钥是混淆常量，不是凭据。** `KEY_TEXT` 就是个常量。要把它换成口令或环境变量，必须同时改存储格式。
-- **改这里，别改 `%APPDATA%` 下面。** `tools/link-addon.ps1` 把装好的 `jsaddons\wpsmask_1.0.0` 变成指向本目录的目录联接。`-Rollback` 把当时存下的 `.bak-<时间戳>` 文件夹还原。
-- **真机的答案在 `tools/live/HANDOFF.md`。** 那份记录写明 WPS 12.1 上量过什么、怎么量的，以及哪些坑会让只看 COM 的运行误判宿主；`npm run live:probe:log` 能复现机器可判定的部分，且不碰已打开的文档。
-- **界面改动要在真实渲染里看。** `node tools/preview-pane.mjs` 会用十列的假工作簿生成预览页；按 260、300、380 px 三个窗格宽度各截一张图。jsdom 测试验证的是行为，不是版式。窗格里不要使用 flex 的 `gap`、CSS 变量和 grid：内嵌浏览器版本未知，这些特性会静默失效而不报错。只显示面板必需的信息：类型、一个示例、参数；计数由 WPS 状态栏显示。每个状态一句话——如果需要再补一句说明，说明这句话本身写错了。功能区图标：SVG 源在 `assets/icons/`，PNG 由 `tools/make-icons.mjs` 生成；图标只能由 `getImage` 回调给出，button 的 `image=` 属性会被静默忽略；组内按钮要横排得写 `size="large"`。
+- **只通过 `MaskGetApp()` 取宿主。** 加载项里没有裸的 `Range("A1")`：每个对象都从该函数返回的宿主上取。
+- **数组一律用 `Array.isArray` 判断。** 宿主值跨 realm：`instanceof Array` 为 false，二维区域会塌缩成一个单元格。
+- **整块数据走 `Value2`。** 读进二维数组、在 JS 里变换、一次赋值写回；逐格循环慢一个数量级，失败时还会留下半状态。`checkWritten()` 会重读，宿主静默丢弃写入时直接报错。
+- **映射必须一对一——经 `keyOf()`——否则抛错。** 两个原值共用一个假值会让反映射有歧义。区间容量、置换与跨度保护见[一对一映射](docs/implementation_zh.md#一对一映射)；失败要报出列字母与表头。
+- **混合列按单元格分类。** `shapeOf()` 返回手机号/邮箱/固话/纯数字/字母数字/文本，`genMixed` 保持该形态；新增形态需要 `shapeOf` 分支、生成器，以及一条断言什么必须保住的测试（[混合列形态](docs/implementation_zh.md#混合列形态)）。
+- **映射表是文件格式。** `M1:`、`sigOf()`、`KEY_TEXT` 会被已有文档读取；改动就要在同一改动里加版本字段和迁移。桶的保留、迁移与保存规则见[映射表格式](docs/implementation_zh.md#映射表格式)。
+- **`engine.js` 保持宿主无关。** 无 DOM、无 `window`、无顶层 `require`：面板、宿主页和 Node 里不改编就能跑。`aes.js` 不用 `crypto`。
+- **改行为就跑测试。** `node test/engine.test.js` 与 `node test/aes.test.js` 覆盖引擎；可点击或可见的改动跑 `test/taskpane.test.js` 与 `test/utils.test.js`（jsdom）。
+- **AES 密钥是混淆，不是凭据。** `KEY_TEXT` 是常量；改成口令或环境变量必须在同一改动里更换存储格式。
+- **只改这里，永远不直接改 `%APPDATA%`。** `tools/link-addon.ps1` 把已安装的 `jsaddons\wpsmask_1.0.0` 换成指向本目录的目录联接；`-Rollback` 恢复 `.bak-<时间戳>` 备份。
+- **真机答案在 `tools/live/HANDOFF.md`。** 那里记录 WPS 12.1 上实测到什么、怎么测的，以及哪些坑会让只走 COM 的运行误判宿主；`npm run live:probe:log` 可在不碰已打开文档的情况下复现可机器判定的部分。
+- **UI 改动要在真实渲染里看。** jsdom 只证明行为，不证明布局：用 `node tools/preview-pane.mjs` 在 260、300、380 px 三个宽度看。面板与功能区规则见[面板与功能区渲染](docs/implementation_zh.md#面板与功能区渲染)。

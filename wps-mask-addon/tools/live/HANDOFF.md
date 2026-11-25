@@ -2,7 +2,7 @@
 
 *[中文](HANDOFF_zh.md)*
 
-Status: closed on 2026-11-25. The three open items were measured on WPS Spreadsheets 12.1.0.29161. The verdicts live in section five of [the manual](../../README.md); this file keeps how they were obtained and the traps that make a COM-only run report false failures.
+Status: closed on 2026-11-25. The three open items were measured on WPS Spreadsheets 12.1.0.29161. The verdicts live in [the verification page](../../docs/verification.md); this file keeps how they were obtained and the traps that make a COM-only run report false failures.
 
 ## Answers
 
