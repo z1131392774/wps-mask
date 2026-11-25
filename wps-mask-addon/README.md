@@ -140,21 +140,21 @@ Or run one file at a time from `wps-mask-addon/`: `node test/aes.test.js`, `node
 - Bridge: one line split across two chunks, several lines in one chunk, CRLF and blank lines, noise lines kept out of the pairing, an `ok:false` reason arriving intact, a timeout staying local to its call, every pending call rejected when the bridge exits, and a real child process round-trip.
 - Nothing here drives a real WPS instance: every test runs against `test/mock-wps.js` and the real panel page under jsdom.
 
-**Measured on a real device** (WPS Spreadsheets 12.1.0.29161, `tools/live/probe.mjs`, 2026-11-25):
+**Measured on a real device** (WPS Spreadsheets 12.1.0.29161, `tools/live/probe.mjs` plus one panel opened by hand, 2026-11-25):
 
 | Item | Result | Evidence |
 | --- | --- | --- |
 | The 「数据脱敏」 tab appears | passes | The tab is visible, so `publish.xml` is accepted |
-| `window.Application` inside the pane | untested | Open the panel: if it lists fields, the host object is injected |
-| `CreateTaskPane` takes a `file://` URL | untested | The method is not on the COM surface, so only the add-in itself can answer |
+| `window.Application` inside the pane | passes | The pane listed the selection (`mask-small.csv!A1:C11`, 3 columns, header row), masked it and reverted it: three columns changed, originals came back. `window.Application` first, `wps.WpsApplication()` second; not probed apart |
+| `CreateTaskPane` takes a `file://` URL | passes | Opened from the add-in's own `file://` URL and rendered |
 | `Worksheets.Add(undefined, <last>)` | passes | Passing `Missing` works; the sheet lands at the end |
 | A hidden sheet survives a save | passes | `Visible = 2` survives and the ciphertext reads back intact |
-| 100k-row performance | unmeasured | Late binding cannot pass arrays (one- and two-dimensional both refused), so this needs the add-in itself; reading 100k cells took 72ms |
+| 100k-row performance | passes | 100,000 rows in one column: 「快速映射」 to the first masked cell took about 7 seconds, hidden table and read-back check included (`Visible = 2`). End-to-end, not that one assignment |
 | A protected sheet rejects writes | passes | The host refuses it; the engine rolls back and reports |
 | Writes into merged cells | **caution** | Writing a non-anchor cell of a merge neither throws nor takes effect; the engine catches it on read-back and rolls back |
 | Saving a read-only document | **caution** | `Save()` neither throws nor writes; the engine now refuses before saving the table |
 
-**One finding stands alone: the add-in buttons cannot be clicked from outside.** Nothing in the 186 CommandBars carries them, and UIA lists no tabs either — WPS draws its ribbon itself. So real-machine automation cannot simulate clicks; assertions have to run inside the add-in, or a person clicks.
+**One finding stands alone: the add-in buttons cannot be clicked from outside.** Nothing in the 186 CommandBars carries them, and UIA lists no tabs either — WPS draws its ribbon itself. The panel is the way in: opened once by hand, it drives the same engine, and the mask, revert and 100k rows above were measured through it.
 
 To reproduce, run `npm run live:probe:log`: it writes only into a scratch workbook it creates and puts the result in `probe.log`. The bridge (`tools/live/wps-bridge.ps1`) only moves data and every verdict is decided in Node, so split lines, noise, timeouts and a bridge dying mid-call are covered by `test/rpc.test.mjs` without WPS.
 
