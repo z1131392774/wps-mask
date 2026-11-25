@@ -11,7 +11,7 @@ When this file and a nearer `AGENTS.md` disagree, the nearer file wins for paths
 ## Project facts
 
 - Stack: JavaScript (ES5 style, no bundler) against the WPS JSAPI; Node 22 for the test scripts; the add-in itself ships no dependency
-- Verify: `node wps-mask-addon/test/engine.test.js`, `node wps-mask-addon/test/aes.test.js`, `npm install` then `node wps-mask-addon/test/ribbon.test.js`, `node wps-mask-addon/test/taskpane.test.js`, `node wps-mask-addon/test/utils.test.js` (or `npm test` for all of them in order); documentation changes run `npm run check`. No linter or typechecker exists
+- Verify: `node wps-mask-addon/test/engine.test.js`, `node wps-mask-addon/test/aes.test.js`, `npm install` then `node wps-mask-addon/test/ribbon.test.js`, `node wps-mask-addon/test/taskpane.test.js`, `node wps-mask-addon/test/utils.test.js`, `node wps-mask-addon/test/rpc.test.mjs` (or `npm test` for all six in order); documentation changes run `npm run check`. No linter or typechecker exists
 - Build: none — the add-in is plain files copied into `%APPDATA%\kingsoft\wps\jsaddons`
 
 ## Before you start

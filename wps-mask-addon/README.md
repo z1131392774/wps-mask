@@ -79,7 +79,7 @@ A junction needs no admin rights or developer mode, and a hard link cannot point
 
 **Repeated masking does not stack.** A cell is skipped only when it lies in a range this add-in has already written and its value reverses through the table; the status line reports the count. Reverting subtracts the restored parts, so a second revert finds nothing to write. To map current values again, revert first.
 
-**Seeing what is masked.** Mapped blocks get a purple dashed outline in the sheet, so no panel is needed to see them; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click. The records live in the hidden table as soon as you mask — revert and the outline read them — and only saving keeps them across sessions.
+**Seeing what is masked.** Mapped blocks get a purple dashed outline in the sheet, so no panel is needed to see them; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click, and also clear purple left by an older failed mask. The records live in the hidden table as soon as you mask — the same save that stores the mapping, before any cell is written — and only saving keeps them across sessions.
 
 **Quick buttons.** "快速映射" uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. "反映射" restores the areas recorded in the selection; cells it never masked keep their values, and with nothing to restore it says so instead of writing.
 
@@ -90,7 +90,7 @@ Messages, conventions and mixed columns are in [masking behavior](docs/behavior.
 - **Where the originals live:** a hidden worksheet named "脱敏映射表" holds AES-128-CBC ciphertext; `KEY_TEXT` in `js/aes.js` is the key. A second, backup column keeps the previous ciphertext.
 - **A failed save writes nothing:** the panel saves the table (backup, write, read-back and decrypt check) before writing any cell. A damaged main copy is either recovered from the backup or reported loudly — never mistaken for a new document.
 - **Protection limit:** the key ships with the code, so this is obfuscation only. Anyone holding this add-in can revert without a passphrase; uninstalling it, switching machines or forwarding the workbook leaves no UI path to the originals, while WPS's backup center, version history and undo stack may still hold pre-masking values.
-- **What does not survive:** formula cells are overwritten and only their values come back; a hidden sheet is not a lock against macros; at most the last 200 masked areas are remembered; a read-only document is refused before saving.
+- **What does not survive:** formula cells are overwritten and only their values come back; a hidden sheet is not a lock against macros; at most the last 200 masked areas are remembered; a read-only document is refused before saving. Deleting the table restores the outlines first, lists any sheet whose borders could not be restored or no longer exists, and deletes the table anyway.
 
 Everything else — the algorithm, the failure messages, who can restore, the full limits list — is in [storage](docs/storage.md).
 
@@ -99,18 +99,18 @@ Everything else — the algorithm, the failure messages, who can restore, the fu
 ```sh
 # from the repository root
 npm install                 # installs jsdom, needed by the panel and utility tests
-npm test                    # aes, engine, ribbon, taskpane, utils and rpc tests, in order
+npm test                    # engine, aes, ribbon, taskpane, utils and rpc tests, in order
 ```
 
-All local tests run against a mock WPS object model and the real panel page under jsdom. On a real device (WPS Spreadsheets 12.1.0.29161) the tab, the pane's host object, `CreateTaskPane` with a `file://` URL, the hidden sheet surviving a save and 100k rows (about 7 s) passed; merged cells and read-only documents need care. The test inventory, the measured table, reproduction steps, troubleshooting and the reference material still missing are in [verification](docs/verification.md).
+All local tests run against a mock WPS object model and the real panel page under jsdom. On a real device (WPS Spreadsheets 12.1.0.29161) the tab, the pane's host object, `CreateTaskPane` with a `file://` URL, the hidden sheet surviving a save and the packed outline colour passed; merged cells and read-only documents need care. The single-save flow measured 8.1 s for 100,000 rows on local mock (the old two-save flow measured 21.1 s), but has not been re-measured on a device. The test inventory, the measured table, reproduction steps, troubleshooting and the reference material still missing are in [verification](docs/verification.md).
 
 ## Tests
 
 ```sh
 # from the repository root
 npm install                  # installs jsdom (devDependency), once
-npm test                     # aes, engine, ribbon, taskpane, utils and rpc tests, in order
+npm test                     # engine, aes, ribbon, taskpane, utils and rpc tests, in order
 node wps-mask-addon/tools/make-icons.mjs
 ```
 
-Icons need nothing but Edge: edit the SVGs, regenerate, never hand-edit a PNG.
+Icons are generated on a Windows dev machine — the script looks for Edge/Chrome at Windows paths, so Linux cannot reproduce them. Edit the SVGs, regenerate, never hand-edit a PNG.

@@ -35,5 +35,5 @@ jobs:
           node-version: 22
       - name: Install test dependencies
         run: npm ci
-      - name: Cipher, engine, task pane and utils
+      - name: Test suites
         run: npm test

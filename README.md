@@ -9,7 +9,7 @@ A WPS Spreadsheet add-in: replace the values in a selected range with realistic 
 | Path | What it is |
 | --- | --- |
 | `wps-mask-addon/` | The add-in. Product manual: [README.md](wps-mask-addon/README.md). Directory rules: [AGENTS.md](wps-mask-addon/AGENTS.md) |
-| `wps-mask-addon/test/` | Node scripts: engine tests on a mock object model, AES compared with `node:crypto`, task pane tests under jsdom |
+| `wps-mask-addon/test/` | Node scripts: engine tests on a mock object model, AES compared with `node:crypto`, ribbon and task pane tests under jsdom, and the bridge used by the live probe |
 | `AGENTS.md` | Rules for agents, read at the start of every session |
 | `docs/` | Standards: [instruction structure](docs/AGENTS.md), [how to make and verify a change](docs/development.md), [reusing this layout in another repository](docs/adopting.md) |
 | `.agents/notes/` | Decision records: why this option, what was rejected, what it cost |
@@ -23,11 +23,13 @@ npm run check                              # documentation checks, no install ne
 node wps-mask-addon/test/engine.test.js    # mapping engine
 node wps-mask-addon/test/aes.test.js       # cipher, compared with node:crypto
 npm install                                # test dependency (jsdom), for the panel and helper tests
+node wps-mask-addon/test/ribbon.test.js    # ribbon callbacks and the outline
 node wps-mask-addon/test/taskpane.test.js  # task pane, driven through jsdom
 node wps-mask-addon/test/utils.test.js     # shared helpers: status bar, errors, host lookup
+node wps-mask-addon/test/rpc.test.mjs      # bridge between the live probe and Node
 ```
 
-`npm test` runs all four test files in that order.
+`npm test` runs all six test files in that order.
 
 To install the add-in itself, copy `wps-mask-addon/wpsmask_1.0.0/` and `wps-mask-addon/publish.xml` into `%APPDATA%\kingsoft\wps\jsaddons`, then restart WPS. The [product manual](wps-mask-addon/README.md) has the install steps, the feature list, and the parts still unverified on a real device.
 
