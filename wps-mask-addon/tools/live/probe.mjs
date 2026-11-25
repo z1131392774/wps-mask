@@ -207,7 +207,9 @@ async function main() {
         const d = await rpc.call('app')
         const ver = [d.name, d.version, d.build ? '(build ' + d.build + ')' : ''].filter(Boolean).join(' ')
         if (!d.name) { return { verdict: 'NO', detail: '拿到对象但没有 Name', data: d } }
-        return { verdict: 'OK', detail: ver + '，已开 ' + d.workbooks + ' 个工作簿', data: d }
+        const mem = asList(d.members).map(String)
+        const memNote = mem.length ? '；任务窗格相关成员：' + mem.join('，') : '；没列出 TaskPane 相关成员'
+        return { verdict: 'OK', detail: ver + '，已开 ' + d.workbooks + ' 个工作簿' + memNote, data: d }
     })
     if (appStep.verdict !== 'OK') { await finish(1) }
     const members = asList(appStep.data && appStep.data.members).map(String)
@@ -224,42 +226,97 @@ async function main() {
         })
     }
 
-    /* 3. 手册 1：功能区控件能不能被程序看见 */
-    await step(1, '功能区控件在 CommandBars 里看得到', async () => {
+    /* 3. 手册 1：加载项那一页有没有被构建出来 */
+    await step(1, '「数据脱敏」工具条出现在主界面', async () => {
+        const d = await rpc.call('controls')
+        const bars = asList(d.bars).map(String)
+        if (bars.length) {
+            return { verdict: 'OK', detail: '工具条：' + bars.join('，') + '（共 ' + d.barTotal + ' 条）', data: bars }
+        }
+        const items = asList(d.items)
+        if (items.length) {
+            return { verdict: 'OK', detail: '没看到同名工具条，但按钮在：' + items.length + ' 个', data: bars }
+        }
+        return {
+            verdict: 'UNK',
+            detail: 'CommandBars 的 ' + String(d.barTotal) + ' 条里没有「脱敏/加载项」相关的那条' +
+                (WANT_UI ? '；看一眼功能区选项卡在不在' : '；本次没显示窗口，加 --ui 再试一次')
+        }
+    })
+
+    /* 4. 按钮能不能被程序点到 —— 决定「点按钮驱动」这条路走不走得通 */
+    await step(null, '加载项按钮能被程序点到', async () => {
         const d = await rpc.call('controls')
         const items = asList(d.items)
         if (!d.supported) {
-            return { verdict: 'UNK', detail: '宿主没暴露 CommandBars，只能靠 UIA 或者人眼看功能区' }
+            return { verdict: 'UNK', detail: '宿主没暴露 CommandBars，点按钮只能走 UIA' }
         }
         if (!items.length) {
             return {
                 verdict: 'UNK',
-                detail: 'CommandBars 里没有加载项控件：可能加载项没装进这个版本，也可能控件只在功能区（UIA）里' +
-                    (WANT_UI ? '' : '；本次没显示窗口，隐藏实例可能本来就是空的，加 --ui 再试一次')
+                detail: '按钮不在 CommandBars 的 Controls 里：ribbon XML 加的控件通常只活在功能区，' +
+                    '要驱动它得改用 UIA 找元素再 Invoke'
             }
         }
         const names = items.map(c => [c.bar, c.Caption || c.Tag || c.Id].filter(Boolean).join('/')).slice(0, 6)
         return { verdict: 'OK', detail: items.length + ' 个：' + names.join('，'), data: items }
     })
 
-    /* 4. 手册 1 的退路：UIA 能不能看见主窗口 */
+    /* 5. 手册 1 的退路：UIA 能不能看见主窗口。类名不猜，报它实际是什么 */
     await step(1, 'UIA 能看见 WPS 主窗口', async () => {
         const d = await rpc.call('uia')
         if (!d.supported) { return { verdict: 'NO', detail: 'UIA 程序集加载失败：' + d.error } }
-        if (!d.window) { return { verdict: 'UNK', detail: 'UIA 可用但没找到 KetMainFrame（WPS 没开或窗口类名不同）' } }
-        return { verdict: 'OK', detail: '窗口「' + d.window + '」' }
+        if (d.window) {
+            return { verdict: 'OK', detail: '类名 ' + d.matchedClass + '，标题「' + d.window + '」' }
+        }
+        const seen = asList(d.windows).map(w => String(w.cls) + '/' + String(w.title)).slice(0, 4)
+        return {
+            verdict: 'UNK',
+            detail: 'KetMainFrame 等四个候选类名都没命中；顶层窗口里像是 WPS 的：' +
+                (seen.length ? seen.join('，') : '一个都没看到（UIA 只列有窗口的进程）')
+        }
     })
 
-    /* 5. 自己建一张临时表，后面所有写入都在它身上 */
+    /* 6. UIA 里能不能看见加载项的选项卡和按钮 —— 这是「程序去点按钮」的唯一出路 */
+    if (WANT_UI) {
+        await step(null, 'UIA 里能看见加载项的选项卡和按钮', async () => {
+            const d = await rpc.call('uiaribbon')
+            if (!d.supported) { return { verdict: 'NO', detail: 'UIA 装不上：' + d.error } }
+            if (!d.window) { return { verdict: 'UNK', detail: '没找到主窗口，功能区无从查起' } }
+            const tabs = asList(d.tabs)
+            const mine = tabs.filter(t => /脱敏|Mask/i.test(String(t.name)))
+            if (mine.length) {
+                const t = mine[0]
+                return {
+                    verdict: t.buttonCount ? 'OK' : 'UNK',
+                    detail: '选项卡「' + t.name + '」下有 ' + t.buttonCount + ' 个按钮：' +
+                        asList(t.buttons).join('，'),
+                    data: mine
+                }
+            }
+            const names = tabs.map(t => t.name + '(' + t.buttonCount + ')').slice(0, 12)
+            return {
+                verdict: 'UNK',
+                detail: 'UIA 看到 ' + tabs.length + ' 个选项卡，没有「脱敏」：' +
+                    (names.length ? names.join('，') : '一个都没看到') +
+                    '；工具条 ' + asList(d.toolbars).map(x => x.name + '(' + x.buttons + ')').join('，'),
+                data: d
+            }
+        })
+    } else {
+        skip(null, 'UIA 里能看见加载项的选项卡和按钮', '加 --ui 才做（要窗口真实构建过）')
+    }
+
+    /* 7. 自己建一张临时表，后面所有写入都在它身上 */
     await step(null, '新建临时工作簿', async () => {
         const d = await rpc.call('newbook')
         book = d.name
         return { verdict: 'OK', detail: book }
     })
 
-    /* 6. 手册 4：engine 用的建表形态 */
+    /* 8. 手册 4：engine 用的建表形态 */
     await step(4, 'Worksheets.Add(undefined, 末表) 返回工作表', async () => {
-        const d = await rpc.call('addsheet', { name: V, marker: 'probe' })
+        const d = await rpc.call('addsheet', { book: book, sheet: V, marker: 'probe' })
         sheetReady = Boolean(d && d.name)
         const forms = asList(d.errors)
         if (String(d.form).startsWith('engine')) {
@@ -282,19 +339,19 @@ async function main() {
         await finish(1)
     }
 
-    /* 7. 手册 5 前半：隐藏。顺带验「活动表不能隐藏」这个 engine 依赖的行为 */
+    /* 9. 手册 5 前半：隐藏。顺带验「活动表不能隐藏」这个 engine 依赖的行为 */
     const hide = await step(5, '工作表能隐藏，且隐藏前必须切走', async () => {
         let activeHideThrew = null
         try {
-            await rpc.call('setvisible', { sheet: V, visible: 2 })
+            await rpc.call('setvisible', { book: book, sheet: V, visible: 2 })
         } catch (err) {
             activeHideThrew = err
         }
         if (!activeHideThrew) {
             return { verdict: 'UNK', detail: '新表还是活动表时就被隐藏成功了，engine 里「先切回原表」那一步可以省' }
         }
-        const act = await rpc.call('activate', { index: 1 })
-        const d = await rpc.call('setvisible', { sheet: V, visible: 2 })
+        const act = await rpc.call('activate', { book: book, index: 1 })
+        const d = await rpc.call('setvisible', { book: book, sheet: V, visible: 2 })
         const want = d.visible === 2 || d.visible === 0
         return {
             verdict: want ? 'OK' : 'NO',
@@ -304,19 +361,19 @@ async function main() {
         }
     })
 
-    /* 8. 手册 5 后半：存盘、关掉、重开，密文和可见性都还在吗 */
+    /* 10. 手册 5 后半：存盘、关掉、重开，密文和可见性都还在吗 */
     await step(5, '隐藏表存盘重开还能读回密文', async () => {
         if (hide.verdict === 'NO') { throw new Error('隐藏没成功，先修上一条') }
-        await rpc.call('set', { sheet: V, r: 1, c: 1, rows: [[MARKER]] })
-        const saved = await rpc.call('save', { name: book, as: sampleFile })
-        await rpc.call('close', { name: saved.name })
+        await rpc.call('set', { book: book, sheet: V, r: 1, c: 1, rows: [[MARKER]] })
+        const saved = await rpc.call('save', { book: book, as: sampleFile })
+        await rpc.call('close', { book: saved.name })
         book = null
         const o = await rpc.call('open', { path: sampleFile })
         openBook = o.name
-        const list = asList((await rpc.call('sheets', { name: o.name })).items)
+        const list = asList((await rpc.call('sheets', { book: o.name })).items)
         const rec = list.filter(s => s.name === V)[0]
         if (!rec) { return { verdict: 'NO', detail: '重开后没有「' + V + '」，隐藏表在存盘时就丢了' } }
-        const back = asList((await rpc.call('read', { name: o.name, sheet: V, r: 1, c: 1, rows: 1, cols: 1 })).rows)
+        const back = asList((await rpc.call('read', { book: o.name, sheet: V, r: 1, c: 1, rows: 1, cols: 1 })).rows)
         const cell = String((back[0] || [''])[0])
         const cellOk = cell === MARKER
         return {
@@ -326,15 +383,15 @@ async function main() {
         }
     })
 
-    /* 9. 手册 7a：受保护的表写入会不会被拒 */
+    /* 11. 手册 7a：受保护的表写入会不会被拒 */
     await step(7, '受保护工作表拒绝写入', async () => {
         if (!openBook) { throw new Error('第 7 条没拿到工作簿') }
-        await rpc.call('protect', { name: openBook, sheet: V, password: 'probe' })
+        await rpc.call('protect', { book: openBook, sheet: V, password: 'probe' })
         let threw = null
         try {
-            await rpc.call('set', { name: openBook, sheet: V, r: 3, c: 1, rows: [['写入保护表']] })
+            await rpc.call('set', { book: openBook, sheet: V, r: 3, c: 1, rows: [['写入保护表']] })
         } catch (err) { threw = err }
-        await rpc.call('protect', { name: openBook, sheet: V, password: 'probe', off: true }).catch(() => { })
+        await rpc.call('protect', { book: openBook, sheet: V, password: 'probe', off: true }).catch(() => { })
         if (threw) { return { verdict: 'OK', detail: '写入被拒：' + threw.message } }
         return {
             verdict: 'NO',
@@ -342,12 +399,12 @@ async function main() {
         }
     })
 
-    /* 10. 手册 7b：合并单元格的写入落在哪一格 */
+    /* 12. 手册 7b：合并单元格的写入落在哪一格 */
     await step(7, '合并单元格写入落在锚点格', async () => {
         if (!openBook) { throw new Error('第 7 条没拿到工作簿') }
-        await rpc.call('merge', { name: openBook, sheet: V, r1: 5, c1: 1, r2: 5, c2: 2 })
-        await rpc.call('set', { name: openBook, sheet: V, r: 5, c: 2, rows: [['写进B']] })
-        const back = asList((await rpc.call('read', { name: openBook, sheet: V, r: 5, c: 1, rows: 1, cols: 2 })).rows)
+        await rpc.call('merge', { book: openBook, sheet: V, r1: 5, c1: 1, r2: 5, c2: 2 })
+        await rpc.call('set', { book: openBook, sheet: V, r: 5, c: 2, rows: [['写进B']] })
+        const back = asList((await rpc.call('read', { book: openBook, sheet: V, r: 5, c: 1, rows: 1, cols: 2 })).rows)
         const pair = (back[0] || []).map(v => String(v == null ? '' : v))
         const hitAnchor = pair[0] === '写进B'
         return {
@@ -357,19 +414,19 @@ async function main() {
         }
     })
 
-    /* 11. 手册 7c：只读打开后保存会不会被拒 */
+    /* 13. 手册 7c：只读打开后保存会不会被拒 */
     await step(7, '只读打开后保存被拒', async () => {
-        if (openBook) { await rpc.call('close', { name: openBook }).catch(() => { }); openBook = null }
+        if (openBook) { await rpc.call('close', { book: openBook }).catch(() => { }); openBook = null }
         const d = await rpc.call('open', { path: sampleFile, readOnly: true })
         openBook = d.name
         let threw = null
-        try { await rpc.call('save', { name: d.name }) } catch (err) { threw = err }
+        try { await rpc.call('save', { book: d.name }) } catch (err) { threw = err }
         if (!d.readOnly) { return { verdict: 'UNK', detail: '请求了只读，但宿主回 ReadOnly=' + d.readOnly } }
         if (threw) { return { verdict: 'OK', detail: 'ReadOnly=true，保存被拒：' + threw.message } }
         return { verdict: 'NO', detail: 'ReadOnly=true 但 Save() 没报错，要确认是不是静默存去了别处' }
     })
 
-    /* 12. 手册 3 与 2：任务窗格。这两条要看得见窗口，默认不做 */
+    /* 14. 手册 3 与 2：任务窗格。这两条要看得见窗口，默认不做 */
     const paneUrl = installedPaneUrl()
     if (WANT_UI) {
         await step(3, 'CreateTaskPane 接受 file:// URL', async () => {
@@ -419,12 +476,12 @@ async function main() {
         skip(2, '任务窗格里 window.Application 是否注入', '加 --ui 才做（要人眼看窗格里的那行字）')
     }
 
-    /* 13. 手册 6：十万行，默认不做 */
+    /* 15. 手册 6：十万行，默认不做 */
     if (WANT_PERF) {
         await step(6, '十万行 × 3 列的写入与读回耗时', async () => {
             const nb = await rpc.call('newbook')
             try {
-                const d = await rpc.call('bench', { name: nb.name, rows: 100000, cols: 3 })
+                const d = await rpc.call('bench', { book: nb.name, rows: 100000, cols: 3 })
                 const cellsOk = d.cells === d.rows * d.cols
                 return {
                     verdict: cellsOk ? 'OK' : 'UNK',
@@ -433,7 +490,7 @@ async function main() {
                     data: d
                 }
             } finally {
-                await rpc.call('close', { name: nb.name }).catch(() => { })
+                await rpc.call('close', { book: nb.name }).catch(() => { })
             }
         })
     } else {
@@ -441,8 +498,8 @@ async function main() {
     }
 
     /* 收尾：只关自己开的，绝不替你关已经开着的文档 */
-    if (openBook) { await rpc.call('close', { name: openBook }).catch(() => { }) }
-    if (book) { await rpc.call('close', { name: book }).catch(() => { }) }
+    if (openBook) { await rpc.call('close', { book: openBook }).catch(() => { }) }
+    if (book) { await rpc.call('close', { book: book }).catch(() => { }) }
     if (WANT_QUIT) { await rpc.call('quit').catch(() => { }) }
     await finish(results.some(r => r.verdict === 'NO' && r.item !== null) ? 1 : 0)
 }

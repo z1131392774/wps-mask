@@ -42,13 +42,19 @@ function Get-App {
     throw ('没有可用的 WPS 表格 COM 接口 —— ' + ($errs -join ' | '))
 }
 
+# 工作簿一律用 args.book 指定，工作表用 args.sheet。
+# 曾经两者都叫 name，结果"给新表起名"的参数被当成"找哪个工作簿"，报了句毫无关系的错。
 function Get-Workbook($a) {
     $app = Get-App
-    if ($a -and $a.name) {
+    if ($a -and $a.book) {
+        $want = [string]$a.book
+        $names = @()
         for ($i = 1; $i -le $app.Workbooks.Count; $i++) {
-            if ($app.Workbooks.Item($i).Name -eq $a.name) { return $app.Workbooks.Item($i) }
+            $wb = $app.Workbooks.Item($i)
+            if ([string]$wb.Name -eq $want) { return $wb }
+            $names += [string]$wb.Name
         }
-        throw ('没有名为 ' + $a.name + ' 的已打开工作簿')
+        throw ('没有名为 ' + $want + ' 的已打开工作簿（当前有：' + ($names -join '、') + '）')
     }
     if ($app.Workbooks.Count -lt 1) { throw '当前没有打开的工作簿' }
     return $app.ActiveWorkbook
@@ -94,6 +100,11 @@ function Find-Controls($app, $filter) {
     $hits = @()
     try { $bars = $app.CommandBars } catch { return $null }
     if (-not $bars) { return $null }
+    if (-not $filter) {
+        # 只认加载项自己的标记。早先写成 wpsmask|Mask|脱敏|映射，结果把 Excel 自带的
+        # 「List/XML 映射属性」也算了进来 —— 假阳性比找不到更坏，它会让"通过"变成谎话。
+        $filter = 'wpsmask|脱敏|btnMask|MaskPane|MaskQuick|MaskRevert'
+    }
     for ($i = 1; $i -le $bars.Count; $i++) {
         $bar = $bars.Item($i)
         $ctrlCount = 0
@@ -105,14 +116,28 @@ function Find-Controls($app, $filter) {
                 try { $rec[$k] = [string]$c.$k } catch { }
             }
             $blob = (@($rec.Values) -join ' ')
-            if ($filter) {
-                if ($blob -notmatch $filter) { continue }
-            } elseif ($blob -notmatch 'wpsmask|Mask|脱敏|映射') { continue }
+            if ($blob -notmatch $filter) { continue }
             $rec['bar'] = [string]$bar.Name
             $hits += , $rec
         }
     }
     return , $hits
+}
+
+# 工具条名字里带这些词的，说明宿主把加载项那一页构建出来了（publish.xml 被接受），
+# 哪怕它的按钮不在 Controls 里 —— 这两件事必须分开问。
+function Find-Bars($app) {
+    $out = @()
+    $total = $null
+    try { $bars = $app.CommandBars } catch { return @{ total = $null; named = $out } }
+    if (-not $bars) { return @{ total = $null; named = $out } }
+    try { $total = [int]$bars.Count } catch { }
+    for ($i = 1; $i -le $bars.Count; $i++) {
+        $nm = $null
+        try { $nm = [string]$bars.Item($i).Name } catch { continue }
+        if ($nm -match '脱敏|wpsmask|加载项|AddIns|Add-Ins') { $out += $nm }
+    }
+    return @{ total = $total; named = $out }
 }
 
 function Find-Control($app, $wanted) {
@@ -124,6 +149,45 @@ function Find-Control($app, $wanted) {
         }
     }
     return $null
+}
+
+# UIA 只在真要用的时候才加载：装不上就报清楚，而不是让整个桥起不来。
+$script:UiaError = $null
+function Ensure-Uia {
+    if ('ok' -eq $script:UiaError) { return $true }
+    if ($script:UiaError) { return $false }
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $script:UiaError = 'ok'
+        return $true
+    } catch {
+        $script:UiaError = $_.Exception.Message
+        return $false
+    }
+}
+
+function Get-MainWindow {
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    foreach ($cls in @('KetMainFrame', 'XLMAIN', 'ETMainFrame', 'OpusApp')) {
+        $cond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ClassNameProperty, $cls)
+        $w = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+        if ($w) { return @{ el = $w; cls = $cls } }
+    }
+    return $null
+}
+
+function Get-ElementsByType($el, $type, $limit) {
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $type)
+    $found = @()
+    try { $found = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) } catch { return , @() }
+    $out = @()
+    for ($i = 0; $i -lt $found.Count -and $out.Count -lt $limit; $i++) {
+        $out += , $found.Item($i)
+    }
+    return , $out
 }
 
 function Invoke-Op($op, $a) {
@@ -227,27 +291,69 @@ function Invoke-Op($op, $a) {
         'controls' {
             $app = Get-App
             $items = Find-Controls $app $null
-            return @{ supported = ($null -ne $items); items = $items }
+            $bars = Find-Bars $app
+            return @{
+                supported = ($null -ne $items)
+                items     = $items
+                bars      = $bars.named
+                barTotal  = $bars.total
+            }
         }
         'uia' {
-            # 只报告 UIA 能不能加载、能不能看到 WPS 主窗口 —— 点按钮留给后面的场景
-            $supported = $true
-            $errorText = $null
-            try {
-                Add-Type -AssemblyName UIAutomationClient
-                Add-Type -AssemblyName UIAutomationTypes
-            } catch {
-                $supported = $false
-                $errorText = $_.Exception.Message
-            }
-            if (-not $supported) { return @{ supported = $false; error = $errorText } }
+            # 报告 UIA 能不能加载、能看到哪些顶层窗口。
+            # 不猜类名：把实际看到的类名和标题报出来，下次要找的线索就是它。
+            if (-not (Ensure-Uia)) { return @{ supported = $false; error = $script:UiaError } }
             $root = [System.Windows.Automation.AutomationElement]::RootElement
-            $cond = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ClassNameProperty, 'KetMainFrame')
-            $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
-            $winName = $null
-            if ($win) { $winName = $win.Current.Name }
-            return @{ supported = $true; window = $winName }
+            $win = Get-MainWindow
+            $windows = @()
+            $all = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+            for ($i = 0; $i -lt $all.Count; $i++) {
+                $e = $all.Item($i)
+                $cn = ''
+                $nm = ''
+                try { $cn = [string]$e.Current.ClassName } catch { }
+                try { $nm = [string]$e.Current.Name } catch { }
+                if (-not $cn -and -not $nm) { continue }
+                if (-not (($cn + ' ' + $nm) -match 'WPS|Excel|Ket|Kingsoft|表格|工作簿|et\.exe|wps\.exe')) { continue }
+                $windows += , @{ cls = $cn; title = $nm }
+                if ($windows.Count -ge 10) { break }
+            }
+            return @{
+                supported    = $true
+                window       = $(if ($win) { [string]$win.el.Current.Name } else { $null })
+                matchedClass = $(if ($win) { $win.cls } else { $null })
+                windows      = $windows
+            }
+        }
+        'uiaribbon' {
+            # 加载项加的选项卡和按钮，在 UIA 里看不看得见。看得见才谈得上"程序去点它"。
+            # 只在功能区范围内找：整窗 FindAll Descendants 会把表格里每个格子都算进来。
+            if (-not (Ensure-Uia)) { return @{ supported = $false; error = $script:UiaError } }
+            $win = Get-MainWindow
+            if (-not $win) { return @{ supported = $true; window = $null; tabs = @(); toolbars = @() } }
+            $tabEls = @()
+            $tabEls += Get-ElementsByType $win.el ([System.Windows.Automation.ControlType]::Tab) 40
+            $tabEls += Get-ElementsByType $win.el ([System.Windows.Automation.ControlType]::TabItem) 40
+            $tabs = @()
+            foreach ($t in $tabEls) {
+                $tabName = ''
+                try { $tabName = [string]$t.Current.Name } catch { }
+                $buttons = @()
+                foreach ($b in (Get-ElementsByType $t ([System.Windows.Automation.ControlType]::Button) 40)) {
+                    $bn = ''
+                    try { $bn = [string]$b.Current.Name } catch { }
+                    if ($bn -and $buttons.Count -lt 15) { $buttons += $bn }
+                }
+                $tabs += , @{ name = $tabName; buttonCount = $buttons.Count; buttons = $buttons }
+            }
+            $toolbars = @()
+            foreach ($tb in (Get-ElementsByType $win.el ([System.Windows.Automation.ControlType]::ToolBar) 6)) {
+                $tn = ''
+                try { $tn = [string]$tb.Current.Name } catch { }
+                $c = (Get-ElementsByType $tb ([System.Windows.Automation.ControlType]::Button) 60).Count
+                $toolbars += , @{ name = $tn; buttons = $c }
+            }
+            return @{ supported = $true; window = [string]$win.el.Current.Name; cls = $win.cls; tabs = $tabs; toolbars = $toolbars }
         }
         'open' {
             $app = Get-App
@@ -375,7 +481,7 @@ function Invoke-Op($op, $a) {
                 }
             }
             if (-not $ws) { throw ('建工作表失败 —— ' + ($errors -join ' | ')) }
-            if ($a.name) { $ws.Name = [string]$a.name }
+            if ($a.sheet) { $ws.Name = [string]$a.sheet }
             if ($a.visible) { $ws.Visible = [int]$a.visible }
             if ($a.marker) { $ws.Cells.Item(1, 1).Value2 = [string]$a.marker }
             $index = $null
