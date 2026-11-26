@@ -628,8 +628,13 @@ var MaskEngine = (function () {
         if (last > lastNeeded) {
             ws.Range(ws.Cells.Item(lastNeeded + 1, col), ws.Cells.Item(last, col)).ClearContents();
         }
-        for (var i = 0; i < chunks.length; i++) {
-            ws.Cells.Item(2 + i, col).Value2 = chunks[i];
+        // 分片一次写成整块区域：密文按 20000 字符切分后本来就是一列连续单元格，
+        // 逐格 Value2 写入在真机上要走几百次 COM 调用（27 万格的映射表约 220 片，
+        // 保存因此多花数秒）；一次 Range 赋值只走一次。
+        if (chunks.length) {
+            var matrix = [];
+            for (var mi = 0; mi < chunks.length; mi++) { matrix.push([chunks[mi]]); }
+            ws.Range(ws.Cells.Item(2, col), ws.Cells.Item(1 + chunks.length, col)).Value2 = matrix;
         }
     }
 
