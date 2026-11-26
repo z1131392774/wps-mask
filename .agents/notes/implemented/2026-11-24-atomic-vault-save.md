@@ -15,7 +15,7 @@ The same read treated a damaged table as new, which made tampering and corruptio
 Make the save transactional through a backup column, and make the load distinguish "new document" from "unreadable table":
 
 - The vault sheet keeps column A as the live ciphertext (A1 notice, A2 onward chunks) and column B as the previous ciphertext (B1 backup marker, B2 onward).
-- `saveVault()` copies the current readable ciphertext (A, else B) into B, reads B back and checks the marker; it then writes A, reads the whole chunk back, and decrypts it to compare with the plaintext it meant to save. Any failure rolls A back from the backup (or clears it when there was no previous table), keeps the readable backup, and throws an error naming which of the three outcomes happened.
+- `saveVault()` backs up the current readable ciphertext (A when A parses; otherwise B when B parses, else A's raw bytes), reads the backup back and checks the marker; it then writes A and reads it back, comparing the ciphertext with the one it just produced — AES is deterministic, so equal ciphertext implies equal plaintext and no second decrypt is needed. Any failure rolls A back from the backup (or clears it when there was no previous table), keeps the readable backup, and throws an error naming which of the three outcomes happened.
 - `loadVault()`: no hidden sheet → new document, empty vault. Sheet present but main ciphertext empty → error (`映射表密文为空，为保护数据不返回空映射表…`). Main ciphertext unreadable but backup readable → use the backup and mark the vault `recovered`, so the panel can say `映射表损坏，已用备份恢复，请重新保存`. Both unreadable → decryption/content error.
 - `migrateVault()` only rewrites old-format buckets when the stored version is below 2; a current table is returned untouched.
 
