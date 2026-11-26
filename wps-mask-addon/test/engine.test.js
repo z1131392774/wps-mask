@@ -1995,5 +1995,230 @@ ok(delRes60b.dropped === true && delRes60b.errors.length === 0,
 ok(delApp60.sheets.filter(function (s) { return s.Name === Engine.VAULT_SHEET; }).length === 0,
     '重试后映射表已删除');
 
+/* ---------- 61. A 列正常时不再整列读备份 ---------- */
+console.log('\n[61] vault 读写：A 列正常时不读备份列');
+// 包一层 Cells.Item / Range：统计"值读取"次数（End 定位、ClearContents 不算读值）。
+// 映射表列号 2 是备份列；beforeBackupWrite 只统计备份写入之前的 B 列值读取——
+// 那才是"为了决定备份哪一份而读旧备份"的读，写完之后的读回校验属于保存协议，要保留。
+function watchVaultIo(a, trackBackupWrite) {
+    const sheet = a.sheets.filter(function (s) { return s.Name === Engine.VAULT_SHEET; })[0];
+    const st = {
+        valueReads: 0, bValueReads: 0, rangeCalls: 0,
+        beforeBackupWrite: 0, backupWritten: false
+    };
+    function wrap(rng, isBColumn) {
+        const d = Object.getOwnPropertyDescriptor(rng, 'Value2');
+        const w = Object.create(rng);
+        Object.defineProperty(w, 'Value2', {
+            configurable: true,
+            get: function () {
+                st.valueReads++;
+                if (isBColumn) {
+                    st.bValueReads++;
+                    if (!st.backupWritten) { st.beforeBackupWrite++; }
+                }
+                return d.get.call(rng);
+            },
+            set: d.set
+        });
+        return w;
+    }
+    const origCell = sheet.Cells.Item;
+    const origRange = sheet.Range;
+    sheet.Cells.Item = function (r, c) {
+        return wrap(origCell.call(this, r, c), c === 2);
+    };
+    sheet.Range = function (x, y) {
+        const rng = origRange.call(this, x, y);
+        st.rangeCalls++;
+        return wrap(rng, rng.col <= 2 && rng.col + rng.cols - 1 >= 2);
+    };
+    if (trackBackupWrite) {
+        a.setWriteHook(function (info) {
+            if (info.sheet === Engine.VAULT_SHEET && info.col === 2) { st.backupWritten = true; }
+            return null;
+        });
+    }
+    st.restore = function () {
+        sheet.Cells.Item = origCell;
+        sheet.Range = origRange;
+        if (trackBackupWrite) { a.setWriteHook(null); }
+    };
+    return st;
+}
+
+const lazyApp61 = new MockWPS();
+const lazyVault61 = Engine.loadVault(lazyApp61);
+lazyVault61.maps['text|懒|1'] = { 's:甲': '懒1', 's:乙': '懒2' };
+Engine.saveVault(lazyApp61, lazyVault61);          // 第一次：A 有密文，B 空
+Engine.saveVault(lazyApp61, lazyVault61);          // 第二次：B 有上一份完整密文
+ok(String(lazyApp61.getCell(Engine.VAULT_SHEET, 1, 2)).indexOf('备份') >= 0,
+    '前置：B1 已是备份标记，B 列有整列旧密文');
+
+const ioLoad61 = watchVaultIo(lazyApp61, false);
+const loaded61 = Engine.loadVault(lazyApp61);
+ioLoad61.restore();
+ok(ioLoad61.bValueReads === 0, 'loadVault（A 正常）读 B 列值 0 次，实际 ' + ioLoad61.bValueReads);
+ok(JSON.stringify(loaded61.maps) === JSON.stringify(lazyVault61.maps),
+    'loadVault 仍读到完整映射');
+
+const ioSave61 = watchVaultIo(lazyApp61, true);
+Engine.saveVault(lazyApp61, lazyVault61);
+ioSave61.restore();
+ok(ioSave61.beforeBackupWrite === 0,
+    'saveVault 决定旧备份时不读 B 列（值读取 0 次），实际 ' + ioSave61.beforeBackupWrite);
+ok(ioSave61.backupWritten === true && ioSave61.bValueReads > 0,
+    '旧备份没被白读，但备份写入 + 读回校验照常进行：backupWritten=' + ioSave61.backupWritten +
+    '，校验读 B ' + ioSave61.bValueReads + ' 次');
+
+// A 坏了才读备份：懒读不是不读
+lazyApp61.grid[Engine.VAULT_SHEET + '!2,1'] = 'M1:corrupt';
+const ioFallback61 = watchVaultIo(lazyApp61, false);
+const fallback61 = Engine.loadVault(lazyApp61);
+ioFallback61.restore();
+ok(fallback61.recovered === true && ioFallback61.bValueReads > 0,
+    'A 列坏了才读 B 列并恢复：recovered=' + fallback61.recovered +
+    '，B 值读取 ' + ioFallback61.bValueReads + ' 次');
+
+/* ---------- 62. saveVault 正常路径不再做第二次解密 ---------- */
+console.log('\n[62] saveVault 正常路径只解密 1 次（读回校验不再解密）');
+const aesModule62 = require(path.join(__dirname, '..', 'wpsmask_1.0.0', 'js', 'aes.js'));
+const decApp62 = new MockWPS();
+const decVault62 = Engine.loadVault(decApp62);
+decVault62.maps['text|解|1'] = { 's:甲': '解1' };
+Engine.saveVault(decApp62, decVault62);
+decVault62.maps['text|解|1']['s:乙'] = '解2';
+const origDecrypt62 = aesModule62.decrypt;
+let decrypts62 = 0;
+aesModule62.decrypt = function (cipher) {
+    decrypts62++;
+    return origDecrypt62.call(this, cipher);
+};
+let saveErr62 = null;
+try { Engine.saveVault(decApp62, decVault62); } catch (e) { saveErr62 = e; }
+aesModule62.decrypt = origDecrypt62;
+ok(saveErr62 === null, '保存成功' + (saveErr62 ? '：' + saveErr62.message : ''));
+ok(decrypts62 === 1, '只解密 1 次（仅是判断旧 A 能否解析），读回校验不再整份解密：实际 ' + decrypts62);
+const reread62 = Engine.loadVault(decApp62);
+ok(JSON.stringify(reread62.maps) === JSON.stringify(decVault62.maps), '读回校验通过，落盘数据正确');
+
+/* ---------- 63. vaultStamp：采样戳 ---------- */
+console.log('\n[63] vaultStamp 无表/稳定/保存后变化/异常降级');
+const stampApp63 = new MockWPS();
+ok(Engine.vaultStamp(stampApp63) === '', '没有隐藏表 → 空串');
+const stampVault63 = Engine.loadVault(stampApp63);
+stampVault63.maps['text|戳|1'] = { 's:甲': '戳1' };
+Engine.saveVault(stampApp63, stampVault63);
+const stamp63a = Engine.vaultStamp(stampApp63);
+ok(typeof stamp63a === 'string' && stamp63a.length > 0, '保存后有非空字符串戳：' + stamp63a);
+ok(Engine.vaultStamp(stampApp63) === stamp63a, '同内容多次调用结果相同');
+
+const ioStamp63 = watchVaultIo(stampApp63, false);
+const stamp63b = Engine.vaultStamp(stampApp63);
+ioStamp63.restore();
+ok(stamp63b === stamp63a, '加包装观测不影响返回值');
+ok(ioStamp63.valueReads <= 4 && ioStamp63.rangeCalls === 0 && ioStamp63.bValueReads === 0,
+    '只读 ≤4 个单元格、0 次 Range（不整列读）、0 次读备份：valueReads=' +
+    ioStamp63.valueReads + ' ranges=' + ioStamp63.rangeCalls);
+
+let stampDecrypts63 = 0;
+aesModule62.decrypt = function (cipher) {
+    stampDecrypts63++;
+    return origDecrypt62.call(this, cipher);
+};
+Engine.vaultStamp(stampApp63);
+aesModule62.decrypt = origDecrypt62;
+ok(stampDecrypts63 === 0, 'vaultStamp 不解密，实际解密 ' + stampDecrypts63 + ' 次');
+
+Engine.saveVault(stampApp63, stampVault63);
+const stamp63c = Engine.vaultStamp(stampApp63);
+ok(stamp63c !== stamp63a, '同内容再保存一次后戳必变（新随机 IV）：' + stamp63a + ' → ' + stamp63c);
+stampVault63.maps['text|戳|1']['s:丙'] = '戳3';
+Engine.saveVault(stampApp63, stampVault63);
+ok(Engine.vaultStamp(stampApp63) !== stamp63c, '保存新内容后戳再变');
+
+// 异常降级：读失败返回稳定 ''
+const stampSheet63 = stampApp63.sheets.filter(function (s) { return s.Name === Engine.VAULT_SHEET; })[0];
+const origCell63 = stampSheet63.Cells.Item;
+stampSheet63.Cells.Item = function () { throw new Error('模拟宿主读取失败'); };
+const stamp63err = Engine.vaultStamp(stampApp63);
+ok(stamp63err === '', '读取异常降级为稳定空串：' + JSON.stringify(stamp63err));
+stampSheet63.Cells.Item = origCell63;
+ok(Engine.vaultStamp(stampApp63) === Engine.vaultStamp(stampApp63), '异常解除后戳恢复稳定');
+
+// 表存在但空（首次保存回滚清空后的形态）：和 loadVault 的"新文档"判定一致 → ''
+const emptyApp63 = new MockWPS();
+emptyApp63.ActiveWorkbook.addSheet(Engine.VAULT_SHEET);
+ok(Engine.vaultStamp(emptyApp63) === '', '表存在但既无标记也无密文 → 空串（同 loadVault 新文档判定）');
+emptyApp63.grid[Engine.VAULT_SHEET + '!1,1'] = '半写状态';
+ok(Engine.vaultStamp(emptyApp63) !== '', '表里有标记但密文缺失 → 仍给非空戳（表确实在）');
+
+// 删表后回到 ''
+Engine.dropVault(stampApp63);
+ok(Engine.vaultStamp(stampApp63) === '', '删表后回到空串');
+stampVault63.maps['text|戳|1']['s:丁'] = '戳4';
+ok(Engine.vaultStamp(stampApp63) === '', '没有表时即使内存里有 vault 也返回空串');
+
+/* ---------- 64. saveVault 成功后清掉 recovered 标记（面板缓存 vault 不重复提示） ---------- */
+console.log('\n[64] 保存成功后清掉 recovered 标记');
+// 造一份"主密文坏、只能从备份恢复"的文档：恢复出来的 vault 带不可枚举 recovered 标记
+function recoveredDoc64(tag) {
+    const a = new MockWPS();
+    const v = Engine.loadVault(a);
+    v.maps['text|恢复|' + tag] = { 's:甲': '恢复' + tag };
+    Engine.saveVault(a, v);                              // A 当前密文
+    Engine.saveVault(a, v);                              // B 上一份完整备份
+    a.grid[Engine.VAULT_SHEET + '!2,1'] = 'M1:corrupt';  // 主密文坏
+    const r = Engine.loadVault(a);
+    ok(r.recovered === true, '[' + tag + '] 前置：主密文坏时从备份恢复并打 recovered 标记');
+    return { app: a, vault: r };
+}
+
+// (a) 保存成功：标记清掉，面板缓存的这份 vault 不会再重复提示"已用备份恢复"
+const rec64 = recoveredDoc64('a');
+Engine.saveVault(rec64.app, rec64.vault);
+ok(!('recovered' in rec64.vault) && rec64.vault.recovered === undefined,
+    '保存成功后内存 vault 上不再有 recovered 标记：' + JSON.stringify(Object.keys(rec64.vault)));
+const reread64 = Engine.loadVault(rec64.app);
+ok(!Object.prototype.hasOwnProperty.call(reread64, 'recovered') && reread64.recovered === undefined,
+    '写成功后再 loadVault 也不带 recovered（新密文已落在 A 列）');
+ok(JSON.stringify(reread64.maps) === JSON.stringify(rec64.vault.maps), '读回数据与刚保存的一致');
+
+// (b) 保存失败且回滚也失败：不清标记，下一次 loadVault 仍要如实报告"来自备份"
+const fail64 = recoveredDoc64('b');
+fail64.app.setWriteHook(function (info) {
+    // A 列每一片都写不进去：新密文写失败 + 回滚回写也失败（核验"不静默"最坏路径）
+    return info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row >= 2 ? 'throw' : null;
+});
+let failErr64 = null;
+try { Engine.saveVault(fail64.app, fail64.vault); } catch (e) { failErr64 = e; }
+fail64.app.clearWriteHook();
+ok(!!failErr64 && /映射表保存失败/.test(failErr64.message) && failErr64.rollback.ok === false &&
+    /回滚未完成/.test(failErr64.message),
+    '保存失败仍 loud、回滚结果如实上报：' + (failErr64 && failErr64.message));
+ok(fail64.vault.recovered === true,
+    '保存失败/回滚时不清 recovered 标记（失败路径不静默假装干净）');
+const afterFail64 = Engine.loadVault(fail64.app);
+ok(afterFail64.recovered === true &&
+    JSON.stringify(afterFail64.maps) === JSON.stringify(fail64.vault.maps),
+    '失败后重新 loadVault 仍从备份恢复并提示 recovered=true');
+
+// (c) 普通的保存失败、回滚成功：也不清标记（面板手里仍是"从备份恢复"的那份，别假装干净）
+const rb64 = recoveredDoc64('c');
+let threw64 = false;
+rb64.app.setWriteHook(function (info) {
+    if (!threw64 && info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 2) {
+        threw64 = true;
+        return 'throw';
+    }
+    return null;
+});
+let rbErr64 = null;
+try { Engine.saveVault(rb64.app, rb64.vault); } catch (e) { rbErr64 = e; }
+rb64.app.clearWriteHook();
+ok(!!rbErr64 && rbErr64.rollback.ok === true && /已回滚/.test(rbErr64.message),
+    '保存失败但回滚成功：' + (rbErr64 && rbErr64.message));
+ok(rb64.vault.recovered === true, '回滚成功时同样不清 recovered 标记（失败不假装干净）');
+
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

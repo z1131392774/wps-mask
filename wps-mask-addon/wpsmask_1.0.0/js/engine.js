@@ -685,13 +685,13 @@ var MaskEngine = (function () {
         if (!ws) { return emptyVault(); }
         var marker = readCellText(ws, 1, 1);
         var cipherA = readColumnText(ws, 1);
-        var hasBackup = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER;
-        var cipherB = hasBackup ? readColumnText(ws, BACKUP_COL) : '';
         var a = tryParseVault(cipherA);
         if (a.ok) { return a.vault; }
-        // 主密文坏了/空了但备份完整：返回上一份完整映射，绝不静默返回空表
+        // A 列可解析时上面就返回了：正常的映射表一次也不读备份列（每读一列都是整列 I/O）。
+        // A 坏了/空了才读备份区；主密文坏了但备份完整：返回上一份完整映射，绝不静默返回空表
+        var hasBackup = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER;
         if (hasBackup) {
-            var b = tryParseVault(cipherB);
+            var b = tryParseVault(readColumnText(ws, BACKUP_COL));
             if (b.ok) { return markRecovered(b.vault); }
         }
         // 既没有密文也没有本加载项的标记：这不是本加载项维护过的表（新文档）
@@ -840,13 +840,18 @@ var MaskEngine = (function () {
         ensureVaultMarker(ws);
 
         var oldA = readColumnText(ws, 1);
-        var oldB = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER ? readColumnText(ws, BACKUP_COL) : '';
         // 备份哪一份：优先当前可读的 A 区；A 区已坏但备份可读时保留可读的那份，
         // 不要用坏数据覆盖备份。都坏时保留 A 区原始字节，至少不丢现场。
+        // A 区可解析是正常路径，这时不读 B 列：每次保存都整列读一遍旧备份纯属白读。
         var backup = '';
-        if (tryParseVault(oldA).ok) { backup = oldA; }
-        else if (tryParseVault(oldB).ok) { backup = oldB; }
-        else if (oldA) { backup = oldA; }
+        var oldB = '';
+        if (tryParseVault(oldA).ok) {
+            backup = oldA;
+        } else {
+            oldB = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER ? readColumnText(ws, BACKUP_COL) : '';
+            if (tryParseVault(oldB).ok) { backup = oldB; }
+            else if (oldA) { backup = oldA; }
+        }
 
         // 1. 备份旧密文并读回校验；失败就停在这里，A 区一个字节都不动
         if (backup && backup !== oldB) {
@@ -871,15 +876,66 @@ var MaskEngine = (function () {
             throw vaultSaveFailure('写入新密文失败', eWrite, rollbackVault(ws, backup));
         }
 
-        // 3. 读回校验：先比字符串，再解密比对 JSON —— 宿主可能悄悄吞掉赋值或转换内容
+        // 3. 读回校验：宿主可能悄悄吞掉赋值或转换内容。只比密文字符串就够——
+        // AES 解密是确定性的，读回与刚加密出的 cipher 完全相同，解密结果必然等于 json，
+        // 再解密整份密文只是一次纯浪费（保存耗时里占比最大的那一半）。解密正确性由 aes.test 覆盖。
         try {
             var back = readColumnText(ws, 1);
             if (back !== cipher) { throw new Error('读回内容与写入内容不一致'); }
-            if (Cipher.decrypt(back) !== json) { throw new Error('读回内容解密后与要保存的数据不一致'); }
         } catch (eVerify) {
             throw vaultSaveFailure('写入后校验未通过', eVerify, rollbackVault(ws, backup));
         }
+        // 新密文已经落盘，内存里这一份不再是"从备份恢复的临时数据"。面板会缓存 vault
+        // 对象并复用，留着 recovered 会让每次 refresh 都重复提示"从备份恢复"。
+        // 只改内存、不影响 JSON（不可枚举），保存失败/回滚路径不执行到这里，标记照旧保留：
+        // 下一次 loadVault 仍要如实报告主密文坏了、数据来自备份。
+        try {
+            delete vault.recovered;
+        } catch (eDelRec) {
+            // 调用方冻结了 vault 时删不掉：只是面板会多提示一次，落盘数据不受影响
+        }
         return ws;
+    }
+
+    // FNV-1a（32 位）。结果只用来判"内容变没变"，不参与文件格式。
+    function fnv1a(text) {
+        var h = 0x811c9dc5;
+        for (var i = 0; i < text.length; i++) {
+            h ^= text.charCodeAt(i);
+            // 32 位乘法拆成高低两个 16 位：直接 h * 16777619 会超过 2^53，整数精度丢失
+            h = ((h & 0xffff) * 0x01000193 + (((h >>> 16) * 0x01000193 & 0xffff) << 16)) >>> 0;
+        }
+        return h >>> 0;
+    }
+
+    // 映射表戳：面板用来判断"保存后映射表有没有变"，不解密、不整列读。
+    // 只读 4 个以内的单元格：A1 标记、A 列末行（End 定位，不是整列扫描）、首/中/末片各一格。
+    // 密文用随机 IV，保存一次整列都会变，采样足以让戳变化；同内容多次调用结果相同。
+    // 无隐藏表（或空表，loadVault 也按"新文档"处理）返回 ''。读失败也返回稳定的 ''：
+    // 面板只需要"变没变"，真正读取映射表时 loadVault 会 loud 报错，这里不重复抛。
+    function vaultStamp(app) {
+        try {
+            var wb = app.ActiveWorkbook;
+            if (!wb) { return ''; }
+            var ws = findSheet(wb, VAULT_SHEET);
+            if (!ws) { return ''; }
+            var marker = readCellText(ws, 1, 1);
+            var last = lastRowInColumn(ws, 1);
+            if (!marker && last < 2) { return ''; }
+            var parts = [String(last), String(marker.length), String(fnv1a(marker))];
+            // 首/中/末片：last=2 时三处重叠，去重后只读一格
+            var rows = [2, Math.floor((2 + last) / 2), last];
+            for (var i = 0; i < rows.length; i++) {
+                if (rows[i] < 2) { continue; }
+                if (i > 0 && rows[i] === rows[i - 1]) { continue; }
+                var text = readCellText(ws, rows[i], 1);
+                parts.push(String(text.length), String(fnv1a(text)));
+            }
+            return parts.join(':');
+        } catch (eStamp) {
+            // 见上：读取失败降级为 ''，错误由 loadVault 在真正需要映射表时报告
+            return '';
+        }
     }
 
     // 删掉隐藏的映射表。先按记录把标记边框恢复掉（区域记录就在这张表里，删完就找不到
@@ -2338,6 +2394,7 @@ var MaskEngine = (function () {
         loadVault: loadVault,
         saveVault: saveVault,
         dropVault: dropVault,
+        vaultStamp: vaultStamp,
         defaultCfg: defaultCfg,
         suffixDigits: suffixDigits,
         guessMode: guessMode,
