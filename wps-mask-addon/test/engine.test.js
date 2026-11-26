@@ -904,26 +904,29 @@ ok(!!svErrA32 && /已回滚/.test(svErrA32.message) && svErrA32.rollback.ok === 
 ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === savedMaps32,
     '第一片失败后 loadVault 仍拿到上一份完整映射');
 
-// (b) 中间片写失败：前一片已写新内容，回滚仍要恢复整份
-let midThrew32 = false;
+// (b) 多片密文合并成一次区域赋值：写钩子只看到一个多行区域，不再逐片调用
+let batch32 = null;
 atomApp32.setWriteHook(function (info) {
-    if (!midThrew32 && info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 3) {
-        midThrew32 = true;
-        return 'throw';
+    if (info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row >= 2) {
+        batch32 = { row: info.row, rows: info.rows, single: info.single };
     }
     return null;
 });
-let svErrB32 = null;
-try { Engine.saveVault(atomApp32, atomVault32); } catch (e) { svErrB32 = e; }
+Engine.saveVault(atomApp32, atomVault32);
 atomApp32.clearWriteHook();
-ok(!!svErrB32 && /已回滚/.test(svErrB32.message), '中间片写失败 → 回滚：' + (svErrB32 && svErrB32.message));
-ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === savedMaps32,
-    '中间片失败后 loadVault 仍是上一份完整映射');
+ok(!!batch32 && batch32.single === false && batch32.rows > 1 && batch32.rows >= chunkRows32 - 1,
+    '多片密文一次区域写入（' + chunkRows32 + ' 片）：' + JSON.stringify(batch32));
+ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === JSON.stringify(atomVault32.maps),
+     '整块写入后内容完整（含新增记录）');
 
 // (c1) 宿主静默吞掉赋值：读回校验必须发现，并回滚到上一份
 const tinyNew32 = { v: 2, settings: {}, maps: {}, ranges: [] };   // 新密文只有 1 片
+let ignoredOnce32 = false;
 atomApp32.setWriteHook(function (info) {
-    if (info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 2) { return 'ignore'; }
+    if (!ignoredOnce32 && info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row === 2) {
+        ignoredOnce32 = true;
+        return 'ignore';
+    }
     return null;
 });
 let svErrC32 = null;
@@ -931,8 +934,8 @@ try { Engine.saveVault(atomApp32, tinyNew32); } catch (e) { svErrC32 = e; }
 atomApp32.clearWriteHook();
 ok(!!svErrC32 && /校验未通过/.test(svErrC32.message) && svErrC32.rollback.ok === true,
     '静默吞赋值 → 读回校验失败并回滚：' + (svErrC32 && svErrC32.message));
-ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === savedMaps32,
-    '静默吞赋值后 loadVault 仍拿到上一份完整映射');
+ok(JSON.stringify(Engine.loadVault(atomApp32).maps) === JSON.stringify(atomVault32.maps),
+    '静默吞赋值后 loadVault 仍是回滚后的完整映射');
 
 // (c2) A 区此前只写了一半、备份可读：保存失败且回滚也失败时，由备份区兜底
 const silentApp32 = new MockWPS();
@@ -993,7 +996,7 @@ ok(!!svErrE32 && /备份未成功/.test(svErrE32.message), '备份区写失败 �
 ok(JSON.stringify(Engine.loadVault(backupApp32).maps) === beforeMaps32,
     '备份失败时 A 区原数据未改动');
 
-// (f) 正常再保存一次：A 区是新数据，B 区保留上一份
+// (f) 正常再保存一次：A 区是新数据，B 区保留可读备份
 atomApp32.setWriteHook(null);
 Engine.saveVault(atomApp32, atomVault32);
 const healed32 = Engine.loadVault(atomApp32);
@@ -1001,11 +1004,11 @@ ok(JSON.stringify(healed32.maps) === JSON.stringify(atomVault32.maps) && healed3
     'A 区校验通过后读取的是新数据');
 ok(String(atomApp32.getCell(Engine.VAULT_SHEET, 1, 2)).indexOf('备份') >= 0,
     'B1 写入备份标记');
-// 直接改坏 A 区：loadVault 用备份恢复"上一份"（不含新增记录）
+// 直接改坏 A 区：loadVault 用备份恢复最近一份完整映射
 atomApp32.grid[Engine.VAULT_SHEET + '!2,1'] = 'M1:corrupt';
 const fallback32 = Engine.loadVault(atomApp32);
-ok(fallback32.recovered === true && JSON.stringify(fallback32.maps) === savedMaps32,
-    'A 区被改坏 → 从备份恢复上一份完整映射');
+ok(fallback32.recovered === true && JSON.stringify(fallback32.maps) === JSON.stringify(atomVault32.maps),
+    'A 区被改坏 → 从备份恢复最近一份完整映射');
 
 /* ---------- 33. revert 只按登记区域与记录签名还原 ---------- */
 console.log('\n[33] revert 只处理 vault.ranges 记录过的矩形，并按记录的签名找桶');
@@ -2219,6 +2222,32 @@ rb64.app.clearWriteHook();
 ok(!!rbErr64 && rbErr64.rollback.ok === true && /已回滚/.test(rbErr64.message),
     '保存失败但回滚成功：' + (rbErr64 && rbErr64.message));
 ok(rb64.vault.recovered === true, '回滚成功时同样不清 recovered 标记（失败不假装干净）');
+
+
+/* ---------- 65. 大映射表分片写入：整块区域一次写入 ---------- */
+console.log('\n[65] 大映射表分片写入：整块区域一次写入');
+const app65 = new MockWPS();
+app65.setTable('Sheet1', 1, 1, [['x']]);
+const v65 = Engine.loadVault(app65);
+const map65 = {};
+for (let i = 1; i <= 6000; i++) { map65['s:假' + i] = '原' + i; }
+v65.maps['text|批量|1'] = map65;
+let writes65 = [];
+app65.setWriteHook(function (info) {
+    if (info.sheet === Engine.VAULT_SHEET && info.col === 1 && info.row >= 2) {
+        writes65.push({ row: info.row, rows: info.rows, single: info.single });
+    }
+    return null;
+});
+Engine.saveVault(app65, v65);
+app65.clearWriteHook();
+ok(writes65.length === 1 && writes65[0].single === false,
+    '密文分片只写一次 Value2（整块区域）：' + JSON.stringify(writes65));
+ok(writes65[0].rows > 1, '前置：密文确实跨多个分片（' + writes65[0].rows + ' 片）');
+const back65 = Engine.loadVault(app65);
+ok(Object.keys(back65.maps['text|批量|1']).length === 6000 &&
+    back65.maps['text|批量|1']['s:假6000'] === '原6000',
+    '整块写入后重新读取内容完整（6000 条，末条正确）');
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
