@@ -6,7 +6,12 @@
     'use strict';
 
     var E = MaskEngine;
-    var state = { model: null, vault: null, ready: false, headerTouched: false, selKey: '', edited: {} };
+    var state = {
+        model: null, vault: null, ready: false, headerTouched: false, selKey: '', edited: {},
+        // 映射表缓存：vaultStamp 是引擎给的内容戳（只读几个单元格、不解密），
+        // 戳没变就复用 state.vault，省掉一次整表解密
+        vaultStamp: '', vaultKnown: false
+    };
     var POLL_MS = 800;
 
     function $(id) { return document.getElementById(id); }
@@ -404,17 +409,35 @@
         return '；首行自动判定为字段名，若首行其实是数据，请取消勾选「首行是表头」';
     }
 
-    function refresh(useRemember, keepEdits) {
+    function refresh(useRemember, keepEdits, vaultOverride) {
         // keepEdits 为假时按映射表重读：面板上的临时改动不再带回，包括"哪些列被改过"这件事
         if (!keepEdits) { state.edited = {}; }
         var snap = keepEdits ? snapshotCfgs() : null;
         try {
             var a = getApp();
-            try {
-                state.vault = E.loadVault(a);
-            } catch (eVault) {
-                state.vault = null;
-                throw eVault;
+            if (vaultOverride !== undefined) {
+                // 调用方刚加载/保存过映射表：直接复用，省一次整表解密（3 万格约 2.7 秒）
+                state.vault = vaultOverride;
+                state.vaultKnown = true;
+                state.vaultStamp = E.vaultStamp(a);
+            } else {
+                // 内容戳没变就不解密。stamp 为空（没有隐藏表或读取失败）时不可缓存：
+                // 下次仍走 loadVault，真正需要映射表时的错误照常 loud 报出。
+                var stamp = E.vaultStamp(a);
+                if (state.vaultKnown && stamp && stamp === state.vaultStamp) {
+                    // 命中缓存：state.vault 就是上次 load/save 的成果，整表读取与解密都跳过
+                } else {
+                    try {
+                        state.vault = E.loadVault(a);
+                        state.vaultStamp = stamp;
+                        state.vaultKnown = !!stamp;
+                    } catch (eVault) {
+                        state.vault = null;
+                        state.vaultStamp = '';
+                        state.vaultKnown = false;
+                        throw eVault;
+                    }
+                }
             }
             var opts = {};
             if (state.ready) { opts.hasHeader = $('chkHeader').checked; }
@@ -531,8 +554,8 @@
             }
             // 写入后重新读取卡片：示例需要显示刚写入的值；本文档从此刻起有了已记设置，
             // 「重新识别」按钮才应显示。先刷新再设置状态，否则状态会被刷新清除。
-            state.vault = vault;
-            refresh(true);
+            // 刚保存的 vault 直接交给 refresh，省一次整表解密；keepEdits 保持 refresh(true) 原语义。
+            refresh(true, false, vault);
             setStatus(msg + note + '。', bad ? 'err' : 'ok');
         } catch (e) {
             setStatus('映射失败：' + MaskErrText(e), 'err');
@@ -565,8 +588,9 @@
                     saveErr = e2Save;
                 }
             }
-            state.vault = vault;
-            refresh(true);
+            // 保存成功时内存 vault 就是磁盘内容，直接交给 refresh 复用，省一次整表解密；
+            // 保存失败时映射表以磁盘为准，仍走 refresh 原来的读盘路径。
+            if (saveErr) { refresh(true); } else { refresh(true, false, vault); }
             if (saveErr) {
                 setStatus('映射表未保存：' + MaskErrText(saveErr) +
                     '，请勿关闭文档，重新映射前先检查映射表。', 'err');
@@ -605,9 +629,11 @@
                 setStatus('本文档没有映射表', '');
                 return;
             }
-            // 映射表和记忆一起没了：清掉面板里的旧配置，再刷新让卡片回到自动识别
+            // 映射表和记忆一起没了：清掉面板里的旧配置与缓存，再刷新让卡片回到自动识别
             state.vault = null;
             state.edited = {};
+            state.vaultStamp = '';
+            state.vaultKnown = false;
             refresh(true);
             var msg = '映射表已删除';
             if (res.cleared > 0) { msg += '，已恢复 ' + res.cleared + ' 块区域的边框'; }

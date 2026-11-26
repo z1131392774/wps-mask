@@ -73,12 +73,19 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function spyEngine(win) {
     const E = win.MaskEngine;
     const calls = [];
+    let loads = 0;
     const orig = {
         prepareMask: E.prepareMask,
         saveVault: E.saveVault,
         writeMask: E.writeMask,
         abortMask: E.abortMask,
-        revert: E.revert
+        revert: E.revert,
+        loadVault: E.loadVault
+    };
+    // loadVault 单独计数、不进 calls：既有断言比的是阶段顺序，读映射表不算阶段
+    E.loadVault = function (app) {
+        loads++;
+        return orig.loadVault.call(E, app);
     };
     E.prepareMask = function (model, vault) {
         calls.push('prepareMask');
@@ -102,13 +109,15 @@ function spyEngine(win) {
     };
     return {
         calls,
-        reset() { calls.length = 0; },
+        get loads() { return loads; },
+        reset() { calls.length = 0; loads = 0; },
         restore() {
             E.prepareMask = orig.prepareMask;
             E.saveVault = orig.saveVault;
             E.writeMask = orig.writeMask;
             E.abortMask = orig.abortMask;
             E.revert = orig.revert;
+            E.loadVault = orig.loadVault;
         }
     };
 }
@@ -489,6 +498,7 @@ function spyEngine(win) {
             '调用顺序（一次保存：阶段二不再补存边框记录）：' + spy.calls.join(' > '));
         ok(spy.calls.filter(c => c === 'saveVault').length === 1,
             '成功路径 saveVault 恰好 1 次：' + spy.calls.filter(c => c === 'saveVault').length);
+        ok(spy.loads === 1, '成功映射只解密一次映射表（refresh 复用内存 vault）：实际 ' + spy.loads);
         ok(/已映射/.test(d.getElementById('status').textContent),
             '状态栏：' + d.getElementById('status').textContent);
         ok(b.app.getCell('Sheet1', 2, 2) !== table[1][1],
@@ -512,6 +522,7 @@ function spyEngine(win) {
         d.getElementById('btnMask').click();
         ok(spy.calls.join(' > ') === 'prepareMask > saveVault > abortMask',
             '保存失败后 abortMask 撤回边框、不调用 writeMask，实际：' + spy.calls.join(' > '));
+        ok(spy.loads === 1, '保存失败路径不刷新（只解密一次）：实际 ' + spy.loads);
         ok(b.app.getCell('Sheet1', 2, 1) === table[1][0] &&
             b.app.getCell('Sheet1', 2, 2) === table[1][1],
             '映射表没保存成功时一个单元格都没写');
@@ -540,12 +551,24 @@ function spyEngine(win) {
             '写入失败后单元格仍是原值');
         ok(spy.calls.join(' > ') === 'prepareMask > saveVault > writeMask > saveVault',
             '写入失败后把回滚好的映射表写回磁盘（恰好一次），实际：' + spy.calls.join(' > '));
+        ok(spy.loads === 1, '写入失败路径不刷新（只解密一次）：实际 ' + spy.loads);
         const st = d.getElementById('status').textContent;
         ok(/写入失败/.test(st) && /重新映射/.test(st),
             '状态栏报写入失败并提示重新映射：' + st);
         ok(/回滚未完成/.test(st), '回滚写也被同一条写通道挡住时如实说回滚未完成：' + st);
         ok(!/已映射/.test(st), '不误报成功');
         b.app.clearWriteHook();
+        spy.restore();
+        b.dom.window.close();
+    }
+    {
+        // d) 普通 refresh（没传 vaultOverride）仍从映射表读：阶段 1 只省掉动作后的那次重复解密
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 1, '普通 refresh 仍解密映射表 1 次：实际 ' + spy.loads);
         spy.restore();
         b.dom.window.close();
     }
@@ -562,6 +585,7 @@ function spyEngine(win) {
         d.getElementById('btnRevert').click();
         ok(spy.calls.join(' > ') === 'revert > saveVault',
             'revert 之后保存映射表，实际：' + spy.calls.join(' > '));
+        ok(spy.loads === 1, '成功反映射只解密一次映射表（refresh 复用内存 vault）：实际 ' + spy.loads);
         ok(/已还原 11 格/.test(d.getElementById('status').textContent),
             '还原计数与 stats 一致：' + d.getElementById('status').textContent);
 
@@ -886,6 +910,164 @@ function spyEngine(win) {
         ok(/映射表已删除/.test(d.getElementById('status').textContent),
             '重试删除成功：' + d.getElementById('status').textContent);
         ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表已删掉');
+        b.dom.window.close();
+    }
+
+    console.log('\n[28] 映射表内容没变时 refresh 复用缓存，不再解密');
+    {
+        // a+g) 冷缓存读一次；之后内容没变，连续 refresh 都命中，卡片与按钮行为不变
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const E = b.dom.window.MaskEngine;
+        E.saveVault(b.app, E.loadVault(b.app));     // 造一个已有映射表的文档（表里是空 vault）
+        const spy = spyEngine(b.dom.window);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 1, '冷缓存第一次 refresh 解密映射表 1 次：实际 ' + spy.loads);
+        const cardsN = d.querySelectorAll('.card').length;
+        const names = Array.from(d.querySelectorAll('.card .nm')).map(el => el.textContent).join(',');
+        const modes = Array.from(d.querySelectorAll('.card .mode')).map(el => el.value).join(',');
+        const info = d.getElementById('selInfo').textContent;
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 1, '映射表没变，第二次 refresh 不再解密（缓存命中）：实际 ' + spy.loads);
+        ok(d.querySelectorAll('.card').length === cardsN &&
+            Array.from(d.querySelectorAll('.card .nm')).map(el => el.textContent).join(',') === names,
+            '缓存命中后卡片列数与字段名不变：' + names);
+        ok(Array.from(d.querySelectorAll('.card .mode')).map(el => el.value).join(',') === modes,
+            '缓存命中后各列映射方式不变：' + modes);
+        ok(d.getElementById('selInfo').textContent === info, '缓存命中后选区信息不变：' + info);
+        ok(d.getElementById('btnMask').disabled === false && d.getElementById('btnRevert').disabled === false,
+            '缓存命中后写入按钮仍可用');
+        spy.restore();
+        b.dom.window.close();
+    }
+    {
+        // c) 阶段1 的调用次数断言保留：动作成功后再 refresh 也命中缓存
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const spy = spyEngine(b.dom.window);
+        d.getElementById('btnMask').click();
+        ok(spy.loads === 1, 'doMask 成功只解密 1 次映射表（阶段1 断言保留）：实际 ' + spy.loads);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 1, 'doMask 之后普通 refresh 命中缓存，不再解密：实际 ' + spy.loads);
+        d.getElementById('btnRevert').click();
+        ok(spy.loads === 2, 'doRevert 成功只解密 1 次映射表（阶段1 断言保留）：实际 ' + spy.loads);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 2, 'doRevert 之后普通 refresh 命中缓存，不再解密：实际 ' + spy.loads);
+        spy.restore();
+        b.dom.window.close();
+    }
+
+    console.log('\n[29] 外部保存映射表后 stamp 失效：下次 refresh 重读并看到新配置');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const E = b.dom.window.MaskEngine;
+        E.saveVault(b.app, E.loadVault(b.app));
+        const spy = spyEngine(b.dom.window);
+        fire(d.getElementById('chkHeader'), 'change');     // 建立缓存
+        ok(spy.loads === 1, '先读一次映射表并缓存：实际 ' + spy.loads);
+        spy.restore();                                     // 外部写入不经过面板的记录器
+        const v = E.loadVault(b.app);
+        v.settings['姓名'] = { mode: 'keep' };              // 模拟另一窗口保存了「姓名=不处理」
+        E.saveVault(b.app, v);
+        const spy2 = spyEngine(b.dom.window);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy2.loads === 1, '外部保存后 stamp 变化，refresh 重读 1 次：实际 ' + spy2.loads);
+        const first = d.querySelector('.card');
+        ok(first.querySelector('.mode').value === 'keep',
+            '重读后使用外部保存的配置（姓名=不处理）：' + first.querySelector('.mode').value);
+        ok(/这一列不处理/.test(first.querySelector('.cb').textContent),
+            '卡片按外部配置显示「这一列不处理」：' + first.querySelector('.cb').textContent);
+        spy2.restore();
+        b.dom.window.close();
+    }
+
+    console.log('\n[30] 删除映射表后 refresh 回到自动识别，不读旧密文也不缓存空表');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const E = b.dom.window.MaskEngine;
+        // 改「备注」的前缀（不改变自动识别结果，删除后能明确看出旧设置丢了）
+        const prefix = d.querySelectorAll('.card')[3].querySelector('.f-prefix');
+        prefix.value = '编号';
+        fire(prefix, 'change');
+        d.getElementById('btnMask').click();
+        ok(/已映射/.test(d.getElementById('status').textContent),
+            '先映射一次并保存映射表：' + d.getElementById('status').textContent);
+        ok(d.querySelectorAll('.card')[3].querySelector('.f-prefix').value === '编号',
+            '刷新后沿用保存的「备注」前缀：' + d.querySelectorAll('.card')[3].querySelector('.f-prefix').value);
+
+        const spy = spyEngine(b.dom.window);
+        const origDrop = E.dropVault;
+        let dropRes = null;
+        E.dropVault = function (app) { dropRes = origDrop.call(E, app); return dropRes; };
+        d.getElementById('btnDrop').click();
+        E.dropVault = origDrop;
+        ok(dropRes && dropRes.dropped === true, 'dropVault 报告删除成功');
+        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表已删除');
+        ok(E.vaultStamp(b.app) === '', '删除后内容戳为空');
+        ok(/映射表已删除/.test(d.getElementById('status').textContent),
+            '状态栏：' + d.getElementById('status').textContent);
+        // dropVault 内部那次读是引擎闭包，从公开 API 数不到；这里数的是面板 refresh 的读取
+        ok(spy.loads === 1, '删除后 refresh 读一次空表（stamp 为空时不读密文）：实际 ' + spy.loads);
+        ok(d.querySelectorAll('.card')[3].querySelector('.f-prefix').value === '备注',
+            '删除后卡片回到自动识别（备注前缀=字段名）：' +
+            d.querySelectorAll('.card')[3].querySelector('.f-prefix').value);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 2, 'stamp 为空不缓存，下一次 refresh 仍走空表读取：实际 ' + spy.loads);
+        spy.restore();
+        ok(E.loadVault(b.app).ranges.length === 0, '独立 loadVault：删除后映射记录为空（ranges=[]）');
+        b.dom.window.close();
+    }
+
+    console.log('\n[31] 隐藏映射表被直接删除：stamp 变空，refresh 读空表且不缓存');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const E = b.dom.window.MaskEngine;
+        d.getElementById('btnMask').click();
+        const ws = b.app.sheets.filter(s => s.Name === '脱敏映射表')[0];
+        ok(!!ws, '映射表工作表已建立');
+        ws.Delete();                                       // 模拟用户取消隐藏后直接删表/宏删表
+        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '隐藏表已被直接删除');
+        const spy = spyEngine(b.dom.window);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 1, 'stamp 变空后 refresh 读一次空表：实际 ' + spy.loads);
+        ok(d.querySelectorAll('.card').length === 4,
+            '空表 refresh 仍按选区识别 4 列：' + d.querySelectorAll('.card').length);
+        fire(d.getElementById('chkHeader'), 'change');
+        ok(spy.loads === 2, 'stamp 为空不缓存，下一次 refresh 仍读空表：实际 ' + spy.loads);
+        spy.restore();
+        ok(E.loadVault(b.app).ranges.length === 0, '独立 loadVault：没有映射记录');
+        b.dom.window.close();
+    }
+
+    console.log('\n[32] 从备份恢复后保存成功：缓存里的 vault 不再重复提示损坏');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        d.getElementById('btnMask').click();
+        d.getElementById('btnRevert').click();             // 旧密文写进备份列
+        b.app.grid['脱敏映射表!2,1'] = 'broken-cipher';    // 主密文坏掉
+        fire(d.getElementById('chkHeader'), 'change');     // 重新读取：从备份恢复
+        ok(/映射表损坏，已用备份恢复/.test(d.getElementById('status').textContent),
+            '主密文坏时提示从备份恢复：' + d.getElementById('status').textContent);
+
+        d.getElementById('btnMask').click();               // 重新保存：引擎保存成功会清掉内存 vault 的 recovered
+        ok(/已映射/.test(d.getElementById('status').textContent),
+            '重新保存成功：' + d.getElementById('status').textContent);
+        const spy = spyEngine(b.dom.window);
+        fire(d.getElementById('chkHeader'), 'change');     // 普通 refresh 命中缓存，不再读盘
+        ok(spy.loads === 0, '保存成功后普通 refresh 命中缓存、不再解密：实际 ' + spy.loads);
+        ok(!/映射表损坏/.test(d.getElementById('status').textContent),
+            '保存成功后不再重复提示损坏：' + d.getElementById('status').textContent);
+        spy.restore();
         b.dom.window.close();
     }
 
