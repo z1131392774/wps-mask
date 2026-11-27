@@ -4,6 +4,8 @@ Status: implemented
 
 *[中文](2026-11-27-type-based-mixed-mapping_zh.md)*
 
+Updated 2026-11-27: the phone mode was retired by [a later decision](2026-11-27-retire-phone-and-simple-header.md). It shipped without a vault version bump or migration — no new phone fakes are generated, old buckets stay readable through their recorded signature, and an old `phone` setting is read as text. The phone paragraphs below record the state before that change.
+
 ## Problem
 
 Real account columns mix formats: a mobile number on one row, an email on the next, a landline on the third, a zero-padded code on the fourth. The [mixed-shape decision](2026-11-24-mixed-shape-columns.md) answered with a per-cell shape classifier: `shapeOf()` recognised mobile, email, landline, digits, alnum or text, and `genMixed` kept the shape with one generator per family. It preserved shape validity, at the price of becoming the most intricate branch in the engine — five shape regexes, five shape generators, a shape table in the docs, a separate "shape space" capacity failure per family, and a standing rule in `AGENTS.md` that every new shape is a contract.
@@ -38,7 +40,7 @@ Bulk mask, revert and drop run inside `MaskQuietHost`: ScreenUpdating off, calcu
 
 The vault stays at version 2 and `sigOf()` formulas do not change. No key changed meaning, `ranges` and `marks` are optional with `[]` defaults, and old v1/v2 documents, phone buckets and mixed buckets stay readable and revertible. The loose collision above is fixed without migration: `buildIndex()` keeps both the typed index (`n:`/`s:`/`b:`) and the loose index, and `prepareMask` now registers both `keyOf(fake)` and `looseOf(fake)` in `used`; `genNumber` checks both forms, so a new numeric fake can never take a value an old coerced fake already holds. Revert still tries the typed entry first and the loose entry second. Old buckets are reused as recorded, so a re-masked old document can keep old-shape fakes — documented in the behavior page, not hidden.
 
-The phone mode is now legacy: detection never returns it, but a saved setting from an old document can still select it. Its fakes are digit strings that a General cell stores as numbers, and revert recovers them through the loose index; retiring it is a P2 for a later change with its own version bump and migration, not part of this one.
+The phone mode was legacy after this change: detection never returned it, but a saved setting from an old document could still select it. Its fakes are digit strings that a General cell stores as numbers, and revert recovered them through the loose index. It was retired later without a version bump, as the update above records.
 
 ## Alternatives considered
 
@@ -48,7 +50,7 @@ The phone mode is now legacy: detection never returns it, but a saved setting fr
 
 **Force the majority type and accept the loss.** Rejected: it produces data that fails downstream validation, and a genuine mixed column has no majority worth trusting.
 
-**Bump `VAULT_VERSION` to 3 and migrate mixed and phone buckets to typed numbers.** Rejected for this change: registering the loose keys removes the collision without rewriting any vault, old buckets stay valid mapping records, and their signatures are unchanged. A version bump is reserved for a change to the format itself, such as retiring the phone mode; if that happens, the migration lands with the bump.
+**Bump `VAULT_VERSION` to 3 and migrate mixed and phone buckets to typed numbers.** Rejected for this change: registering the loose keys removes the collision without rewriting any vault, old buckets stay valid mapping records, and their signatures are unchanged. A version bump is reserved for a change to the stored format itself; the phone mode was later retired without one (see the update above).
 
 **Keep raw rollback writes and rely on the read-back check.** Rejected: a read-back failure can be reported, but it cannot restore leading zeros the host has already dropped. The loss has to be avoided before the write, not detected after it.
 

@@ -10,16 +10,15 @@ Select a range and replace every value with realistic fake data; the originals a
 | --- | --- |
 | Pick a range, map its data to random values | Ribbon tab "数据脱敏" → mapping panel, or the panel-free "快速映射" button |
 | One-to-one: the same value always maps to the same result | The table stores `original → mapped`; a repeat original resolves to its recorded entry, and distinct originals always get distinct results. Collisions are retried; an undersized value space fails with an error, never a duplicate |
-| Two kinds of mapped value: number and text | "Map to" dropdown per column: phone, number, text, mixed, leave alone |
+| Two kinds of mapped value: number and text | "Map to" dropdown per column: number, text, mixed, leave alone |
 | Numbers take parameters, uniform by default | Uniform (default), normal (mean/sd, outliers folded back into the interval), exponential (λ sets the decay); bounds and decimal places editable |
-| Phone numbers must be valid | 11 digits: a real 3-digit mobile prefix (e.g. 138, 150, 186) plus 8 random digits, unique within the column and never equal to the original |
 | Text is a prefix plus a random numeric suffix | Prefix defaults to the field name (e.g. 姓名37) and stays editable. Suffix digits default to the fewest that hold this column's non-blank cells with 10% headroom, so 41 customers get 姓名37, never 姓名0037; editable 1–8 |
 | Auto-detect the field name and type | Values are typed as number or text by their JavaScript type; a column becomes number, text or mixed. A mixed column maps numbers to numbers and strings to non-numeric text — the exact order is under [Detection order](docs/behavior.md#detection-order). Whole-column and whole-row selections are trimmed to their used cells first |
 | One-click reverse mapping, mapping stored encrypted | 「反映射回原值」 looks each cell up in the encrypted table and writes the original back, preserving number/text type and blanks; a text original is written with the host's text marker, so `008081` keeps its zeros and the cell format is unchanged. It only touches areas this add-in recorded as masked: expanding a selection is safe, and a second click is a no-op. A fake value that two originals could own is left alone and counted. The table is AES-128-CBC ciphertext in a hidden worksheet ([storage](docs/storage.md)) |
 | Remember the last settings for this document | Per-field type, distribution, parameters, and prefix are stored in the same encrypted blob, keyed by field name; a numeric interval only grows (union with the current data), so a wider column elsewhere never trips the old range; "重新识别" ignores them and re-detects |
 | See what is masked at a glance | Mapped areas get a purple dashed outline automatically, no panel needed; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click, changing appearance only |
 
-Detection, the header guess, messages and mixed columns are in [masking behavior](docs/behavior.md); the hidden table and its encryption limits are in [storage](docs/storage.md).
+Detection, the header rule, messages and mixed columns are in [masking behavior](docs/behavior.md); the hidden table and its encryption limits are in [storage](docs/storage.md).
 
 ## Install
 
@@ -75,7 +74,7 @@ A junction needs no admin rights or developer mode, and a hard link cannot point
 
 **Panel.** Select the range (whole column, whole row, or any block) and open "映射面板". It reads the selection and updates when it changes; there is no refresh button. Each column gets a card — detected type and a sample in the header, parameters on demand — then 「映射并写入」 replaces the range in place, and 「反映射回原值」 restores the areas this add-in masked in the selection; cells it never wrote are left untouched. Card settings you edit survive a selection refresh: they are remembered per sheet and column position.
 
-**Header row.** The checkbox 「首行是表头」 decides whether the first row is data. Checked: row 1 is never masked, and supplies the column name and the text prefix. Unchecked: row 1 is data, and detection may still guess it as a header — read the panel's 「首行为字段名」 / 「无表头」 label before writing. The full rule, and the warning shown when the guess is weak, is under [The header row](docs/behavior.md#the-header-row).
+**Header row.** The checkbox 「首行是表头」 decides whether the first row is data. Checked: row 1 is never masked, and supplies the column name and the text prefix. Unchecked: row 1 is data. A fresh selection starts from a guess — the box is checked when the selection starts at row 1 and the first row has a non-empty cell and no number: position and type, never cell wording. All-text data starting at row 1 is therefore guessed as a header; the panel says so, and unchecking the box is the fix. The full rule is under [The header row](docs/behavior.md#the-header-row).
 
 **Repeated masking does not stack.** A cell is skipped only when it lies in a range this add-in has already written and its value reverses through the table; the status line reports the count. Reverting subtracts the restored parts, so a second revert finds nothing to write. To map current values again, revert first.
 

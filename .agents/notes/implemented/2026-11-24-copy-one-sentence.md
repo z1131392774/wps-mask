@@ -4,6 +4,8 @@ Status: implemented
 
 *[中文](2026-11-24-copy-one-sentence_zh.md)*
 
+Updated 2026-11-27: the phone mode was retired, so the Phone hint row below is now history ([decision](2026-11-27-retire-phone-and-simple-header.md)). The copy rule itself stands.
+
 ## Problem
 
 The empty state carried two lines: "在表格里选一块区域" followed by "整列、整行或任意一块都行；选好后这里会自动列出每一列". The second line was a patch on the first — reassurance that "a region" meant anything, plus a promise about what happens next. The user's rule: do not append explanations to copy; if one sentence cannot say it clearly, the sentence is wrong.

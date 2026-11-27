@@ -4,6 +4,8 @@ Status: implemented
 
 *[中文](2026-11-24-first-real-run-fixes_zh.md)*
 
+Updated 2026-11-27: header detection no longer uses content keywords. It is one position-and-type rule, and empty cells still do not count in either direction ([decision](2026-11-27-retire-phone-and-simple-header.md)); the rest of this note stands.
+
 ## Problem
 
 The first run against a real workbook produced one hard failure and three complaints, and every one of them traced to something the mock could not see.
@@ -44,4 +46,4 @@ The panel reads the selection on open with a retry loop (20 × 250 ms, because t
 
 ## Consequences
 
-Two failure modes are gone but both fixes are now load-bearing: the derangement path is the only way a tight column can ever succeed, so `engine.test.js` runs it eight times per run to catch a regression that only appears sometimes. Header detection now tolerates gaps, which means a data row whose non-empty cells are mostly text and contain a field-name keyword (a stray "备注" in the data) could be mistaken for a header — narrow enough to accept, and the 首行是表头 checkbox is the escape hatch. Polling assumes reading `Selection.Row/Column/Rows.Count/Columns.Count` is cheap in WPS; unverified on a large workbook, and the interval is one constant if it needs raising.
+Two failure modes are gone but both fixes are now load-bearing: the derangement path is the only way a tight column can ever succeed, so `engine.test.js` runs it eight times per run to catch a regression that only appears sometimes. Header detection still ignores gaps, and without content cues an all-text data row starting at row 1 is taken for a header — narrow enough to accept, and the 首行是表头 checkbox is the escape hatch. Polling assumes reading `Selection.Row/Column/Rows.Count/Columns.Count` is cheap in WPS; unverified on a large workbook, and the interval is one constant if it needs raising.
