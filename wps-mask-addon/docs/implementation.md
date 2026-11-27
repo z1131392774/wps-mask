@@ -2,30 +2,30 @@
 
 *[中文](implementation_zh.md)*
 
-The contracts behind the rules in [AGENTS.md](../AGENTS.md). Read this before changing generation, classification or the vault format; the rules file keeps the one-line rules and links here for the reasoning and the traps.
+The contracts behind [AGENTS.md](../AGENTS.md). Read this before changing generation, classification or the vault; rules keep one-liners there.
 
 ## One-to-one mapping
 
-The table is keyed `n:`/`s:`/`b:` (number, string, boolean); probe `used[keyOf(candidate)]`, not `used[rawValue]`, or a colliding key reverts to the wrong original (one run in sixteen did).
+The table is keyed `n:`/`s:`/`b:` (number, string, boolean); probe `used[keyOf(candidate)]`, not `used[rawValue]`; a collision reverts wrongly. A loose index keeps coerced old fakes matchable; `used` records both forms.
 
-When a numeric interval only just holds the distinct values, permute the whole column with `sattolo()` (one cycle, no fixed points); generating value by value forces the last one onto itself, and a fixed offset is the original column rotated. `assignExact` computes the span before materialising: 1,000,000 is the ceiling, a non-finite bound is rejected, and a too-wide stretch falls back to random assignment. An interval too small fails naming the column by letter and header.
+When a numeric interval only just holds the distinct values, permute the column with `sattolo()` (one cycle, no fixed points); value-by-value generation forces the last onto itself; a fixed offset is the column rotated. `assignExact` computes the span before materialising: 1,000,000 is the ceiling, a non-finite bound is rejected, and a too-wide stretch falls back to random. An interval too small fails naming the column and header.
 
 ## Mixed columns
 
-Values are typed, not shaped. A number becomes one from the column range; a string goes through `genText`, which appends digits to the field-name prefix and guarantees a non-digit character. On revert, `writeColumnParts` prefixes every string with `'`, the host's text marker, so `008081` survives a general-format cell with format unchanged. Revert stays keyed on the original.
+Values are typed, not shaped. A number becomes one from the column range; a string goes through `genText`, which appends digits to the field-name prefix and guarantees a non-digit character. On revert, `writeColumnParts` prefixes every string with `'`, the host's text marker, so `008081` survives a general-format cell unchanged. A mixed batch with full recorded slots widens `num.max`; the write-failure rollback reuses `textForWrite`.
 
 ## Vault format
 
-`M1:`, `sigOf()` and `KEY_TEXT` are read by existing documents; change one and old buckets stop matching. Add a version field and migration in the same change, or say in the note why orphans are fine. Every `sigOf()` field must change the output; one that only changes the signature silently renames everyone, as `lang` did.
+`M1:`, `sigOf()` and `KEY_TEXT` are read by existing documents; change one and old buckets stop matching. Add a version field and migration in the same change, or say why orphans are fine. Every `sigOf()` field must change the output; one that only changes the signature silently renames everyone, as `lang` did.
 
-Remembered `min`/`max` are data, not policy: union with the current batch, grow only, then `absorbBucket()`. Keep a bucket that ranges still reference; never fall back to the global index for a missing recorded bucket — count those cells ambiguous. `pruneUnusedBuckets()` drops a bucket once no range references it.
+Remembered `min`/`max` are data, not policy: union with the batch, grow only, then `absorbBucket()`. Keep a bucket ranges still reference; never fall back to the global index for a missing one — count those cells ambiguous. `pruneUnusedBuckets()` drops buckets no range references.
 
-Saving is one write after a verified backup: the previous ciphertext is copied to column B and read back, then the new ciphertext is written to column A, read back and decrypted to compare; a failure rolls back or keeps the backup. Mapping, areas, settings and marks go into that one save; `prepareMask` paints the outline before it, and `abortMask` restores the pre-mask border state if the save fails. `checkWritten()` re-reads every written cell (with loose type tolerance) so a host that silently drops a write fails the batch instead of reporting success.
+Saving is one write after a verified backup: the previous ciphertext goes to column B and is read back, then the new one goes to column A and is read back to compare; a failure rolls back or keeps the backup. Mapping, areas, settings and marks share that save; `prepareMask` paints the outline before it, and `abortMask` restores the pre-mask border state if the save fails. `checkWritten()` re-reads every written cell (loose type tolerance), so a silently dropped write fails the batch. A failed rollback keeps base records plus `partial` records per unrestored column — per-row planned fake and original key, plus the column signature; revert compares each cell with that fake, never through a bucket.
 
 ## Masked-area outline
 
-`outlineAreas(vault)` unions row intervals per column (overlaps and adjacent records merge, signatures ignored), then merges adjacent columns with identical row unions. `readEdge()` returns `null` when line style, weight or colour is missing: a mixed edge is unknown, neither painted nor guessed. `clearMarkedEdge()` clears only cells still in the marker style, halves a mixed edge, and gives up after 4,096 blocks. The colour is the packed integer `15547004` (R124 G58 B237, #7C3AED); the hex literal reaches the host byte-reversed and measured red on device. `clearEdge()` writes colour, weight, then line style, because assigning weight can force the style back to solid. `refreshSheetMarks()` restores recorded styles, paints only known edges, and rolls a half-painted area back.
+`outlineAreas(vault)` unions row intervals per column (overlaps and adjacent records merge, signatures ignored), then identical-union adjacent columns. `readEdge()` returns `null` when line style, weight or colour is missing: a mixed edge is unknown, never painted or guessed. `clearMarkedEdge()` clears only marker-style cells, halves a mixed edge, and gives up after 4,096 blocks. The colour is the packed integer `15547004` (R124 G58 B237, #7C3AED); the hex literal reaches the host byte-reversed, measured red on device. `clearEdge()` writes colour, weight, then line style, because assigning weight can force the style back to solid. `refreshSheetMarks()` restores recorded styles, paints only known edges, and rolls a half-painted area back.
 
 ## Pane and ribbon rendering
 
-The pane avoids flex `gap`, CSS variables and grid: the browser version is unknown and those fail silently. It shows only type, a sample and parameters; counts belong to the status bar, and every state gets one sentence. Ribbon icons are SVG in `assets/icons/`, rendered to PNG by `tools/make-icons.mjs`; only a `getImage` callback shows one, `image=` is ignored. Screenshot at 260, 300 and 380 px with `node tools/preview-pane.mjs`.
+The fallback layout avoids flex `gap` and CSS variables: the browser version is unknown; those fail silently. Grid is enhancement only, inside `@supports (display: grid)`; an old engine ignores the block and keeps the fallback unchanged. It shows only type, a sample and parameters; counts belong to the status bar, every state gets one sentence. Ribbon icons are SVG in `assets/icons/`, rendered to PNG by `tools/make-icons.mjs`; only `getImage` shows one, `image=` is ignored. Screenshot at 260, 300, 380 px with `node tools/preview-pane.mjs`.

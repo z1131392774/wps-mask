@@ -1,8 +1,10 @@
 # Note: Masking a column that is not one kind of thing
 
-Status: implemented
+Status: implemented — superseded by the 2026-11-27 type-based mixed mapping note
 
 *[中文](2026-11-24-mixed-shape-columns_zh.md)*
+
+Superseded on 2026-11-27: [Mask a mixed column by JavaScript type, not by shape](2026-11-27-type-based-mixed-mapping.md) removed the shape mode described below. The record is kept for the shape taxonomy and the two generator defects it exposed; none of its shape rules are current.
 
 ## Problem
 
