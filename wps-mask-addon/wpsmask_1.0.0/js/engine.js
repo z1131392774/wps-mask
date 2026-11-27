@@ -120,11 +120,9 @@ var MaskEngine = (function () {
 
     /* ==================== 字段识别 ==================== */
 
-    var PHONE_HEADER = /手机|手机号|电话|联系方式|联络|号码|mobile|phone|tel|cell|msisdn|contact/i;
-
-    // 只看值的 JS 类型：数字换数字，文本换文本；不再识别手机号/邮箱/固话等形态。
+    // 只看值的 JS 类型：数字换数字，文本换文本。
     // 纯数字字符串仍算文本，避免写回时被 WPS 当数字转掉前导零。
-    function guessMode(header, samples) {
+    function guessMode(samples) {
         var hasNumber = false, hasText = false;
         for (var i = 0; i < samples.length; i++) {
             var v = samples[i];
@@ -139,11 +137,11 @@ var MaskEngine = (function () {
     /* ==================== 配置 ==================== */
 
     function numericStats(values) {
+        // 调用方只传 numbersOf() 筛出来的真 number；不再解析数字字符串
         var nums = [];
         for (var i = 0; i < values.length; i++) {
             var v = values[i];
             if (typeof v === 'number' && !isNaN(v)) { nums.push(v); }
-            else if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) { nums.push(Number(v)); }
         }
         if (nums.length === 0) { return null; }
         var min = nums[0], max = nums[0], sum = 0, dec = 0;
@@ -303,7 +301,7 @@ var MaskEngine = (function () {
     }
 
     function defaultCfg(header, values) {
-        var mode = guessMode(header, values);
+        var mode = guessMode(values);
         var h = textPrefix(header);
         if (mode === 'mixed') {
             return {
@@ -326,7 +324,6 @@ var MaskEngine = (function () {
     // 同一份映射空间的标识：配置一变，等于换了一套映射
     function sigOf(cfg) {
         if (!cfg) { return 'none'; }
-        if (cfg.mode === 'phone') { return 'phone'; }
         if (cfg.mode === 'mixed') { return 'mixed'; }
         if (cfg.mode === 'number') {
             return 'num|' + cfg.dist + '|' + cfg.min + '|' + cfg.max + '|' + cfg.dec +
@@ -339,20 +336,6 @@ var MaskEngine = (function () {
     }
 
     /* ==================== 生成器 ==================== */
-
-    var PHONE_PREFIX = ('130,131,132,133,134,135,136,137,138,139,145,147,149,150,151,152,153,155,156,157,158,159,' +
-        '162,165,166,167,170,171,172,173,175,176,177,178,180,181,182,183,184,185,186,187,188,189,191,198,199').split(',');
-
-    function genPhone(orig, used) {
-        for (var i = 0; i < 500; i++) {
-            var s = PHONE_PREFIX[rndInt(0, PHONE_PREFIX.length - 1)];
-            for (var k = 0; k < 8; k++) { s += rndInt(0, 9); }
-            // used 中的键一律采用 keyOf() 形式（"s:值"）；此处必须用同样的键查询，否则占位不会生效
-            if (s === orig || used[keyOf(s)]) { continue; }
-            return s;
-        }
-        throw new Error('手机号已经用满，无法再生成不重复的号码');
-    }
 
     function genNumber(cfg, orig, used) {
         var dec = cfg.dec || 0;
@@ -483,7 +466,6 @@ var MaskEngine = (function () {
     }
 
     // 混合列按值类型分派：数字换数字，文本换非数字文本。
-    // 文本不再识别手机号/邮箱/固话/账号形态；纯数字字符串也按文本处理。
     function genMixed(textCfg, orig, used) {
         if (typeof orig === 'number' && !isNaN(orig)) {
             var numCfg = textCfg.num;
@@ -1070,32 +1052,24 @@ var MaskEngine = (function () {
         return [[v]];
     }
 
-    function looksLikeHeader(row0, row1, top) {
-        // 空单元格不参与表头判断：选区多带一列空列，不应导致整张表的表头识别失败
-        var cells = 0, text = 0, keyword = false;
+    // 表头识别只用"位置 + 值类型"，不做任何内容识别：
+    // 选区从表格第 1 行开始（top === 1）、首行至少一个非空单元格、且首行没有任何
+    // JS number 类型的值 → 首行是表头；首行一旦出现数字就当数据。否则不是表头。
+    // 不看列名关键词，也不看文本占比："手机号/邮箱"这类列名不构成证据；数字字符串
+    // 仍是文本，纯数字字符串的首行按表头处理。
+    // 取舍：全文本数据从第 1 行开始时会被默认当成表头，面板上"首行已自动判定为字段名，
+    // 若是数据请取消勾选"的提示兜底；单行选区没有数据行，不判表头（analyze 只在 rows > 1 时调用）。
+    function looksLikeHeader(row0, top) {
+        if (top !== 1) { return false; }
+        var cells = 0;
         for (var i = 0; i < row0.length; i++) {
             var v = row0[i];
+            // 空单元格不参与判断：选区多带一列空列，不应导致整张表的表头识别失败
             if (isBlank(v)) { continue; }
+            if (typeof v === 'number' && !isNaN(v)) { return false; }
             cells++;
-            if (typeof v !== 'string') { continue; }
-            text++;
-            if (PHONE_HEADER.test(v) ||
-                /姓名|名称|地址|备注|金额|数量|日期|编号|部门|城市|邮箱|公司|产品|类型|状态|说明/.test(v)) {
-                keyword = true;
-            }
         }
-        if (!cells) { return false; }
-        if (text * 2 < cells) { return false; }
-        if (keyword) { return true; }
-        if (row1) {
-            for (var j = 0; j < row1.length; j++) {
-                if (typeof row1[j] === 'number' && !isBlank(row1[j])) { return true; }
-            }
-        }
-        // 全文本数据无法凭内容区分表头；按"选区从第 1 行开始即为表格首行"的惯例默认视为表头，
-        // 面板上可手动取消勾选。选到表头下方开始的全文本区域则默认按数据处理。
-        if (top === 1) { return true; }
-        return false;
+        return cells > 0;
     }
 
     /**
@@ -1157,7 +1131,7 @@ var MaskEngine = (function () {
             hasHeader = opts.hasHeader;
             headerAuto = false;
         } else {
-            hasHeader = rows > 1 && looksLikeHeader(data[0], data[1] || null, top);
+            hasHeader = rows > 1 && looksLikeHeader(data[0] || [], top);
             headerAuto = true;
         }
         if (hasHeader && rows < 2) { hasHeader = false; }
@@ -1234,6 +1208,9 @@ var MaskEngine = (function () {
         var out = copyCfg(base);
         for (var k in saved) { if (Object.prototype.hasOwnProperty.call(saved, k)) { out[k] = saved[k]; } }
         out.mode = saved.mode || base.mode;
+        // phone 模式已退役：旧文档记下的 phone 配置按文本类型处理。旧文档里的旧假值
+        // 仍由区域记录里的旧签名（'phone' 桶）还原，不迁移桶、不改 vault 格式。
+        if (out.mode === 'phone') { out.mode = 'text'; }
         // 混合列的数字子区间按本批数据重算：上次的区间只够上次那批数字，
         // 补行后新数字会撞满旧区间。文本前缀/位数是用户设置，照旧保留。
         if (out.mode === 'mixed') { out.num = base.num; }
@@ -2161,9 +2138,7 @@ var MaskEngine = (function () {
                     mapped = bucket[k];
                 } else {
                     try {
-                        if (cfg.mode === 'phone') {
-                            mapped = genPhone(String(v), used);
-                        } else if (cfg.mode === 'mixed') {
+                        if (cfg.mode === 'mixed') {
                             mapped = genMixed(textCfg, v, used);
                         } else if (cfg.mode === 'number') {
                             if (batch && Object.prototype.hasOwnProperty.call(batch, k)) {
@@ -2750,7 +2725,6 @@ var MaskEngine = (function () {
             if (!isBlank(col.values[i])) { orig = col.values[i]; break; }
         }
         try {
-            if (cfg.mode === 'phone') { return genPhone(orig == null ? '' : String(orig), {}); }
             if (cfg.mode === 'mixed') {
                 var tcfg = {
                     mode: 'text',
@@ -2802,7 +2776,6 @@ var MaskEngine = (function () {
             forgetRanges: forgetRanges,
             buildIndex: buildIndex,
             refreshSheetMarks: refreshSheetMarks,
-            genPhone: genPhone,
             genNumber: genNumber,
             genText: genText,
             genMixed: genMixed,

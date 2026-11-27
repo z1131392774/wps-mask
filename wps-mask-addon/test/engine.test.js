@@ -340,7 +340,7 @@ mixApp.setTable('Sheet1', 1, 1, [['账号']].concat(mixOrig.map(v => [v])));
 mixApp.select('Sheet1', 1, 1, mixOrig.length + 1, 1);
 const mixModel0 = Engine.analyze(mixApp, {});
 ok(mixModel0.hasHeader === true, '混合列首行仍识别为表头');
-ok(Engine.guessMode('账号', mixModel0.columns[0].values) === 'mixed', '数字+文本混排识别为 mixed');
+ok(Engine.guessMode(mixModel0.columns[0].values) === 'mixed', '数字+文本混排识别为 mixed');
 const mixVault = Engine.loadVault(mixApp);
 const mixStats = Engine.applyMask(Engine.hydrate(mixModel0, mixVault), mixVault, {});
 const mixOut = [];
@@ -384,11 +384,11 @@ ok(new Set(dupOut).size === dupOut.length,
 
 /* ---------- 19. 单一形态的列不受影响 ---------- */
 console.log('\n[19] 单一形态的列保持原有识别');
-ok(Engine.guessMode('订单号', ['SO-2024-0001', 'SO-2024-0002']) === 'text', '纯字母数字列仍按文本处理');
-ok(Engine.guessMode('备注', ['老客户', '待跟进']) === 'text', '纯中文列仍是文本');
-ok(Engine.guessMode('工号', [1001, 1002, 1003]) === 'number', '纯数字列仍是数字');
-ok(Engine.guessMode('手机号', ['13800138000', '13912345678']) === 'text', '纯手机号列按文本处理');
-ok(Engine.guessMode('金额', ['008081', '007280']) === 'text', '纯数字字符串列按文本处理');
+ok(Engine.guessMode(['SO-2024-0001', 'SO-2024-0002']) === 'text', '纯字母数字列仍按文本处理');
+ok(Engine.guessMode(['老客户', '待跟进']) === 'text', '纯中文列仍是文本');
+ok(Engine.guessMode([1001, 1002, 1003]) === 'number', '纯数字列仍是数字');
+ok(Engine.guessMode(['13800138000', '13912345678']) === 'text', '纯手机号列按文本处理');
+ok(Engine.guessMode(['008081', '007280']) === 'text', '纯数字字符串列按文本处理');
 
 /* ---------- 20. 文本值不生成纯数字假值（前导零不再被宿主吃掉） ---------- */
 console.log('\n[20] 文本值映射为非数字文本，前导零不会在写回时丢失');
@@ -407,7 +407,7 @@ zipApp.setTable('Sheet1', 1, 1, zipRows);
 zipApp.select('Sheet1', 1, 1, zipRows.length, 1);
 const zipVault = Engine.loadVault(zipApp);
 const zipModel = Engine.analyze(zipApp, {});
-ok(Engine.guessMode('账号', zipModel.columns[0].values) === 'text', '全是文本值 → text');
+ok(Engine.guessMode(zipModel.columns[0].values) === 'text', '全是文本值 → text');
 Engine.applyMask(Engine.hydrate(zipModel, zipVault), zipVault, {});
 const zipCel = r => zipApp.getCell('Sheet1', r, 1);
 ok(typeof zipCel(2) === 'string' && /\D/.test(zipCel(2)),
@@ -1144,7 +1144,7 @@ console.log('\n[35] analyze 的 headerAuto 标记');
 const autoApp35 = freshApp();
 const autoModel35 = Engine.analyze(autoApp35, {});
 ok(autoModel35.hasHeader === true && autoModel35.headerAuto === true,
-    '启发式判定表头 → headerAuto=true');
+    '确定性规则判定表头 → headerAuto=true');
 const manual35 = Engine.analyze(autoApp35, { hasHeader: true });
 ok(manual35.hasHeader === true && manual35.headerAuto === false,
     '用户指定有表头 → headerAuto=false');
@@ -1951,7 +1951,7 @@ function flowCol59(a, col, rows, cfg) {
     return Engine.writeMask(p59);
 }
 flowCol59(adjApp59, 1, 6, { mode: 'text', prefix: '姓' });
-const adjStats59 = flowCol59(adjApp59, 2, 6, { mode: 'phone' });
+const adjStats59 = flowCol59(adjApp59, 2, 6, { mode: 'text', prefix: '新' });
 ok(adjStats59.written === 5, '相邻 B 列写 5 格，实际 ' + adjStats59.written);
 const adjVault59 = Engine.loadVault(adjApp59);
 ok(adjVault59.ranges.length === 2 && adjVault59.marks.length === 1,
@@ -2919,6 +2919,113 @@ for (let i = 0; i < 12; i++) {
 }
 ok(corrupt72c === 0 && rev72c.miss === 0,
     '72c 混合列重映射后反映射：12 格精确还原（corrupt=' + corrupt72c + '）');
+
+/* ---------- 73. 表头识别：唯一确定性规则，不做内容猜测 ---------- */
+console.log('\n[73] 表头识别只按「位置 + 值类型」，不做内容猜测');
+function headOf73(rows2d) {
+    const a = new MockWPS();
+    a.setTable('Sheet1', 1, 1, rows2d);
+    a.select('Sheet1', 1, 1, rows2d.length, rows2d[0].length);
+    const m = Engine.analyze(a, {});
+    return { hasHeader: m.hasHeader, headerAuto: m.headerAuto, firstDataRow: m.firstDataRow };
+}
+let h73 = headOf73([['甲', '乙'], ['张三', 28], ['李四', 35]]);
+ok(h73.hasHeader === true && h73.headerAuto === true && h73.firstDataRow === 1,
+    '文本首行（第 1 行开始）→ 表头，列名不需要任何关键词');
+h73 = headOf73([['姓名', '备注'], ['张三', '老客户'], ['李四', '新签']]);
+ok(h73.hasHeader === true && h73.headerAuto === true && h73.firstDataRow === 1,
+    '全文本表首行 → 仍默认当表头（面板提示可取消勾选，headerAuto 仍为 true）');
+h73 = headOf73([['手机号'], ['13800138000'], ['13912345678']]);
+ok(h73.hasHeader === true, '首行是文本（手机号列名）→ 表头，数据区是什么类型不参与判断');
+h73 = headOf73([['13800138000'], ['张三'], ['李四']]);
+ok(h73.hasHeader === true, '数字字符串算文本：首行纯数字字符串 → 表头（不做形态识别）');
+h73 = headOf73([[13800138000], ['张三'], ['李四']]);
+ok(h73.hasHeader === false, '首行含 JS 数字 → 数据，不判表头');
+h73 = headOf73([[2024, '姓名'], ['张三', 28]]);
+ok(h73.hasHeader === false, '首行任意位置有数字 → 不是表头');
+h73 = headOf73([['姓名', ''], ['张三', 28], ['李四', 35]]);
+ok(h73.hasHeader === true, '首行空单元格不参与判断，其余文本 → 表头');
+h73 = headOf73([['008081', '备注'], ['007280', 'a']]);
+ok(h73.hasHeader === true, '数字字符串算文本：首行没有真数字 → 表头');
+h73 = headOf73([['姓名', '备注']]);
+ok(h73.hasHeader === false, '只有一行、没有数据行 → 不是表头');
+h73 = headOf73([['', ''], ['张三', 28]]);
+ok(h73.hasHeader === false, '首行全空 → 不是表头');
+const offApp73 = new MockWPS();
+offApp73.setTable('Sheet1', 1, 1, [['姓名', '年龄'], ['张三', 28], ['李四', 35]]);
+offApp73.select('Sheet1', 2, 1, 2, 2);
+const offModel73 = Engine.analyze(offApp73, {});
+ok(offModel73.hasHeader === false && offModel73.headerAuto === true,
+    '选区不从第 1 行开始 → 不判表头（位置规则优先）');
+const offManual73 = Engine.analyze(offApp73, { hasHeader: true });
+ok(offManual73.hasHeader === true && offManual73.headerAuto === false, '手动勾选表头仍然生效');
+const numManual73 = new MockWPS();
+numManual73.setTable('Sheet1', 1, 1, [[2024, '姓名'], ['张三', 28]]);
+numManual73.select('Sheet1', 1, 1, 2, 2);
+const numManualModel73 = Engine.analyze(numManual73, { hasHeader: true });
+ok(numManualModel73.hasHeader === true && numManualModel73.headerAuto === false,
+    '首行含数字时手动勾选表头也生效（自动判定可被覆盖）');
+
+/* ---------- 74. 旧 phone 文档：不再生成 phone 假值，旧桶仍能精确还原 ---------- */
+console.log('\n[74] 旧 phone 文档 revert 精确还原（不改格式、不迁移桶）');
+const oldPhoneFakes = ['13011112222', '13133334444', '13255556666'];
+const oldPhoneOrig = ['13800138000', '13912345678', '13700007777'];
+const oldPhoneApp = new MockWPS();
+oldPhoneApp.setTable('Sheet1', 1, 1, [['手机号'], [oldPhoneFakes[0]], [oldPhoneFakes[1]], [oldPhoneFakes[2]]]);
+oldPhoneApp.select('Sheet1', 1, 1, 4, 1);
+const oldPhoneVault = Engine.loadVault(oldPhoneApp);
+delete oldPhoneVault.v;   // 老文档没有版本字段
+oldPhoneVault.maps['phone'] = {};
+for (let i = 0; i < oldPhoneOrig.length; i++) { oldPhoneVault.maps['phone']['s:' + oldPhoneOrig[i]] = oldPhoneFakes[i]; }
+oldPhoneVault.settings['手机号'] = { mode: 'phone', prefix: '手机号', digits: 3 };
+oldPhoneVault.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 4, c2: 1, sigs: { '1': 'phone' } }];
+Engine.saveVault(oldPhoneApp, oldPhoneVault);
+const oldPhoneLoaded = Engine.loadVault(oldPhoneApp);
+ok(Object.keys(oldPhoneLoaded.maps['phone'] || {}).length === 3,
+    '旧 phone 桶原样保留，不迁移：' + Object.keys(oldPhoneLoaded.maps).join(','));
+ok(oldPhoneLoaded.ranges[0].sigs['1'] === 'phone', '旧区域记录的签名仍是 phone，不改格式');
+const rev74 = Engine.revert(Engine.analyze(oldPhoneApp, {}), oldPhoneLoaded, {});
+let oldPhoneBack = true;
+for (let i = 0; i < oldPhoneOrig.length; i++) {
+    if (oldPhoneApp.getCell('Sheet1', i + 2, 1) !== oldPhoneOrig[i]) { oldPhoneBack = false; }
+}
+ok(rev74.hit === 3 && oldPhoneBack,
+    '3 个旧手机号假值精确还原（按记录里的旧签名找旧桶，不识别手机号形态）：hit=' + rev74.hit);
+ok(oldPhoneLoaded.ranges.length === 0, '还原后旧区域记录清空');
+
+// 旧文档记下的 phone 配置：继续脱敏时按文本处理，旧桶不动、新假值是文本
+const reuseApp74 = new MockWPS();
+reuseApp74.setTable('Sheet1', 1, 1, [['手机号'], ['13800138000'], ['13912345678']]);
+reuseApp74.select('Sheet1', 1, 1, 3, 1);
+const reuseVault74 = Engine.loadVault(reuseApp74);
+delete reuseVault74.v;
+reuseVault74.maps['phone'] = { 's:13800138000': '13011112222' };
+reuseVault74.settings['手机号'] = { mode: 'phone', prefix: '手机号', digits: 2 };
+Engine.saveVault(reuseApp74, reuseVault74);
+const reuseLoaded74 = Engine.loadVault(reuseApp74);
+const reuseModel74 = Engine.hydrate(Engine.analyze(reuseApp74, {}), reuseLoaded74);
+ok(reuseModel74.columns[0].cfg.mode === 'text',
+    '旧 phone 配置落到文本模式（phone 生成分支已退役）：' + reuseModel74.columns[0].cfg.mode);
+const reuseStats74 = Engine.applyMask(reuseModel74, reuseLoaded74, {});
+ok(reuseStats74.written === 2 && Object.keys(reuseLoaded74.maps['phone']).length === 1,
+    '旧文档可继续脱敏，旧 phone 桶不被改动：written=' + reuseStats74.written);
+
+/* ---------- 75. 旧 mixed 桶里的手机形状假值：按值类型还原 ---------- */
+console.log('\n[75] 旧 mixed 桶的手机形状假值按值类型还原');
+const mixedPhoneApp = new MockWPS();
+mixedPhoneApp.setTable('Sheet1', 1, 1, [['账号'], ['13011112222'], ['账号6']]);
+mixedPhoneApp.select('Sheet1', 1, 1, 3, 1);
+const mixedPhoneVault = Engine.loadVault(mixedPhoneApp);
+delete mixedPhoneVault.v;
+mixedPhoneVault.maps['mixed'] = { 's:13800138000': '13011112222', 's:王小明': '账号6' };
+mixedPhoneVault.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 3, c2: 1, sigs: { '1': 'mixed' } }];
+Engine.saveVault(mixedPhoneApp, mixedPhoneVault);
+const mixedPhoneLoaded = Engine.loadVault(mixedPhoneApp);
+const rev75 = Engine.revert(Engine.analyze(mixedPhoneApp, {}), mixedPhoneLoaded, {});
+ok(rev75.hit === 2 &&
+    mixedPhoneApp.getCell('Sheet1', 2, 1) === '13800138000' &&
+    mixedPhoneApp.getCell('Sheet1', 3, 1) === '王小明',
+    '旧 mixed 桶的手机形状假值不依赖手机号识别，精确还原：hit=' + rev75.hit);
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
