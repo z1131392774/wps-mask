@@ -555,8 +555,8 @@ function spyEngine(win) {
             '写入失败后把回滚好的映射表写回磁盘（恰好一次），实际：' + spy.calls.join(' > '));
         ok(spy.loads === 1, '写入失败路径不刷新（只解密一次）：实际 ' + spy.loads);
         const st = d.getElementById('status').textContent;
-        ok(/写入失败/.test(st) && /重新映射/.test(st),
-            '状态栏报写入失败并提示重新映射：' + st);
+        ok(/写入失败/.test(st) && /反映射/.test(st),
+            '状态栏报写入失败并提示先反映射：' + st);
         ok(/回滚未完成/.test(st), '回滚写也被同一条写通道挡住时如实说回滚未完成：' + st);
         ok(!/已映射/.test(st), '不误报成功');
         b.app.clearWriteHook();
