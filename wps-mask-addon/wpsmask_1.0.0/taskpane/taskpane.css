@@ -1,7 +1,8 @@
 /* 任务窗格样式：窄栏工具面板，浅色、克制，跟着 WPS 表格走。
  *
- * 兼容性：窗格内嵌浏览器的版本未知，所以不用 flex 的 gap（一律改 margin）、
- * 不用 CSS 变量、不用 grid —— 这些在旧引擎里会静默失效，变成挤在一起的一团。
+ * 兼容性：窗格内嵌浏览器的版本未知，所以回退布局不用 flex 的 gap（一律改 margin）、
+ * 不用 CSS 变量。grid 只出现在文件末尾的 @supports (display: grid) 块里做增强排版；
+ * 不支持 grid 的旧引擎会整块忽略，上面的 flex/block 布局原样生效，不会空白或重叠。
  *
  * 色板（冷灰一族，只用这一族）
  *   文字 #1a1d21 / 次要 #565d68 / 元信息 #5f6672
@@ -377,3 +378,95 @@ select:focus, input[type="text"]:focus {
 .links a + a { margin-left: 14px; }
 .links a:hover { color: #1f6feb; text-decoration: underline; }
 .links a.danger:hover { color: #b3261e; }
+
+/* ---------------- 栅格版式（支持 CSS Grid 时启用） ----------------
+ * 上面的规则是回退布局，任何引擎都能排下来。本块只在 @supports (display: grid)
+ * 成立时生效，只覆盖排布属性；旧内嵌浏览器整块忽略，版面与改动前一致。
+ * gap / column-gap / row-gap 只出现在本块内，回退布局仍靠 margin。
+ * 目标：卡片头两行、卡片内参数行、三张卡片之间共用同一套列宽，左缘对齐。
+ */
+@supports (display: grid) {
+    /* 页面骨架：页头 / 工具条 / 卡片区 / 页脚。显式行号，工具条隐藏时
+     * 卡片区仍在第 3 行吃满剩余高度，不会把页脚顶到 1fr 行上。 */
+    body {
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+    }
+
+    .hd { grid-row: 1; display: grid; row-gap: 3px; }
+    #cards { grid-row: 3; min-height: 0; }
+    .ft { grid-row: 4; display: grid; row-gap: 7px; }
+
+    .sub { margin-top: 0; }
+
+    .bar {
+        grid-row: 2;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+    }
+
+    .bar-r {
+        display: grid;
+        grid-auto-flow: column;
+        column-gap: 6px;
+        margin-left: 0;
+    }
+
+    .bar-r button + button { margin-left: 0; }
+
+    /* 卡片头：上行四列（编号 / 名称 / 映射方式 / 展开），下行示例单独成栅格 */
+    .card { display: grid; grid-template-columns: minmax(0, 1fr); }
+    .ch { display: grid; row-gap: 4px; }
+    .ch-top {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto auto;
+        column-gap: 6px;
+        align-items: center;
+    }
+    .ref { margin-right: 0; }
+    .mode { margin-left: 0; }
+    .exp { margin-left: 0; }
+    .ch-sub {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        column-gap: 4px;
+        align-items: baseline;
+        margin-top: 0;
+    }
+    .ch-sub .k { margin-right: 0; }
+    .meta { margin-left: 0; }
+
+    /* 参数区：标签一列、数字框一列；范围行的两个数字框分列二号/四号列，
+     * 行与行、卡片与卡片都对在同样的 x 上。分布下拉、前缀输入跨列吃满。 */
+    .card.open .cb {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 6px;
+    }
+    .card.open .cb > .hint { grid-column: 1 / -1; }
+    .card.open .cb .row {
+        display: grid;
+        grid-template-columns: 38px auto auto minmax(0, 1fr);
+        column-gap: 4px;
+        align-items: center;
+        margin-bottom: 0;
+    }
+    .card.open .cb .row > .lbl { min-width: 0; margin: 0; }
+    .card.open .cb .row > .sep { margin: 0; }
+    .card.open .cb .row > .dist,
+    .card.open .cb .row > .grow { grid-column: 2 / -1; width: 100%; }
+
+    /* 页脚：两个主按钮等宽，状态与链接各占一行 */
+    .btns { display: grid; grid-template-columns: 1fr 1fr; column-gap: 6px; }
+    .btns button + button { margin-left: 0; }
+    .status { margin-top: 0; }
+    .links {
+        display: grid;
+        grid-auto-flow: column;
+        justify-content: start;
+        column-gap: 14px;
+        margin-top: 0;
+    }
+    .links a + a { margin-left: 0; }
+}
