@@ -256,6 +256,52 @@ var MaskEngine = (function () {
         };
     }
 
+    // used 里同时有 keyOf 形态（"n:38"）与 looseOf 形态（"38"）的键：旧 mixed 桶的
+    // digit-string 假值在真机常规格式里已被强转成 number，只有 loose 形态能认出它占着 38。
+    // 返回区间 [lo, hi] 内被占用的槽位索引（相对 lo、按 step 对齐），升序。
+    function usedNumberSlotIndexes(used, lo, step) {
+        var seen = {}, out = [];
+        for (var k in used) {
+            if (!hasOwn(used, k)) { continue; }
+            var s = k;
+            if (k.charAt(0) === 'n' && k.charAt(1) === ':') { s = k.substring(2); }
+            else if (!/^-?\d+(\.\d+)?$/.test(k)) { continue; }
+            var v = Number(s);
+            if (!isFinite(v)) { continue; }
+            var idx = Math.round((v - lo) / step);
+            if (Math.abs(lo + idx * step - v) > step / 2) { continue; }
+            if (!seen[idx]) { seen[idx] = true; out.push(idx); }
+        }
+        out.sort(function (a, b) { return a - b; });
+        return out;
+    }
+
+    // 混合列的数字子区间只按本批数据算，桶里已经发出去的 number 假值仍占着槽位；
+    // 分批脱敏时新数字会撞满旧槽位，逐个生成必然抛「区间不够用」。
+    // 这里把上界撑到「区间内空槽 >= 本批不同数字数（含 10% 余量）」为止。
+    // 只对 number 区间有效；只升不降，每轮至少补一个槽位，不会死循环。
+    function fitNumberCfgToUsed(cfg, used, needN) {
+        if (!cfg || !(needN > 0)) { return; }
+        var dec = Math.max(0, Number(cfg.dec) || 0);
+        var step = dec > 0 ? Math.pow(10, -dec) : 1;
+        var lo = Number(cfg.min), hi = Number(cfg.max);
+        if (!isFinite(lo) || !isFinite(hi) || !(step > 0)) { return; }
+        var wantN = Math.max(needN + 1, Math.ceil(needN * 1.1));
+        var hiIdx = Math.round((hi - lo) / step);
+        if (hiIdx < 0) { hiIdx = 0; }
+        var occ = usedNumberSlotIndexes(used, lo, step);
+        var p = 0, occupied = 0;
+        while (p < occ.length && occ[p] < 0) { p++; }
+        while (p < occ.length && occ[p] <= hiIdx) { p++; occupied++; }
+        var need = wantN - (hiIdx + 1 - occupied);
+        while (need > 0) {
+            hiIdx++;
+            if (p < occ.length && occ[p] === hiIdx) { p++; continue; }
+            need--;
+        }
+        cfg.max = roundTo(lo + hiIdx * step, dec);
+    }
+
     function defaultCfg(header, values) {
         var mode = guessMode(header, values);
         var h = textPrefix(header);
@@ -335,7 +381,9 @@ var MaskEngine = (function () {
             if (dec <= 0 && out < lo) { out = lo; }
             if (dec <= 0 && out > hi) { out = hi; }
             if (out === orig) { continue; }
-            if (used['n:' + out]) { continue; }
+            // 占位同时看 typed（"n:38"）与 loose（"38"）：旧 mixed 桶里的 digit-string 假值
+            // "38" 在真机常规格式里已被宿主强转成 number，只有 loose 形态能认出它占着 38。
+            if (used['n:' + out] || used[String(out)]) { continue; }
             return out;
         }
         // 随机生成反复碰撞时，退化为在区间内按随机起点顺序查找空位（保证唯一、可反映射）
@@ -346,7 +394,7 @@ var MaskEngine = (function () {
         for (var n = 0; n < cap; n++) {
             var idx = (startAt + n) % cap;
             var cand = roundTo(lo + idx * step, dec);
-            if (cand !== orig && !used['n:' + cand]) { return cand; }
+            if (cand !== orig && !used['n:' + cand] && !used[String(cand)]) { return cand; }
         }
         throw new Error('数值区间不够用，请扩大取值范围');
     }
@@ -750,12 +798,13 @@ var MaskEngine = (function () {
     function saveVault(app, vault) {
         var wb = app.ActiveWorkbook;
         if (!wb) { throw new Error('当前没有打开的工作簿'); }
-        // 只读打开的文档上 Save() 既不抛错也不写盘（真机量过：mtime 不变，写入却进了内存）。
-        // 也就是说映射表会"保存成功"地丢掉，脱敏之后再也还原不回来 —— 宁可在建表之前就拒绝。
+        // 只读打开的文档上 Save() 会弹「是否替换该文件？」：Cancel 抛 HRESULT，Yes 静默返回但文件不变
+        // （真机量过，见 tools/live/HANDOFF.md）。也就是说映射表看起来保存成功、实际没进文件，
+        // 脱敏之后再也还原不回来 —— 宁可在建表之前就拒绝。
         var readOnly = false;
         try { readOnly = !!wb.ReadOnly; } catch (eRo) { readOnly = false; }
         if (readOnly) {
-            throw new Error('文档是只读打开的，映射表存不进去（保存会被静默忽略），脱敏后无法还原。' +
+            throw new Error('文档是只读打开的，映射表保存不进去（保存会弹替换提示，即使确认也写不进文件），脱敏后无法还原。' +
                 '请先另存为新文件，再脱敏。');
         }
         pruneUnusedBuckets(vault);
@@ -1481,6 +1530,8 @@ var MaskEngine = (function () {
         for (var i = 0; i < list.length; i++) {
             var it = list[i];
             if (!it || it.s !== sheetName || it.c1 !== c1 || it.c2 !== c2) { continue; }
+            // partial 记录带逐格快照，行区间与快照下标绑定：合并/扩大会让快照错位，绝不并入
+            if (it.partial) { continue; }
             if (rangeSigAt(it, c1) !== sig) { continue; }
             if (it.r1 <= r1 && it.r2 >= r2) { return; }
             if (r1 <= it.r2 + 1 && r2 + 1 >= it.r1) {
@@ -1517,6 +1568,8 @@ var MaskEngine = (function () {
         var keep = [];
         for (var i = 0; i < vault.ranges.length; i++) {
             var it = vault.ranges[i];
+            // partial 记录的逐格快照由 revert 自己消费，矩形差集裁不了它（会连未还原的行一起裁掉）
+            if (it && it.partial) { keep.push(it); continue; }
             if (!it || it.s !== sheetName || !rectOverlaps(it, probe)) { keep.push(it); continue; }
             subtractRange(it, r1, c1, r2, c2, keep);
         }
@@ -1726,6 +1779,9 @@ var MaskEngine = (function () {
                 if (fr1 < 1 || fr2 < fr1 || fc1 < 1 || fc2 < fc1) { continue; }
                 filter.push({ r1: fr1, c1: fc1, r2: fr2, c2: fc2 });
             }
+            // 过滤后一块都不剩（异表或非法矩形）时按整表刷新：空数组是 truthy，
+            // 留着会让下面把所有区域都当成本次无关而跳过，刷新静默变成什么都不做。
+            if (!filter.length) { filter = null; }
         }
 
         var processed = [];
@@ -1979,6 +2035,8 @@ var MaskEngine = (function () {
         var ranges = [];
         // 跳过判定只看"本轮开始之前"就存在的映射，本轮刚建的记录不该被当成本来就有
         var preIndex = buildIndex(vault);
+        // partial 记录的逐格核对同样只看本轮开始之前的记录：本轮新登记的正常记录不参与判定
+        var preRanges = isArr(vault.ranges) ? vault.ranges : [];
         // 阶段一会把区域记录和边框记录写进 vault（调用方随后保存一次映射表，再写单元格）；
         // 写单元格或保存失败时用这两份快照撤销本轮改动，避免"表格没写、记录却留着"
         var baseRanges = isArr(vault.ranges) ? JSON.parse(JSON.stringify(vault.ranges)) : [];
@@ -1995,6 +2053,7 @@ var MaskEngine = (function () {
             var sig = sigOf(cfg);
             var skipFlags = [];
             var distinctNeed = {};
+            var numericNeed = {};
             var needCount = 0;
             var colSkipped = 0;
 
@@ -2003,7 +2062,17 @@ var MaskEngine = (function () {
                 var skip = false;
                 if (!isBlank(v0)) {
                     var absRow = model.top + model.firstDataRow + r0;
-                    if (inMaskedArea(vault, model.sheetName, absRow, col.col) &&
+                    var lastRec = lastCoveringRange(preRanges, model.sheetName, absRow, col.col);
+                    if (lastRec && lastRec.partial) {
+                        // 回滚失败的普通列：已恢复的原值与同列假值落在同一值域，按桶反查会把
+                        // 原值当成"已映射"跳过、静默漏脱敏。这里与 revert 用同一条逐格规则：
+                        // 只有当前值等于本行计划假值才算已映射；等于原值（半回滚成功）或其它
+                        // 值（人工改过）都必须参与本次映射。快照洞（没有计划值的行）照常映射。
+                        var pidx = partialRowAt(lastRec, absRow);
+                        if (pidx >= 0 && looseOf(v0) === looseOf(lastRec.partial.values[pidx])) {
+                            skip = true;
+                        }
+                    } else if (inMaskedArea(vault, model.sheetName, absRow, col.col) &&
                         lookupMapped(preIndex, sig, v0)) {
                         skip = true;
                     }
@@ -2015,6 +2084,10 @@ var MaskEngine = (function () {
                 } else if (!isBlank(v0)) {
                     var kk = keyOf(v0);
                     if (!distinctNeed[kk]) { distinctNeed[kk] = true; needCount++; }
+                    // 混合列要单独数数字：keyOf 把 Date 也写成 n:，这里以原值类型为准
+                    if (cfg.mode === 'mixed' && typeof v0 === 'number' && !isNaN(v0) && !numericNeed[kk]) {
+                        numericNeed[kk] = true;
+                    }
                 }
             }
 
@@ -2030,14 +2103,23 @@ var MaskEngine = (function () {
             if (!vault.maps[sig]) { vault.maps[sig] = {}; }
             var bucket = vault.maps[sig];
             var used = {};
+            // 旧 mixed 桶的 digit-string 假值（"58"）在真机常规格式里已被宿主强转成 number；
+            // 只登记 keyOf 形态会把它当成新槽位。loose 形态一并登记，生成新假值时两种索引都避开。
+            // 旧桶没有版本字段也没有迁移：靠这里让新旧桶安全共存（新桶不会再写出这种假值）。
             for (var uk in bucket) {
                 if (Object.prototype.hasOwnProperty.call(bucket, uk)) {
                     var mv = bucket[uk];
-                    if (mv != null) { used[keyOf(mv)] = true; }
+                    if (mv != null) {
+                        used[keyOf(mv)] = true;
+                        used[looseOf(mv)] = true;
+                    }
                 }
             }
 
             var newVals = [];
+            // 逐行标记"本批是否真的新写了假值"：回滚失败时它决定哪些行要进逐格快照，
+            // 已映射跳过/空白的行不属于本批，不能混进失败列的还原计划。
+            var newWritten = [];
             var wrote = 0;
             // 混合列的"中文/其他文本"分支沿用文本模式的前缀与位数
             var textCfg = {
@@ -2046,6 +2128,18 @@ var MaskEngine = (function () {
                 digits: cfg.digits || 4,
                 num: cfg.num || null
             };
+            // 混合列的数字子区间只按本批数据算：桶里已经发出去的 number 假值仍占着槽位，
+            // 分批脱敏时新数字会撞满旧槽位。按「剩余空槽」把上界撑开（只对 number 区间生效）。
+            if (cfg.mode === 'mixed' && textCfg.num) {
+                var needNum = 0;
+                for (var nn in numericNeed) {
+                    if (Object.prototype.hasOwnProperty.call(numericNeed, nn) &&
+                        !Object.prototype.hasOwnProperty.call(bucket, nn)) {
+                        needNum++;
+                    }
+                }
+                if (needNum) { fitNumberCfgToUsed(textCfg.num, used, needNum); }
+            }
             // 区间刚好装下这批不同值时，先整列算好错位置换，避免逐个随机取走进死胡同
             var batch = null;
             if (cfg.mode === 'number' && (cfg.dist || 'uniform') === 'uniform' && (!cfg.dec || cfg.dec <= 0)) {
@@ -2060,7 +2154,7 @@ var MaskEngine = (function () {
             }
             for (var r = 0; r < col.values.length; r++) {
                 var v = col.values[r];
-                if (isBlank(v) || skipFlags[r]) { newVals.push(v); continue; }
+                if (isBlank(v) || skipFlags[r]) { newVals.push(v); newWritten.push(false); continue; }
                 var k = keyOf(v);
                 var mapped;
                 if (Object.prototype.hasOwnProperty.call(bucket, k)) {
@@ -2089,13 +2183,17 @@ var MaskEngine = (function () {
                     stats.created++;
                 }
                 newVals.push(mapped);
+                newWritten.push(true);
                 wrote++;
                 stats.cells++;
             }
 
             if (wrote > 0) {
-                outputs.push({ col: col, values: newVals, wrote: wrote });
                 var startRow = model.top + model.firstDataRow;
+                outputs.push({
+                    col: col, values: newVals, wrote: wrote,
+                    written: newWritten, sig: sig, startRow: startRow
+                });
                 var endRow = startRow + newVals.length - 1;
                 ranges.push({
                     s: model.sheetName,
@@ -2133,6 +2231,44 @@ var MaskEngine = (function () {
         };
     }
 
+    // 回滚失败列的区域记录：附上逐行"计划假值"和对应原值的桶键快照。
+    // 失败列里已回滚成功的格子和仍是假值的格子用同一个值反查无法区分（数字/混合列的原值
+    // 可能恰好等于同列别的行的假值），所以 revert 对这类记录只做逐格核对：
+    // 当前格与"该行计划假值"一致才写回该行原值，绝不按桶做值反查。
+    // 快照是纯 JSON 数据（数组 + 字符串键），随映射表落盘，VAULT_VERSION 不变，旧文档不受影响。
+    function partialRecordOf(sheetName, planCol) {
+        var col = planCol.col;
+        var vals = planCol.values;
+        var written = planCol.written;
+        var originals = col && col.values;
+        if (!isArr(vals) || !isArr(written) || !isArr(originals)) { return null; }
+        var first = -1, last = -1;
+        for (var i = 0; i < written.length; i++) {
+            if (written[i]) { if (first < 0) { first = i; } last = i; }
+        }
+        if (first < 0) { return null; }
+        var startRow = Math.floor(Number(planCol.startRow));
+        if (!isFinite(startRow) || startRow < 1) { return null; }
+        var fakes = [], keys = [];
+        for (var r = first; r <= last; r++) {
+            if (written[r]) {
+                fakes.push(vals[r]);
+                keys.push(keyOf(originals[r]));
+            } else {
+                // 这一行本批没写（空白/已映射跳过）：显式 null 占位，revert 不能碰它
+                fakes.push(null);
+                keys.push(null);
+            }
+        }
+        var rec = {
+            s: sheetName, r1: startRow + first, c1: col.col,
+            r2: startRow + last, c2: col.col,
+            sigs: {}, partial: { values: fakes, keys: keys }
+        };
+        rec.sigs[String(col.col)] = planCol.sig;
+        return rec;
+    }
+
     // 第二阶段：只写表格，不画边框也不改记录。任何一列写失败都把已写的列按原值回滚，
     // 把区域记录与边框记录恢复到阶段一之前，并把表格外观还原成 pre-mask，然后原样抛出。
     function writeMask(plan) {
@@ -2162,28 +2298,69 @@ var MaskEngine = (function () {
                 i = j;
             }
         } catch (eWrite) {
-            var rollbackErrors = [];
+            // 回滚写原值必须和 revert 一样走 textForWrite 的 ' 标记，否则常规格式宿主会把
+            // "008081" 解析成数字 8081——回滚自己就把前导零毁了，随后的读回检查还会误报。
+            var cellErrors = [];
+            var failedCols = {};
             for (var k = tried.length - 1; k >= 0; k--) {
+                var rcol = tried[k].col;
                 try {
-                    writeColumn(model, tried[k].col, tried[k].col.values);
+                    writeColumnParts(model, rcol, rcol.values,
+                        [{ start: 0, end: rcol.values.length - 1 }]);
                 } catch (eRollback) {
-                    rollbackErrors.push('第 ' + tried[k].col.col + ' 列回滚失败：' + eRollback.message);
+                    cellErrors.push('第 ' + rcol.col + ' 列回滚失败：' + eRollback.message);
+                    failedCols[rcol.col] = true;
                 }
             }
-            // 阶段一登记的这几块区域与画的边框都要撤掉（表格已恢复原值），否则重试会把
-            // "看起来像假值"的原值当成本来就映射过而跳过。restoreMaskBase 先把区域回退到
-            // baseRanges，再用画上去时记下的 marks 还原表格外观，最后把 marks 回退到 baseMarks。
-            var markRestore = restoreMaskBase(plan, model);
-            for (var me = 0; me < markRestore.errors.length; me++) { rollbackErrors.push(markRestore.errors[me]); }
-            var err = new Error('写入单元格失败：' + eWrite.message +
-                (rollbackErrors.length
-                    ? '；回滚未完成（' + rollbackErrors.join('；') + '）'
-                    : '；已回滚已写入的单元格'));
+            // 只有每一格都恢复成原值，才能撤掉阶段一登记的区域与边框记录（表格与映射表一致，
+            // 可以干净重试）：restoreMaskBase 把区域回退到 baseRanges，再用画上去时记下的
+            // marks 还原表格外观，最后把 marks 回退到 baseMarks。
+            var rollbackErrors = cellErrors.slice();
+            var rangesReset = false, marksReset = false;
+            var failedColumns = [];
+            if (cellErrors.length === 0) {
+                var markRestore = restoreMaskBase(plan, model);
+                for (var me = 0; me < markRestore.errors.length; me++) { rollbackErrors.push(markRestore.errors[me]); }
+                rangesReset = !!plan.baseRanges;
+                marksReset = isArr(plan.baseMarks);
+            } else {
+                // 有列回滚失败时，成功回滚的列已经是原值，绝不能再算作"已映射"：它们的区域记录
+                // 一律回到 baseRanges，否则用户按指路执行「反映射」时，数字/混合列的原值会被
+                // 当成同列别的行的假值反查，静默改写成别人的原值。只保留失败列的区域记录，
+                // 并附逐行计划假值快照；边框记录整体保留，紫边提示受损区域。
+                var partialRanges = [];
+                for (var pc = 0; pc < plan.columns.length; pc++) {
+                    var pcol = plan.columns[pc];
+                    if (!failedCols[pcol.col.col]) { continue; }
+                    failedColumns.push(pcol.col.col);
+                    var prec = partialRecordOf(model.sheetName, pcol);
+                    if (prec) { partialRanges.push(prec); }
+                }
+                failedColumns.sort(function (a, b) { return a - b; });
+                plan.vault.ranges = (isArr(plan.baseRanges) ? JSON.parse(JSON.stringify(plan.baseRanges)) : [])
+                    .concat(partialRanges);
+                if (plan.vault.ranges.length > 200) {
+                    plan.vault.ranges.splice(0, plan.vault.ranges.length - 200);
+                }
+            }
+            var msg = '写入单元格失败：' + eWrite.message;
+            msg += rollbackErrors.length
+                ? '；回滚未完成（' + rollbackErrors.join('；') + '）'
+                : '；已回滚已写入的单元格';
+            if (cellErrors.length) {
+                var failedText = failedColumns.length
+                    ? '第 ' + failedColumns.join('、') + ' 列'
+                    : '部分列';
+                var okText = tried.length > failedColumns.length ? '其余列已恢复原值，' : '';
+                msg += '；' + okText + '只有' + failedText + '未能回滚，映射记录只保留失败列；' +
+                    '可执行「反映射」按逐格计划假值还原' + failedText + '剩余假值，并人工核对受损单元格';
+            }
+            var err = new Error(msg);
             err.cause = eWrite;
             err.rollback = {
                 ok: rollbackErrors.length === 0, columns: tried.length,
-                errors: rollbackErrors, rangesReset: !!plan.baseRanges,
-                marksReset: isArr(plan.baseMarks)
+                errors: rollbackErrors, rangesReset: rangesReset,
+                marksReset: marksReset, failedColumns: failedColumns
             };
             throw err;
         }
@@ -2336,15 +2513,56 @@ var MaskEngine = (function () {
         return out;
     }
 
+    // 覆盖某格的最后一条区域记录（与 revert 的 matched 顺序一致：数组顺序，最后一条优先）。
+    // prepareMask 的跳过判定用它找到 partial 记录，按逐格计划假值核对。
+    function lastCoveringRange(ranges, sheetName, absRow, col) {
+        var found = null;
+        for (var i = 0; i < ranges.length; i++) {
+            var it = ranges[i];
+            if (!it || it.s !== sheetName) { continue; }
+            if (col < it.c1 || col > it.c2) { continue; }
+            if (absRow < it.r1 || absRow > it.r2) { continue; }
+            found = it;
+        }
+        return found;
+    }
+
+    // partial 记录里第 absRow 行的快照下标；没有快照（空白/本批未写的洞）返回 -1。
+    // revert 对 partial 记录只做逐格核对，不按桶反查——这是"回滚失败列"唯一安全的还原方式。
+    function partialRowAt(rec, absRow) {
+        var p = rec && rec.partial;
+        if (!p || !isArr(p.values) || !isArr(p.keys)) { return -1; }
+        var idx = absRow - Math.floor(Number(rec.r1));
+        if (idx < 0 || idx >= p.values.length) { return -1; }
+        if (p.values[idx] == null) { return -1; }
+        return idx;
+    }
+
+    // 一条 partial 记录的逐格快照是否已经全部核对过（可以整条丢弃）
+    function partialEmpty(rec) {
+        var p = rec && rec.partial;
+        if (!p || !isArr(p.values)) { return true; }
+        for (var i = 0; i < p.values.length; i++) {
+            if (p.values[i] != null) { return false; }
+        }
+        return true;
+    }
+
     // 还原：只处理 vault.ranges 登记过的矩形。每个单元格用"登记该矩形时记下的签名"找桶，
     // 不依赖当前选区重新猜配置（hasHeader=false、只选数据行时猜出来的配置往往是错的）。
     // 只有记录里没有签名（旧格式）时才退到全局索引，且只在该假值全局唯一时使用。
+    // 回滚失败列留下的 partial 记录例外：逐格与"该行计划假值"核对，绝不按桶反查。
     function revert(model, vault, opts) {
         opts = opts || {};
         var idx = buildIndex(vault);
-        var stats = { cells: 0, hit: 0, miss: 0, columns: 0, ambiguous: 0, marked: 0, markError: '', trimmed: 0 };
+        var stats = {
+            cells: 0, hit: 0, miss: 0, columns: 0, ambiguous: 0,
+            skippedPartial: 0, partialTrimmed: 0,
+            marked: 0, markError: '', trimmed: 0
+        };
         var outputs = [];
         var trims = [];
+        var partialHits = [];
         var ranges = vault.ranges || [];
         var base = model.top + model.firstDataRow;
 
@@ -2354,6 +2572,7 @@ var MaskEngine = (function () {
             if (!covering.length) { continue; }   // 没登记过的列不碰
             var newVals = [];
             var parts = [];      // 选区里落在登记区域内的连续行段（0 基）
+            var trimFlags = [];  // 只有走"按桶反查"的正常路径处理过的行才裁区域
             var runStart = -1;
             var any = false, colMiss = 0;
 
@@ -2372,12 +2591,41 @@ var MaskEngine = (function () {
                 }
                 if (runStart < 0) { runStart = r; }
                 var v = col.values[r];
-                if (isBlank(v)) { newVals.push(v); continue; }
+                if (isBlank(v)) {
+                    // 空白格没写过假值，但它在区域记录的行段里：照旧参与区域裁剪。
+                    // partial 记录会被 forgetRanges 跳过，所以这里也裁不到逐格快照。
+                    trimFlags[r] = true;
+                    newVals.push(v);
+                    continue;
+                }
                 stats.cells++;
 
-                // 最近登记（最后一条）的签名优先：同一格被多次登记时，当前假值来自最后一次映射
+                // 最近登记（最后一条）是回滚失败列的 partial 记录时：只认"本行计划假值"。
+                // 相等才写回本行原值；不相等说明它已是原值或被人工改过，不动、只计数。
+                // 无论哪种情况，这一格的快照都算核对过，避免第二次 revert 再处理。
+                var lastRec = matched[matched.length - 1];
+                var pid = partialRowAt(lastRec, absRow);
+                if (pid >= 0) {
+                    var planned = lastRec.partial.values[pid];
+                    if (looseOf(v) === looseOf(planned)) {
+                        newVals.push(valueFromKey(lastRec.partial.keys[pid]));
+                        stats.hit++;
+                        any = true;
+                    } else {
+                        newVals.push(v);
+                        stats.skippedPartial++;
+                    }
+                    partialHits.push({ rec: lastRec, idx: pid });
+                    continue;
+                }
+                // 本行走正常反查：区域内只有本行没写过的洞（partial 记录里是 null）才会到这里
+                trimFlags[r] = true;
+
+                // 最近登记（最后一条）的签名优先：同一格被多次登记时，当前假值来自最后一次映射。
+                // partial 记录不参与选签名：它有逐格快照，洞以外的行不会走到这里。
                 var sig = null;
                 for (var si = matched.length - 1; si >= 0; si--) {
+                    if (matched[si].partial) { continue; }
                     var rs = rangeSigAt(matched[si], col.col);
                     if (rs != null) { sig = rs; break; }
                 }
@@ -2420,6 +2668,19 @@ var MaskEngine = (function () {
                 }
             }
             if (runStart >= 0) { parts.push({ start: runStart, end: col.values.length - 1 }); }
+            // 区域记录只裁"走正常反查处理过"的行：partial 记录的行由逐格快照自己消费，
+            // 不能按矩形差集裁（矩形比快照粗，会连洞一起裁掉）。
+            var trimParts = [];
+            var trimStart = -1;
+            for (var tf = 0; tf <= col.values.length; tf++) {
+                var trimmable = tf < col.values.length && trimFlags[tf];
+                if (trimmable) {
+                    if (trimStart < 0) { trimStart = tf; }
+                } else if (trimStart >= 0) {
+                    trimParts.push({ start: trimStart, end: tf - 1 });
+                    trimStart = -1;
+                }
+            }
             if (any) {
                 // 只有这一列确实还原了值时，才把未命中的单元格计入提示，
                 // 否则「不处理」列会被误报为"未命中"
@@ -2428,7 +2689,7 @@ var MaskEngine = (function () {
                 stats.miss += colMiss;
                 // 只有确实写回了值的片段才从区域记录里扣掉：一个都没命中时表格没变，
                 // 记录也不该变，否则下次重试同一选区会被当成"没映射过"
-                if (parts.length) { trims.push({ col: col, parts: parts }); }
+                if (trimParts.length) { trims.push({ col: col, parts: trimParts }); }
             }
         }
 
@@ -2446,6 +2707,27 @@ var MaskEngine = (function () {
                         base + part.start, tc.col.col, base + part.end, tc.col.col);
                     stats.trimmed++;
                 }
+            }
+            // partial 记录逐格消费：核对过的格子清空快照；整条都核对完的记录直接删掉。
+            // 不能按矩形差集裁：快照是逐格的，矩形比它粗会连还没还原的行一起丢掉线索。
+            for (var ph = 0; ph < partialHits.length; ph++) {
+                var pentry = partialHits[ph];
+                var psnap = pentry.rec.partial;
+                if (psnap && isArr(psnap.values) && psnap.values[pentry.idx] != null) {
+                    psnap.values[pentry.idx] = null;
+                    if (isArr(psnap.keys)) { psnap.keys[pentry.idx] = null; }
+                    stats.partialTrimmed++;
+                }
+            }
+            if (partialHits.length) {
+                var keptRanges = [];
+                var curRanges = vault.ranges || [];
+                for (var kr = 0; kr < curRanges.length; kr++) {
+                    if (curRanges[kr] && curRanges[kr].partial && partialEmpty(curRanges[kr])) { continue; }
+                    keptRanges.push(curRanges[kr]);
+                }
+                vault.ranges = keptRanges;
+                ranges = keptRanges;
             }
             // 还原过的块不再是"已映射"：标记边框跟着区域记录重画，剩下的块保持有边框。
             // 一格都没还原（hit=0）时表格与记录都没变，不刷新也不动边框。
@@ -2519,6 +2801,7 @@ var MaskEngine = (function () {
             recordRange: recordRange,
             forgetRanges: forgetRanges,
             buildIndex: buildIndex,
+            refreshSheetMarks: refreshSheetMarks,
             genPhone: genPhone,
             genNumber: genNumber,
             genText: genText,

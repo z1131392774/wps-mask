@@ -1364,7 +1364,7 @@ const app43 = new MockWPS();
 app43.setTable('Sheet1', 1, 1, [['姓名'], ['张三'], ['李四']]);
 paintUserBorders(app43, 'Sheet1', 1, 1, 3, 1, THIN_EDGE);
 app43.select('Sheet1', 1, 1, 3, 1);
-// 真机上只读文档的 Save() 既不抛错也不写盘，mtime 不变、写入却进了内存
+// 真机上只读文档的 Save() 会弹替换框；Cancel 抛 HRESULT、Yes 静默返回但文件不变（见 tools/live/HANDOFF.md）
 app43.ActiveWorkbook.ReadOnly = true;
 const vault43 = Engine.loadVault(app43);
 const plan43 = Engine.prepareMask(Engine.analyze(app43, {}), vault43);
@@ -2293,6 +2293,19 @@ ok(sameEdge(app66.getBorder('Sheet1', 2, 1, EDGE_TOP), THICK66),
     '无关旧区域的手改边框没有被回放：' + JSON.stringify(app66.getBorder('Sheet1', 2, 1, EDGE_TOP)));
 ok(sameEdge(app66.getBorder('Sheet1', 13, 1, EDGE_TOP), MARK_EDGE),
     '本次新区域照常画标记边框');
+// 传入的过滤区域全都不是本表 / 不合法时，要按"整表刷新"处理：过滤结果为空数组是 truthy，
+// 旧代码会让下面把所有区域都当成与本次无关而跳过，刷新静默变成什么都不做。
+const BAD66 = { ls: 1, w: 4, c: 255 };
+app66.setBorder('Sheet1', 2, 2, EDGE_TOP, BAD66);
+Engine._internal.refreshSheetMarks(app66.sheets[0], v66,
+    [{ s: 'OtherSheet', r1: 1, c1: 1, r2: 2, c2: 2 }]);
+ok(sameEdge(app66.getBorder('Sheet1', 2, 2, EDGE_TOP), MARK_EDGE),
+    '异表过滤区域 → 按整表刷新重新画上标记边框：' + JSON.stringify(app66.getBorder('Sheet1', 2, 2, EDGE_TOP)));
+app66.setBorder('Sheet1', 2, 2, EDGE_TOP, BAD66);
+Engine._internal.refreshSheetMarks(app66.sheets[0], v66,
+    [{ s: 'Sheet1', r1: NaN, c1: 0, r2: -1, c2: 5 }]);
+ok(sameEdge(app66.getBorder('Sheet1', 2, 2, EDGE_TOP), MARK_EDGE),
+    '非法矩形（NaN / 列号 < 1 / 行区间倒置）→ 同样按整表刷新');
 
 /* ---------- 67. 标记外框不碰区域内部网格线 ---------- */
 console.log('\n[67] 画标记外框不改内部网格线，回滚也不碰');
@@ -2321,6 +2334,591 @@ ok(sameEdge(app67.getBorder('Sheet1', 2, 1, EDGE_TOP), THIN_EDGE) &&
     sameEdge(app67.getBorder('Sheet1', 5, 2, 11), THIN_EDGE) &&
     sameEdge(app67.getBorder('Sheet1', 5, 2, 12), THIN_EDGE),
     '外框回到原细实线，内部网格线始终没被碰过');
+
+/* ---------- 68. 写失败回滚也走文本标记：前导零原值不被宿主强转 ---------- */
+console.log('\n[68] 写失败回滚走文本标记：前导零原值保住');
+// 常规格式的宿主会把数字形状字符串解析成数字；engine 写假值靠 textForWrite 的 ' 标记
+// 保住类型，回滚写原值时也必须走同一条路，否则回滚自己就把原值毁成数字 8081。
+function coerceApp68(rows2d) {
+    const a = new MockWPS();
+    a.coerceGeneralText = true;
+    a.setTable('Sheet1', 1, 1, rows2d);
+    a.select('Sheet1', 1, 1, rows2d.length, rows2d[0].length);
+    return a;
+}
+function maskWithWriteFailure68(a, hook) {
+    const v = Engine.loadVault(a);
+    const plan = Engine.prepareMask(Engine.hydrate(Engine.analyze(a, {}), v), v);
+    a.setWriteHook(hook);
+    let err = null;
+    try { Engine.writeMask(plan); } catch (e) { err = e; }
+    a.clearWriteHook();
+    return { v: v, plan: plan, err: err };
+}
+
+// 68a 整块写失败：逐列回滚同样用 ' 标记，字符串原值原样回来
+const app68 = coerceApp68([['账号', '编号', '备注'], ['008081', '000123', 'abc'], ['007280', '004567', 'def']]);
+const fail68 = maskWithWriteFailure68(app68, function (info) {
+    // 只让 3 列合并的那一次块写失败；逐列回滚是 2 行 x 1 列，照常放行
+    return (info.sheet === 'Sheet1' && info.cols > 1) ? 'throw' : null;
+});
+ok(!!fail68.err && fail68.err.rollback.ok === true && fail68.err.rollback.rangesReset === true,
+    '块写失败后回滚成功：rollback.ok=true、区域记录照旧撤销：' + JSON.stringify(fail68.err.rollback));
+ok(app68.getCell('Sheet1', 2, 1) === '008081' && typeof app68.getCell('Sheet1', 2, 1) === 'string',
+    '008081 回滚后仍是字符串（不是数字 8081）：' + JSON.stringify(app68.getCell('Sheet1', 2, 1)));
+ok(app68.getCell('Sheet1', 2, 2) === '000123' && app68.getCell('Sheet1', 3, 2) === '004567',
+    '第二列前导零也原样回滚：' + JSON.stringify([app68.getCell('Sheet1', 2, 2), app68.getCell('Sheet1', 3, 2)]));
+ok(fail68.v.ranges.length === 0, '回滚成功后区域记录撤销，可以干净重试：' + fail68.v.ranges.length);
+
+// 68b 单列写失败（走 writeColumn 路径）：同样保住类型
+const app68b = coerceApp68([['账号'], ['008081'], ['007280']]);
+let phase68b = 0;
+const fail68b = maskWithWriteFailure68(app68b, function () {
+    phase68b++;
+    return phase68b === 1 ? 'throw' : null;
+});
+ok(!!fail68b.err && fail68b.err.rollback.ok === true &&
+    app68b.getCell('Sheet1', 2, 1) === '008081' && app68b.getCell('Sheet1', 3, 1) === '007280',
+    '单列写失败回滚也保住前导零字符串：' +
+    JSON.stringify([app68b.getCell('Sheet1', 2, 1), app68b.getCell('Sheet1', 3, 1)]));
+
+// 68c 回滚也失败：区域记录必须保留，事后「反映射」仍能找回剩余的假值
+const rows68c = [
+    ['账号', '编号', '备注', '', '城市'],
+    ['008081', '000123', 'abc', '', '北京'],
+    ['007280', '004567', 'def', '', '上海']
+];
+const app68c = coerceApp68(rows68c);
+let phase68c = 0;
+const fail68c = maskWithWriteFailure68(app68c, function () {
+    phase68c++;
+    if (phase68c === 1) { return null; }        // 第 1 组（账号/编号/备注 整块）写成功
+    if (phase68c === 2) { return 'throw'; }     // 第 2 组（城市 单列）写失败
+    if (phase68c === 4) { return 'ignore'; }    // 回滚顺序 城市→备注→编号→账号：备注列被静默吞掉
+    return null;
+});
+ok(fail68c.plan.columns.length === 4, '前置：空列被跳过，实际写 4 列');
+ok(!!fail68c.err && fail68c.err.rollback.ok === false && fail68c.err.rollback.rangesReset === false,
+    '回滚未完成：rollback.ok=false、rangesReset=false（区域记录不撤销）：' + JSON.stringify(fail68c.err.rollback));
+ok(fail68c.err.rollback.failedColumns.join(',') === '3',
+    '只有第 3 列回滚失败，失败列号记在 rollback.failedColumns：' +
+    JSON.stringify(fail68c.err.rollback.failedColumns));
+ok(/只有第 3 列未能回滚/.test(fail68c.err.message) && /其余列已恢复原值/.test(fail68c.err.message),
+    '错误文案只指向失败列，并说明其余列已恢复原值');
+ok(/映射记录只保留失败列/.test(fail68c.err.message) && /反映射/.test(fail68c.err.message),
+    '错误文案说明区域记录只保留失败列，并指路「反映射」');
+ok(fail68c.v.ranges.length === 1 && fail68c.v.ranges[0].c1 === 3 && fail68c.v.ranges[0].c2 === 3,
+    '成功列的区域记录已撤销，只保留失败列（备注，第 3 列）：' +
+    JSON.stringify(fail68c.v.ranges.map(function (r) { return r.c1 + ':' + r.r1 + '-' + r.r2; })));
+ok(!!fail68c.v.ranges[0].partial && fail68c.v.ranges[0].partial.values.length === 2,
+    '失败列记录带逐行计划假值快照（2 行）');
+ok(app68c.getCell('Sheet1', 2, 1) === '008081' && app68c.getCell('Sheet1', 2, 2) === '000123',
+    '回滚成功的列已恢复成字符串原值（标记生效）：' +
+    JSON.stringify([app68c.getCell('Sheet1', 2, 1), app68c.getCell('Sheet1', 2, 2)]));
+ok(app68c.getCell('Sheet1', 2, 3) !== 'abc',
+    '回滚被吞掉的列仍是假值：' + JSON.stringify(app68c.getCell('Sheet1', 2, 3)));
+app68c.select('Sheet1', 1, 1, rows68c.length, 5);
+const rev68c = Engine.revert(Engine.hydrate(Engine.analyze(app68c, {}), fail68c.v), fail68c.v, {});
+ok(rev68c.hit === 2 && app68c.getCell('Sheet1', 2, 3) === 'abc' && app68c.getCell('Sheet1', 3, 3) === 'def',
+    '失败列的逐格快照让「反映射」仍能还原剩余假值：hit=' + rev68c.hit);
+ok(app68c.getCell('Sheet1', 2, 1) === '008081' && app68c.getCell('Sheet1', 3, 2) === '004567',
+    '反映射没碰已回滚成功的列：' +
+    JSON.stringify([app68c.getCell('Sheet1', 2, 1), app68c.getCell('Sheet1', 3, 2)]));
+ok(fail68c.v.ranges.length === 0, '快照逐格消费完，失败列记录被删掉：' + fail68c.v.ranges.length);
+
+/* ---------- 69. 旧 mixed 桶 digit-string 假值：新 number 假值不得 loose 碰撞 ---------- */
+console.log('\n[69] 旧 mixed 桶 digit-string 假值不再与新 number 假值碰撞');
+// 旧版 genMixed 给数字生成 digit-string（'58'），真机常规格式会把它强转成 number 58。
+// 新代码生成数字假值要同时避开旧假值的 typed（'n:58'）与 loose（'58'）两种形态；
+// 否则新假值 58 会盖住旧格 58 的还原目标：revert 先查 typed，把旧原值 42 还原成 59/60。
+const app69 = coerceApp68([['账号'], [42], ['王小明']]);
+// 旧文档现场：42 的单元格已被旧假值 58 覆盖，宿主把 digit-string 变成了 number；文本假值保持文本
+app69.setTable('Sheet1', 2, 1, [[58]]);
+app69.setTable('Sheet1', 3, 1, [['账号6']]);
+const v69 = Engine.loadVault(app69);
+v69.maps['mixed'] = { 'n:42': '58', 's:王小明': '账号6' };
+v69.ranges = [{ s: 'Sheet1', r1: 2, c1: 1, r2: 3, c2: 1, sigs: { '1': 'mixed' } }];
+// 追加新行 58 / 59 / 新人，只选中新增行脱敏
+app69.setTable('Sheet1', 4, 1, [[58], [59], ['新人']]);
+app69.select('Sheet1', 4, 1, 3, 1);
+const realRandom69 = Math.random;
+Math.random = function () { return 0; };   // 固定随机 0：修复前 orig=59 会稳定拿到假值 58
+let stats69 = null, err69 = null;
+try { stats69 = Engine.applyMask(Engine.hydrate(Engine.analyze(app69, {}), v69), v69, {}); }
+catch (e) { err69 = e; }
+finally { Math.random = realRandom69; }
+ok(!err69 && !!stats69 && stats69.created === 3,
+    '新增行脱敏成功（新建 2 个数字 + 1 个文本映射）：' + (err69 ? err69.message : JSON.stringify(stats69)));
+const bucket69 = v69.maps['mixed'];
+const newFakes69 = [bucket69['n:58'], bucket69['n:59']];
+ok(newFakes69[0] != null && newFakes69[1] != null &&
+    newFakes69.every(function (f) { return String(f) !== '58'; }),
+    '新 number 假值避开了旧假值的 loose 形态 58：' + JSON.stringify(newFakes69));
+// 反查索引是 revert 实际用的结构：新假值既不能占 typed 'n:58'（数字 58），
+// 也不能占 loose '58'（旧 digit-string 假值被宿主转成的 number）
+const idx69 = Engine._internal.buildIndex(v69);
+const g69 = idx69.global;
+ok(!g69.typedConflict['n:58'] && !Object.prototype.hasOwnProperty.call(idx69.bySig['mixed'].typed, 'n:58'),
+    'typed 索引没有新条目占用 n:58（revert 不会把旧格 58 指向新原值）');
+ok(!g69.looseConflict['58'] && g69.loose['58'] === 'n:42',
+    'loose 索引里 58 仍唯一指向旧原值 n:42（无 loose 冲突）');
+app69.select('Sheet1', 1, 1, 6, 1);
+const rev69 = Engine.revert(Engine.hydrate(Engine.analyze(app69, {}), v69), v69, {});
+ok(app69.getCell('Sheet1', 2, 1) === 42,
+    '旧原值 42 还原正确（未被写坏成 59/60）：' + JSON.stringify(app69.getCell('Sheet1', 2, 1)));
+ok(app69.getCell('Sheet1', 3, 1) === '王小明',
+    '旧文本行也还原：' + JSON.stringify(app69.getCell('Sheet1', 3, 1)));
+ok(app69.getCell('Sheet1', 4, 1) === 58 && app69.getCell('Sheet1', 5, 1) === 59 &&
+    app69.getCell('Sheet1', 6, 1) === '新人',
+    '新增行原值全部还原：' + JSON.stringify([
+        app69.getCell('Sheet1', 4, 1), app69.getCell('Sheet1', 5, 1), app69.getCell('Sheet1', 6, 1)]));
+ok(rev69.miss === 0, '整列反映射无未命中：miss=' + rev69.miss);
+
+/* ---------- 70. 混合列分批脱敏：已发出的 number 假值计入区间容量 ---------- */
+console.log('\n[70] 混合列分批脱敏：旧 number 假值计入区间容量');
+// numberCfgOf 只按本批数据算区间，桶里已经发出去的 number 假值仍占着槽位：
+// 分批脱敏时新数字会撞满旧槽位，逐个生成必然抛「数值区间不够用」。
+// 固定种子 PRNG 让第一批假值稳定占掉第二批区间里的槽位（修复前这里必失败）。
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        var t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+const realRandom70 = Math.random;
+const rows70 = [['编号']];
+for (let i = 0; i < 100; i++) { rows70.push([1000 + i]); }
+rows70.push(['混合文本']);
+const app70 = coerceApp68(rows70);
+const v70 = Engine.loadVault(app70);
+let first70 = null;
+Math.random = mulberry32(1);
+try { first70 = Engine.applyMask(Engine.hydrate(Engine.analyze(app70, {}), v70), v70, {}); }
+finally { Math.random = realRandom70; }
+ok(!!first70 && first70.written === 101,
+    '第一批 100 个数字 + 1 个文本全部脱敏：' + (first70 && first70.written));
+const oldNums70 = [];
+Object.keys(v70.maps['mixed']).forEach(function (k) {
+    const mv = v70.maps['mixed'][k];
+    if (typeof mv === 'number') { oldNums70.push(mv); }
+});
+const occupied70 = oldNums70.filter(function (v) { return v >= 1100 && v <= 1110; }).length;
+ok(occupied70 >= 3,
+    '前置：第一批 number 假值已占住第二批区间 [1100,1110] 的 ' + occupied70 + ' 个槽位');
+const appended70 = [];
+for (let i = 0; i < 11; i++) { appended70.push([1100 + i]); }
+appended70.push(['新文本']);
+app70.setTable('Sheet1', rows70.length + 1, 1, appended70);
+app70.select('Sheet1', rows70.length + 1, 1, appended70.length, 1);
+let second70 = null, err70 = null;
+Math.random = mulberry32(2);
+try { second70 = Engine.applyMask(Engine.hydrate(Engine.analyze(app70, {}), v70), v70, {}); }
+catch (e) { err70 = e; }
+finally { Math.random = realRandom70; }
+ok(!err70 && !!second70 && second70.written === 12,
+    '第二批只脱敏新增行成功（不再报区间不够用）：' + (err70 ? err70.message : JSON.stringify(second70)));
+const bucket70 = v70.maps['mixed'];
+const fakes70 = [];
+for (let i = 0; i < 11; i++) { fakes70.push(bucket70['n:' + (1100 + i)]); }
+ok(fakes70.every(function (f) { return typeof f === 'number'; }), '前置：11 个新数字都有假值映射');
+ok(new Set(fakes70).size === fakes70.length,
+    '11 个新 number 假值两两不同：' + JSON.stringify(fakes70));
+ok(fakes70.some(function (f) { return f > 1112; }),
+    '区间按已占槽位撑到 1112 以上（本批区间原本只到 1112）：' + JSON.stringify(fakes70));
+app70.select('Sheet1', 1, 1, rows70.length + appended70.length, 1);
+const rev70 = Engine.revert(Engine.hydrate(Engine.analyze(app70, {}), v70), v70, {});
+let back70 = true;
+for (let i = 0; i < 11; i++) {
+    if (app70.getCell('Sheet1', rows70.length + 1 + i, 1) !== 1100 + i) { back70 = false; }
+}
+ok(back70, '新增 11 行整列反映射后原值精确还原');
+ok(app70.getCell('Sheet1', 2, 1) === 1000 && app70.getCell('Sheet1', 101, 1) === 1099,
+    '第一批原值也正确还原：' +
+    JSON.stringify([app70.getCell('Sheet1', 2, 1), app70.getCell('Sheet1', 101, 1)]));
+ok(rev70.miss === 0, '整列反映射无未命中：miss=' + rev70.miss);
+
+// 值相等按引擎的 loose 语义比（宿主可能把数字形状文本强转成数字）
+function looseEq72(a, b) {
+    return String(a) === String(b);
+}
+
+/* ---------- 71. 回滚失败只保留失败列 + 逐格计划假值快照：成功列永不被改写 ---------- */
+console.log('\n[71] 回滚失败只保留失败列，失败列按逐格快照还原');
+// 独立复核的 A3/A3b 回归：数字列 A + 空列断开写入分组 + 文本列 C，C 写入失败且 C 的回滚
+// 被宿主吞掉、A 回滚成功。旧实现保留了 A 的区域记录，用户按提示「反映射」时 A 的原值会
+// 被当成 C 列假值反查，改写成别的行原值；不反映射直接重映射又会把 A 的原值当已映射跳过。
+// 修复：失败只保留失败列的区域记录，并给每条记录附逐行「计划假值 + 原值桶键」快照；
+// revert 对快照逐格核对（当前格 === 该行计划假值才写回该行原值），绝不按桶反查。
+function partialFailure71(rows2d, rollbackMode) {
+    const a = new MockWPS();
+    a.setTable('Sheet1', 1, 1, rows2d);
+    a.select('Sheet1', 1, 1, rows2d.length, rows2d[0].length);
+    const v = Engine.loadVault(a);
+    const plan = Engine.prepareMask(Engine.hydrate(Engine.analyze(a, {}), v), v, {});
+    let call = 0;
+    a.setWriteHook(function (info) {
+        call++;
+        if (call === 1) { return null; }               // 第 1 组（数字列 A）写成功
+        if (call === 2) {                              // 第 2 组（文本列 C）：先落值再抛错
+            for (let r0 = 0; r0 < info.rows; r0++) {
+                for (let c0 = 0; c0 < info.cols; c0++) {
+                    // 模拟宿主落值：' 文本标记由宿主剥离，数字保持数字
+                    let raw = info.value[r0][c0];
+                    if (typeof raw === 'string') { raw = raw.replace(/^'/, ''); }
+                    a.grid[info.sheet + '!' + (info.row + r0) + ',' + (info.col + c0)] = raw;
+                }
+            }
+            return 'throw';
+        }
+        if (call === 3) {                              // C 的回滚被宿主吞掉
+            if (rollbackMode === 'half') {
+                // 回滚一半：偶数行真的写回原值，其余行仍是假值
+                for (let r0 = 0; r0 < info.rows; r0 += 2) {
+                    let raw = info.value[r0][0];
+                    if (typeof raw === 'string') { raw = raw.replace(/^'/, ''); }
+                    a.grid[info.sheet + '!' + (info.row + r0) + ',' + info.col] = raw;
+                }
+            }
+            return 'ignore';
+        }
+        return null;                                   // A 的回滚成功
+    });
+    let err = null;
+    try { Engine.writeMask(plan); } catch (e) { err = e; }
+    a.clearWriteHook();
+    return { app: a, vault: v, plan: plan, err: err };
+}
+
+// 71a 数字列 A 回滚成功 + 文本列 C 回滚失败：按文案反映射，A 的原值一格都不能变
+const rows71a = [['编号', '', '备注']];
+for (let i = 0; i < 12; i++) { rows71a.push([1000 + i, '', 'n' + i]); }
+const fail71a = partialFailure71(rows71a, null);
+ok(!!fail71a.err && fail71a.err.rollback.ok === false &&
+    fail71a.err.rollback.failedColumns.join(',') === '3',
+    '只有备注列（第 3 列）回滚失败：' + JSON.stringify(fail71a.err && fail71a.err.rollback));
+ok(/只有第 3 列未能回滚/.test(fail71a.err.message) && /其余列已恢复原值/.test(fail71a.err.message) &&
+    /映射记录只保留失败列/.test(fail71a.err.message),
+    '错误文案明确只有失败列未回滚、其余列已恢复，且不再说「先反映射恢复剩余假值」这种通用话');
+const ranges71a = fail71a.vault.ranges;
+ok(ranges71a.length === 1 && ranges71a[0].c1 === 3 && ranges71a[0].c2 === 3,
+    '区域记录只保留失败列（不回滚成功列）：' +
+    JSON.stringify(ranges71a.map(function (r) { return r.c1 + ':' + r.r1 + '-' + r.r2; })));
+ok(!!ranges71a[0].partial && ranges71a[0].partial.values.length === 12 &&
+    ranges71a[0].partial.keys.length === 12,
+    '失败列记录带 12 行逐格快照（计划假值 + 原值桶键）');
+let aRestored71a = true;
+for (let i = 0; i < 12; i++) {
+    if (fail71a.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { aRestored71a = false; }
+}
+ok(aRestored71a, '回滚成功的编号列已是原值 1000..1011');
+// 快照必须能随映射表落盘：JSON 序列化往返后逐格还原仍然安全
+Engine.saveVault(fail71a.app, fail71a.vault);
+const reloaded71a = Engine.loadVault(fail71a.app);
+ok(reloaded71a.ranges.length === 1 && !!reloaded71a.ranges[0].partial &&
+    reloaded71a.ranges[0].partial.values.length === 12,
+    '逐格快照随映射表落盘：读回后仍是 1 条 partial 记录');
+fail71a.app.select('Sheet1', 1, 1, rows71a.length, 3);
+const rev71a = Engine.revert(Engine.hydrate(Engine.analyze(fail71a.app, {}), reloaded71a), reloaded71a, {});
+let corrupt71a = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail71a.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { corrupt71a++; }
+}
+ok(corrupt71a === 0, '按文案反映射不改写已回滚成功的数字列原值：corrupt=' + corrupt71a + '/12');
+let cBack71a = true;
+for (let i = 0; i < 12; i++) {
+    if (fail71a.app.getCell('Sheet1', 2 + i, 3) !== 'n' + i) { cBack71a = false; }
+}
+ok(cBack71a, '失败列剩余假值被逐格还原成原值 n0..n11');
+ok(rev71a.hit === 12 && rev71a.skippedPartial === 0 && rev71a.miss === 0,
+    '反映射只还原失败列的 12 格：hit=' + rev71a.hit + '、skippedPartial=' + rev71a.skippedPartial +
+    '、miss=' + rev71a.miss);
+ok(rev71a.partialTrimmed === 12, '逐格快照消费 12 格：' + rev71a.partialTrimmed);
+ok(reloaded71a.ranges.length === 0, '快照全部消费完，失败列区域记录被删掉：' + reloaded71a.ranges.length);
+const rev71a2 = Engine.revert(Engine.hydrate(Engine.analyze(fail71a.app, {}), reloaded71a), reloaded71a, {});
+ok(rev71a2.hit === 0 && rev71a2.cells === 0, '第二次反映射是 no-op（记录已裁剪、快照已消费）');
+
+// 71b 失败列内"一半回滚成功"：已恢复的原值不被改写，剩余假值按快照还原
+const rows71b = [['编号', '', '备注']];
+for (let i = 0; i < 12; i++) { rows71b.push([1000 + i, '', 'n' + i]); }
+const fail71b = partialFailure71(rows71b, 'half');
+ok(!!fail71b.err && fail71b.err.rollback.failedColumns.join(',') === '3',
+    '前置：备注列回滚失败，且其中偶数行已被宿主写回原值');
+ok(fail71b.app.getCell('Sheet1', 2, 3) === 'n0' && fail71b.app.getCell('Sheet1', 3, 3) !== 'n1',
+    '前置：失败列一半是原值、一半仍是假值：' +
+    JSON.stringify([fail71b.app.getCell('Sheet1', 2, 3), fail71b.app.getCell('Sheet1', 3, 3)]));
+fail71b.app.select('Sheet1', 1, 1, rows71b.length, 3);
+const rev71b = Engine.revert(Engine.hydrate(Engine.analyze(fail71b.app, {}), fail71b.vault), fail71b.vault, {});
+let corrupt71b = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail71b.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { corrupt71b++; }
+    if (fail71b.app.getCell('Sheet1', 2 + i, 3) !== 'n' + i) { corrupt71b++; }
+}
+ok(corrupt71b === 0, '一半回滚成功的失败列：反映射后原值/剩余假值全部正确（corrupt=' + corrupt71b + '）');
+ok(rev71b.hit === 6 && rev71b.skippedPartial === 6,
+    '剩余 6 格假值被还原、6 格已是原值被跳过且不误写：hit=' + rev71b.hit +
+    '、skippedPartial=' + rev71b.skippedPartial);
+ok(rev71b.partialTrimmed === 12 && fail71b.vault.ranges.length === 0,
+    '12 格快照全部核对消费，区域记录删掉');
+
+// 71c 混合数字列同场景：数字和文本都要按快照逐格还原，且不得改到别的列
+const rows71c = [['混合']];
+for (let i = 0; i < 20; i++) { rows71c.push([1000 + i * 2]); rows71c.push(['文本' + i]); }
+const app71c = new MockWPS();
+app71c.setTable('Sheet1', 1, 1, rows71c);
+app71c.select('Sheet1', 1, 1, rows71c.length, 1);
+const v71c = Engine.loadVault(app71c);
+const plan71c = Engine.prepareMask(Engine.hydrate(Engine.analyze(app71c, {}), v71c), v71c, {});
+ok(plan71c.columns.length === 1 && plan71c.columns[0].col.cfg.mode === 'mixed',
+    '前置：单个混合列（数字/文本交替）');
+let phase71c = 0;
+app71c.setWriteHook(function (info) {
+    phase71c++;
+    if (phase71c === 1) {
+        for (let r0 = 0; r0 < info.rows; r0++) {
+            let raw = info.value[r0][0];
+            if (typeof raw === 'string') { raw = raw.replace(/^'/, ''); }
+            app71c.grid[info.sheet + '!' + (info.row + r0) + ',' + info.col] = raw;
+        }
+        return 'throw';
+    }
+    return 'ignore';                                   // 回滚被吞，整列仍是假值
+});
+let err71c = null;
+try { Engine.writeMask(plan71c); } catch (e) { err71c = e; }
+app71c.clearWriteHook();
+ok(!!err71c && err71c.rollback.failedColumns.join(',') === '1' && v71c.ranges.length === 1 &&
+    !!v71c.ranges[0].partial && v71c.ranges[0].partial.values.length === 40,
+    '混合列回滚失败：只保留它自己的 partial 记录（40 格快照）');
+app71c.select('Sheet1', 1, 1, rows71c.length, 1);
+const rev71c = Engine.revert(Engine.hydrate(Engine.analyze(app71c, {}), v71c), v71c, {});
+let corrupt71c = 0;
+for (let i = 0; i < 20; i++) {
+    if (app71c.getCell('Sheet1', 2 + i * 2, 1) !== 1000 + i * 2) { corrupt71c++; }
+    if (app71c.getCell('Sheet1', 3 + i * 2, 1) !== '文本' + i) { corrupt71c++; }
+}
+ok(corrupt71c === 0, '混合列按快照逐格还原：数字与文本原值无一被写错（corrupt=' + corrupt71c + '）');
+ok(rev71c.hit === 40 && rev71c.skippedPartial === 0 && v71c.ranges.length === 0,
+    '混合列 40 格全部还原、记录删掉：hit=' + rev71c.hit);
+
+// 71d 不反映射直接重映射：成功列的原值不得被当成"已映射"跳过（漏脱敏）
+const rows71d = [['编号', '', '备注']];
+for (let i = 0; i < 12; i++) { rows71d.push([1000 + i, '', 'n' + i]); }
+const fail71d = partialFailure71(rows71d, null);
+ok(fail71d.vault.ranges.length === 1 && fail71d.vault.ranges[0].c1 === 3,
+    '前置：失败后只剩备注列的区域记录');
+fail71d.app.select('Sheet1', 1, 1, rows71d.length, 3);
+let remask71d = null, err71d = null;
+try {
+    remask71d = Engine.applyMask(
+        Engine.hydrate(Engine.analyze(fail71d.app, {}), fail71d.vault), fail71d.vault, {});
+} catch (e) { err71d = e; }
+ok(!err71d && !!remask71d && remask71d.written >= 12,
+    '成功列不被当成已映射：重映射至少写回 12 格（written=' +
+    (remask71d ? remask71d.written : 'err') + '）');
+let leaked71d = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail71d.app.getCell('Sheet1', 2 + i, 1) === 1000 + i) { leaked71d++; }
+}
+ok(leaked71d === 0, '重映射后编号列没有原值漏脱敏：' + leaked71d + '/12');
+ok(remask71d.skipped === 12, '失败列仍是假值的 12 格被跳过、保持假值：' + remask71d.skipped);
+ok(fail71d.vault.ranges.some(function (r) { return r.c1 === 1 && !r.partial; }),
+    '重映射为成功列新登记了正常区域记录');
+// 重映射之后用户再执行反映射：成功列按新登记的区域还原，失败列仍按逐格快照还原，
+// 两条记录都不许把对方列的值当假值反查。
+fail71d.app.select('Sheet1', 1, 1, rows71d.length, 3);
+const rev71d = Engine.revert(Engine.hydrate(Engine.analyze(fail71d.app, {}), fail71d.vault),
+    fail71d.vault, {});
+let corrupt71d = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail71d.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { corrupt71d++; }
+    if (fail71d.app.getCell('Sheet1', 2 + i, 3) !== 'n' + i) { corrupt71d++; }
+}
+ok(corrupt71d === 0 && rev71d.miss === 0,
+    '重映射后再反映射：成功列与失败列都回到原值、无损坏（corrupt=' + corrupt71d +
+    '，miss=' + rev71d.miss + '）');
+ok(fail71d.vault.ranges.length === 0,
+    '重映射后再反映射：区域记录清空，partial 快照全部消费（不留死记录）');
+
+// 单列半回滚失败：写入落值后抛错、回滚只写回偶数行即被宿主吞掉。
+// 数字列/混合列的原值落在同列假值域里，旧跳过判定最容易把已恢复原值当"已映射"。
+function singleColumnHalfFailure72(rows2d) {
+    const a = new MockWPS();
+    a.setTable('Sheet1', 1, 1, rows2d);
+    a.select('Sheet1', 1, 1, rows2d.length, 1);
+    const v = Engine.loadVault(a);
+    const plan = Engine.prepareMask(Engine.hydrate(Engine.analyze(a, {}), v), v, {});
+    let call = 0;
+    a.setWriteHook(function (info) {
+        call++;
+        const half = (call === 2);
+        if (call === 1 || call === 2) {
+            for (let r0 = 0; r0 < info.rows; r0 += (half ? 2 : 1)) {
+                let raw = info.value[r0][0];
+                if (typeof raw === 'string') { raw = raw.replace(/^'/, ''); }
+                a.grid[info.sheet + '!' + (info.row + r0) + ',' + info.col] = raw;
+            }
+            return half ? 'ignore' : 'throw';
+        }
+        return null;
+    });
+    let err = null;
+    try { Engine.writeMask(plan); } catch (e) { err = e; }
+    a.clearWriteHook();
+    return { app: a, vault: v, err: err };
+}
+
+/* ---------- 72. 半回滚失败列 + 不反映射直接重映射：只有本行计划假值才算已映射 ---------- */
+console.log('\n[72] 半回滚失败列直接重映射：已恢复原值必须重新脱敏');
+// 失败列只回滚了一半（6 格原值、6 格假值），用户不先反映射直接重映射同一选区。
+// 旧实现用「当前值是否为桶里的假值」判定跳过：已恢复原值与同列假值落在同一值域，
+// 原值被当成已映射跳过 → 静默漏脱敏。新规则与 revert 一致：partial 覆盖的格只有
+// 当前值等于该行计划假值才跳过，等于原值或其它值必须参与本次映射。
+const rows72 = [['编号', '', '备注']];
+for (let i = 0; i < 12; i++) { rows72.push([1000 + i, '', 'n' + i]); }
+const fail72 = partialFailure71(rows72, 'half');
+ok(!!fail72.err && fail72.err.rollback.failedColumns.join(',') === '3' &&
+    fail72.vault.ranges.length === 1 && !!fail72.vault.ranges[0].partial &&
+    fail72.vault.ranges[0].partial.values.length === 12,
+    '前置：备注列半回滚失败，partial 快照 12 行');
+let halfOriginal72 = 0, halfFake72 = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail72.app.getCell('Sheet1', 2 + i, 3) === 'n' + i) { halfOriginal72++; }
+    else { halfFake72++; }
+}
+ok(halfOriginal72 === 6 && halfFake72 === 6,
+    '前置：6 格已回原值、6 格仍是假值：' + halfOriginal72 + '+' + halfFake72);
+// 映射表落盘再读回：partial 快照跨会话仍在，直接重映射也必须安全
+Engine.saveVault(fail72.app, fail72.vault);
+const reloaded72 = Engine.loadVault(fail72.app);
+const partial72 = reloaded72.ranges.filter(function (r) { return r && r.partial; })[0];
+ok(!!partial72 && partial72.partial.values.length === 12,
+    '前置：保存/重新加载后 partial 快照仍在');
+const planned72 = partial72.partial.values.slice();
+const wasFake72 = planned72.slice();
+// 不反映射，直接重新映射同一选区
+fail72.app.select('Sheet1', 1, 1, rows72.length, 3);
+const remap72 = Engine.applyMask(Engine.hydrate(Engine.analyze(fail72.app, {}), reloaded72),
+    reloaded72, {});
+ok(remap72.written === 18 && remap72.skipped === 6,
+    '半回滚后直接重映射：6 格原值重新脱敏、6 格残留假值跳过（written=' +
+    remap72.written + '、skipped=' + remap72.skipped + '）');
+let leaked72 = 0, stillPlanned72 = 0;
+const cVals72 = [];
+for (let i = 0; i < 12; i++) {
+    const got = fail72.app.getCell('Sheet1', 2 + i, 3);
+    cVals72.push(got);
+    if (got === 'n' + i) { leaked72++; }
+    if (looseEq72(got, wasFake72[i])) { stillPlanned72++; }
+}
+ok(leaked72 === 0, '重映射后已恢复的原值全部重新脱敏，无漏脱敏：' + leaked72 + '/12');
+ok(stillPlanned72 === 12, '整列 12 格都回到旧计划假值（6 格原值沿用桶内旧假值，6 格保留假值）');
+ok(distinctOf(cVals72) === 12,
+    '12 格假值仍两两不同（重映射没有破坏一一映射）');
+ok(reloaded72.ranges.some(function (r) { return r.c1 === 3 && !r.partial; }),
+    '重映射为备注列登记了新的正常区域记录（旧 partial 记录保留待逐格消费）');
+// 重映射之后再反映射：新正常记录还原整列，旧 partial 记录留着也不破坏数据
+fail72.app.select('Sheet1', 1, 1, rows72.length, 3);
+const rev72 = Engine.revert(Engine.hydrate(Engine.analyze(fail72.app, {}), reloaded72),
+    reloaded72, {});
+let corrupt72 = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail72.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { corrupt72++; }
+    if (fail72.app.getCell('Sheet1', 2 + i, 3) !== 'n' + i) { corrupt72++; }
+}
+ok(corrupt72 === 0 && rev72.miss === 0,
+    '重映射后反映射：编号列与备注列 24 格全部精确还原（corrupt=' + corrupt72 +
+    '、miss=' + rev72.miss + '）');
+ok(reloaded72.ranges.filter(function (r) { return r && r.partial; }).length === 1,
+    '旧 partial 快照没被正常记录消费，仍在等待逐格核对');
+// 再反映射一次：剩下只有旧 partial，按逐格核对把已是原值的 12 格跳过并清空记录
+fail72.app.select('Sheet1', 1, 1, rows72.length, 3);
+const rev72b = Engine.revert(Engine.hydrate(Engine.analyze(fail72.app, {}), reloaded72),
+    reloaded72, {});
+let corrupt72b = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail72.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { corrupt72b++; }
+    if (fail72.app.getCell('Sheet1', 2 + i, 3) !== 'n' + i) { corrupt72b++; }
+}
+ok(rev72b.skippedPartial === 12 && corrupt72b === 0,
+    '再次反映射：partial 逐格核对把 12 格已是原值的格子跳过、不改写（skippedPartial=' +
+    rev72b.skippedPartial + '）');
+ok(reloaded72.ranges.length === 0, '旧 partial 记录消费完并删除：ranges=' + reloaded72.ranges.length);
+
+// 72b 数字列（原值与同列假值同域，旧实现会把已恢复原值当已映射跳过 → 漏脱敏）
+const rows72b = [['编号']];
+for (let i = 0; i < 12; i++) { rows72b.push([1000 + i]); }
+const fail72b = singleColumnHalfFailure72(rows72b);
+ok(!!fail72b.err && fail72b.err.rollback.failedColumns.join(',') === '1' &&
+    fail72b.vault.ranges.length === 1 && !!fail72b.vault.ranges[0].partial &&
+    fail72b.vault.ranges[0].partial.values.length === 12,
+    '72b 前置：数字列半回滚失败，partial 快照 12 格');
+let half72b = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail72b.app.getCell('Sheet1', 2 + i, 1) === 1000 + i) { half72b++; }
+}
+ok(half72b === 6, '72b 前置：6 格已回原值、6 格仍是假值');
+Engine.saveVault(fail72b.app, fail72b.vault);
+const reloaded72b = Engine.loadVault(fail72b.app);
+ok(!!reloaded72b.ranges[0].partial && reloaded72b.ranges[0].partial.values.length === 12,
+    '72b 数字列 partial 快照保存/重新加载后仍在');
+fail72b.app.select('Sheet1', 1, 1, rows72b.length, 1);
+const remap72b = Engine.applyMask(Engine.hydrate(Engine.analyze(fail72b.app, {}), reloaded72b),
+    reloaded72b, {});
+ok(remap72b.written === 6 && remap72b.skipped === 6,
+    '72b 数字列直接重映射：6 格原值重新脱敏、6 格残留假值跳过（written=' +
+    remap72b.written + '、skipped=' + remap72b.skipped + '）');
+let leaked72b = 0;
+const vals72b = [];
+for (let i = 0; i < 12; i++) {
+    const got = fail72b.app.getCell('Sheet1', 2 + i, 1);
+    vals72b.push(got);
+    if (got === 1000 + i) { leaked72b++; }
+}
+ok(leaked72b === 0, '72b 数字列无漏脱敏：' + leaked72b + '/12（旧实现会漏 4–6 格）');
+ok(distinctOf(vals72b) === 12, '72b 数字列 12 格假值仍两两不同');
+fail72b.app.select('Sheet1', 1, 1, rows72b.length, 1);
+const rev72bNum = Engine.revert(Engine.hydrate(Engine.analyze(fail72b.app, {}), reloaded72b),
+    reloaded72b, {});
+let corrupt72bNumber = 0;
+for (let i = 0; i < 12; i++) {
+    if (fail72b.app.getCell('Sheet1', 2 + i, 1) !== 1000 + i) { corrupt72bNumber++; }
+}
+ok(corrupt72bNumber === 0 && rev72bNum.miss === 0,
+    '72b 数字列重映射后反映射：12 格精确还原（corrupt=' + corrupt72bNumber + '）');
+
+// 72c 混合数字列（数字/文本交替，数字原值同域）
+const rows72c = [['混合']];
+for (let i = 0; i < 12; i++) {
+    rows72c.push([(i % 2 === 0) ? (1000 + i) : ('文本' + i)]);
+}
+const fail72c = singleColumnHalfFailure72(rows72c);
+ok(!!fail72c.err && fail72c.err.rollback.failedColumns.join(',') === '1' &&
+    !!fail72c.vault.ranges[0].partial && fail72c.vault.ranges[0].partial.values.length === 12,
+    '72c 前置：混合列半回滚失败，partial 快照 12 格');
+fail72c.app.select('Sheet1', 1, 1, rows72c.length, 1);
+const remap72c = Engine.applyMask(Engine.hydrate(Engine.analyze(fail72c.app, {}), fail72c.vault),
+    fail72c.vault, {});
+ok(remap72c.written === 6 && remap72c.skipped === 6,
+    '72c 混合列直接重映射：6 格数字原值重新脱敏、6 格文本假值跳过（written=' +
+    remap72c.written + '、skipped=' + remap72c.skipped + '）');
+let leaked72c = 0;
+for (let i = 0; i < 12; i++) {
+    const got = fail72c.app.getCell('Sheet1', 2 + i, 1);
+    if ((i % 2 === 0) ? (got === 1000 + i) : (got === '文本' + i)) { leaked72c++; }
+}
+ok(leaked72c === 0, '72c 混合列无漏脱敏：' + leaked72c + '/12');
+fail72c.app.select('Sheet1', 1, 1, rows72c.length, 1);
+const rev72c = Engine.revert(Engine.hydrate(Engine.analyze(fail72c.app, {}), fail72c.vault),
+    fail72c.vault, {});
+let corrupt72c = 0;
+for (let i = 0; i < 12; i++) {
+    const want = (i % 2 === 0) ? (1000 + i) : ('文本' + i);
+    if (fail72c.app.getCell('Sheet1', 2 + i, 1) !== want) { corrupt72c++; }
+}
+ok(corrupt72c === 0 && rev72c.miss === 0,
+    '72c 混合列重映射后反映射：12 格精确还原（corrupt=' + corrupt72c + '）');
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);
