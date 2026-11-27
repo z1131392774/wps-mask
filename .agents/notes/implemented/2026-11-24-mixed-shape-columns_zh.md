@@ -1,8 +1,10 @@
 # 决策记录：一列里不止一种东西，怎么脱敏
 
-Status: implemented
+Status: implemented — 已被 2026-11-27 的按类型映射记录取代
 
 *[English](2026-11-24-mixed-shape-columns.md)*
+
+2026-11-27 起被取代：[混合列按 JS 类型映射，不按形态](2026-11-27-type-based-mixed-mapping_zh.md)移除了下文描述的形态模式。本文保留，作为形态分类表与它暴露的两个生成器缺陷的记录；其中的形态规则已全部不再适用。
 
 ## 问题
 
