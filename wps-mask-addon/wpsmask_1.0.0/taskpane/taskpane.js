@@ -95,7 +95,8 @@
 
     function modeOptions(cur) {
         // 前缀「映射为」在页头与按钮上已经说过一次，这里只留结果，免得十行重复十遍
-        var list = [['phone', '手机号'], ['number', '数字'], ['text', '文本'],
+        // 加载项不再有 phone 模式：老文档 settings 里记下的 phone 由引擎 hydrate 按文本处理
+        var list = [['number', '数字'], ['text', '文本'],
             ['mixed', '混合'], ['keep', '不处理']];
         var out = '';
         for (var i = 0; i < list.length; i++) {
@@ -119,9 +120,6 @@
     }
 
     function bodyHtml(cfg) {
-        if (cfg.mode === 'phone') {
-            return '<div class="hint">换成合法的 11 位手机号。</div>';
-        }
         if (cfg.mode === 'keep') {
             return '<div class="hint">这一列不处理。</div>';
         }
@@ -156,7 +154,11 @@
     }
 
     function cardHtml(col, i, open) {
-        var cfg = col.cfg || E.defaultCfg(col.header, col.values);
+        // 加载项不再有 phone 模式：老文档 settings 里记下的 phone 按文本渲染（引擎 hydrate
+        // 已降级，这里兜底，免得下拉和参数区落成手机号语义）
+        var cfg = col.cfg && col.cfg.mode === 'phone'
+            ? defaultForMode('text', col)
+            : (col.cfg || E.defaultCfg(col.header, col.values));
         var name = col.header || ('第 ' + colLetter(col.col) + ' 列');
         var samp;
         try { samp = String(E.sample(cfg, col)); } catch (e) { samp = '—'; }
@@ -273,9 +275,11 @@
     /* ---------------- 界面 → 配置 ---------------- */
 
     function defaultForMode(mode, col) {
+        // 加载项不再有 phone 模式：老文档 settings 里的 phone 按文本处理
+        if (mode === 'phone') { mode = 'text'; }
         var auto = E.defaultCfg(col.header, col.values);
         var digits = E.suffixDigits(col.nonEmptyCount);
-        if (mode === 'phone' || mode === 'keep') { return { mode: mode }; }
+        if (mode === 'keep') { return { mode: mode }; }
         if (mode === 'mixed') {
             if (auto.mode === 'mixed') { return auto; }
             return {
@@ -306,9 +310,11 @@
         if (!col) { return null; }
         var modeEl = card.querySelector('.mode');
         var mode = modeEl ? modeEl.value : (col.cfg.mode || 'text');
+        // 加载项不再有 phone 模式：老文档 settings 里的 phone 按文本处理
+        if (mode === 'phone') { mode = 'text'; }
         var cfg;
 
-        if (mode === 'phone' || mode === 'keep') {
+        if (mode === 'keep') {
             cfg = { mode: mode };
         } else if (mode === 'mixed') {
             cfg = defaultForMode('mixed', col);
@@ -407,9 +413,11 @@
 
     // 表头值还是自动判定出来的（或沿用了上一次的自动判定）、而用户自己从没勾选/取消过时，
     // 首行可能其实是数据：它不会被脱敏，整行都会泄露。给一句能直接照着做的提示。
-    // 只在"有歧义"时提示：全部列都只能按文本处理时，表头和数据行长得一样，启发式才可能猜错；
-    // 有数字这类强证据的列时，首行几乎不可能是数据，提示只会变成每次开面板都刷屏的噪音。
-    // guessMode 只按 JS 类型判断强证据（数值/文本），手机号这类字符串形状不再参与识别。
+    // 引擎只按位置和值类型判表头（选区从第 1 行开始、首行没有数字），不看列名关键词；
+    // 首行全文本时，数据表也会被默认当成表头，才需要用这句提示兜底。
+    // 有数字这类强证据的列时，首行几乎不可能是数据，提示只会变成每次开面板都刷屏的噪音，
+    // 因此只有全部列都只能按文本处理时才提示。加载项不再有 phone 模式：老文档 settings
+    // 里的 phone 按文本处理，不参与表头/类型识别。
     // 用户手动切换过 chkHeader（headerTouched）就不再提示，避免对已经核对过的表反复刷屏。
     function headerWarn(model) {
         if (!(model.hasHeader && (model.headerAuto || !state.headerTouched))) { return ''; }
