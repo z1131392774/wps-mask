@@ -145,6 +145,9 @@ function spyEngine(win) {
     ok(cards[2].querySelector('.samp').textContent !== '', '数字列有示例：' + cards[2].querySelector('.samp').textContent);
     ok(doc.getElementById('bar').style.display !== 'none', '读到列之后工具栏才出现');
     ok(doc.getElementById('btnAuto').style.display === 'none', '本文档没记过设置，「重新识别」不出现');
+    const modeVals = Array.from(cards[0].querySelectorAll('.mode option')).map(o => o.value);
+    ok(modeVals.join(',') === 'number,text,mixed,keep',
+        '映射方式下拉不再有 phone：' + modeVals.join(','));
 
     console.log('\n[2] 参数联动');
     const distSel = cards[2].querySelector('.dist');
@@ -637,8 +640,8 @@ function spyEngine(win) {
 
     console.log('\n[21] 首行被自动判成表头时给出可操作提示');
     {
-        // 全文本数据：表头行和数据行长得一样，启发式只能按"从第 1 行开始就是表格"默认当表头，
-        // 首行一旦其实是数据就整行不脱敏，必须提示用户去取消勾选。
+        // 全文本数据：表头行和数据行长得一样，引擎只凭"从第 1 行开始 + 首行没有数字"
+        // 默认当表头，首行一旦其实是数据就整行不脱敏，必须提示用户去取消勾选。
         const textRows = [
             ['张伟', '北京', '备注一'],
             ['李娜', '上海', '备注二'],
@@ -681,12 +684,29 @@ function spyEngine(win) {
         b.dom.window.close();
     }
     {
-        // 常规表：第二行就有手机号/年龄这类强证据，首行不可能是数据，提示只会变成噪音
+        // 常规表：第二行就有年龄这类数字，说明首行确实是字段名，提示只会变成噪音
         const b = boot();
         await waitLoad(b.dom);
         const d = b.dom.window.document;
         ok(!/首行自动判定为字段名/.test(d.getElementById('selInfo').textContent),
             '常规表头数据不显示表头警告：' + d.getElementById('selInfo').textContent);
+        b.dom.window.close();
+    }
+    {
+        // 反向证据：首行只要出现数字就按数据处理，不自动判表头，也就没有表头警告
+        const numericFirst = [
+            [1, '北京', '备注一'],
+            [2, '上海', '备注二'],
+            [3, '广州', '备注三']
+        ];
+        const b = boot(numericFirst);
+        await waitLoad(b.dom);
+        const d = b.dom.window.document;
+        const info = () => d.getElementById('selInfo').textContent;
+        ok(d.getElementById('chkHeader').checked === false, '首行含数字 → 不自动判成表头');
+        ok(/无表头/.test(info()), '按无表头分析：' + info());
+        ok(!/首行自动判定为字段名/.test(info()), '无表头时不提示表头警告：' + info());
+        ok(d.querySelectorAll('.card').length === 3, '仍是 3 列卡片');
         b.dom.window.close();
     }
 
@@ -1070,6 +1090,43 @@ function spyEngine(win) {
         ok(!/映射表损坏/.test(d.getElementById('status').textContent),
             '保存成功后不再重复提示损坏：' + d.getElementById('status').textContent);
         spy.restore();
+        b.dom.window.close();
+    }
+
+    console.log('\n[33] phone 模式退役：旧 settings 里记的 phone 按文本处理');
+    {
+        const b = boot();
+        await waitLoad(b.dom);
+        const win = b.dom.window;
+        const d = win.document;
+        const E = win.MaskEngine;
+
+        // 老文档的映射表里还记着已退役的 phone 模式：面板读到旧 settings 不能崩，
+        // 也不能再出现手机号语义，而是按文本方式处理这一列。
+        const oldVault = { v: 2, settings: { '手机号': { mode: 'phone' } }, maps: {}, ranges: [], marks: [] };
+        const realLoad = E.loadVault;
+        E.loadVault = () => oldVault;
+        let masked;
+        try {
+            fire(d.getElementById('chkHeader'), 'change');   // 触发一次 refresh，读入旧 settings
+            await sleep(150);
+            const card = d.querySelectorAll('.card')[1];
+            ok(card.querySelector('.mode').value === 'text',
+                '旧 settings 的 phone 按文本显示：' + card.querySelector('.mode').value);
+            ok(!/11 位手机号/.test(d.getElementById('cards').textContent), '不再显示手机号提示');
+            ok(/^手机号\d+$/.test(card.querySelector('.samp').textContent),
+                '旧 phone 列按文本示例：' + card.querySelector('.samp').textContent);
+            ok(b.errors.length === 0, '旧 settings 不崩' + (b.errors.length ? ' → ' + b.errors.join(' | ') : ''));
+
+            d.getElementById('btnMask').click();
+            masked = b.app.getCell('Sheet1', 2, 2);
+            ok(/已映射/.test(d.getElementById('status').textContent),
+                '旧 settings 文档可以继续脱敏：' + d.getElementById('status').textContent);
+        } finally {
+            E.loadVault = realLoad;
+        }
+        ok(typeof masked === 'string' && /\D/.test(masked) && masked !== table[1][1],
+            '旧 phone 列的新值仍是非数字文本：' + masked);
         b.dom.window.close();
     }
 
