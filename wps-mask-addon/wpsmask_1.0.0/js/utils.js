@@ -34,12 +34,22 @@ function MaskAlert(msg) {
     try { console.log(text); } catch (e2) { }
 }
 
-// 非阻塞提示：写宿主的底部状态栏，几秒后自动清空。
+// 非阻塞提示：写宿主的底部状态栏，保留到下一次提示替换，不自动清空。
 // 成功类消息用它，别用弹窗打断；只有取不到状态栏时才退回弹窗，避免什么反馈都没有。
-var MASK_TOAST_TIMER = null;
+// 第二个参数是本次操作的耗时（毫秒），有值时在文案末尾追加「。耗时 …。」。
+function MaskElapsedText(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) { return ''; }
+    if (ms < 1000) { return Math.round(ms) + ' 毫秒'; }
+    return (Math.round(ms / 100) / 10) + ' 秒';
+}
 
-function MaskToast(msg) {
+function MaskToast(msg, elapsedMs) {
     var text = (msg == null) ? '' : String(msg);
+    var took = MaskElapsedText(elapsedMs);
+    if (took && text) {
+        // 结果先说完，再报耗时；原文末尾的句号挪到耗时后面
+        text = text.replace(/。\s*$/, '') + '。耗时 ' + took + '。';
+    }
     var app = MaskGetApp();
     var shown = false;
     if (app) {
@@ -48,22 +58,66 @@ function MaskToast(msg) {
             if (typeof app.StatusBar !== 'undefined') { app.StatusBar = text; shown = true; }
         } catch (e) { shown = false; }
     }
-    if (!shown) { MaskAlert(text); return; }
-    var ms = 4000;
-    try { if (typeof MASK_TOAST_MS === 'number') { ms = MASK_TOAST_MS; } } catch (e2) { }
-    try {
-        if (MASK_TOAST_TIMER) { clearTimeout(MASK_TOAST_TIMER); }
-        MASK_TOAST_TIMER = setTimeout(function () {
-            MASK_TOAST_TIMER = null;
-            var a = MaskGetApp();
-            // 清空用 false 还原状态栏的自动显示，和 VBA 里的写法一致
-            try { if (a) { a.StatusBar = false; } } catch (e3) { }
-        }, ms);
-    } catch (e4) { }
+    if (!shown) { MaskAlert(text); }
 }
 
 function MaskErrText(e) {
     if (!e) { return '未知错误'; }
     if (e.message) { return e.message; }
     return String(e);
+}
+
+/*
+ * 大批量写入期间关掉宿主的屏幕刷新、自动重算和事件，结束时按原值恢复。
+ * 这三个属性都是可选优化：宿主没有或不支持就跳过，不能让操作因此失败。
+ * 恢复放在 finally，写入抛错也不会把宿主留在手动计算/事件关闭的状态。
+ * Calculation 的 -4135 是 xlCalculationManual。
+ */
+function MaskQuietBegin(app) {
+    var s = { app: app, hasScreen: false, screen: null, hasCalc: false, calc: null, hasEvents: false, events: null };
+    if (!app) { return s; }
+    try {
+        if (typeof app.ScreenUpdating !== 'undefined') {
+            s.screen = app.ScreenUpdating;
+            app.ScreenUpdating = false;
+            var sv = app.ScreenUpdating;
+            s.hasScreen = (sv === false || sv === 0);
+        }
+    } catch (eScreen) {
+        s.hasScreen = false;
+    }
+    try {
+        if (typeof app.Calculation !== 'undefined') {
+            s.calc = app.Calculation;
+            app.Calculation = -4135;
+            s.hasCalc = (Number(app.Calculation) === -4135);
+        }
+    } catch (eCalc) {
+        s.hasCalc = false;
+    }
+    try {
+        if (typeof app.EnableEvents !== 'undefined') {
+            s.events = app.EnableEvents;
+            app.EnableEvents = false;
+            var ev = app.EnableEvents;
+            s.hasEvents = (ev === false || ev === 0);
+        }
+    } catch (eEvents) {
+        s.hasEvents = false;
+    }
+    return s;
+}
+
+function MaskQuietEnd(s) {
+    if (!s || !s.app) { return; }
+    var app = s.app;
+    // 先恢复重算（屏幕还关着），再恢复事件，最后打开屏幕重绘
+    if (s.hasCalc) { try { app.Calculation = s.calc; } catch (e1) { /* 恢复失败只能放弃，不能倒回去开屏幕 */ } }
+    if (s.hasEvents) { try { app.EnableEvents = s.events; } catch (e2) { /* 同上 */ } }
+    if (s.hasScreen) { try { app.ScreenUpdating = s.screen; } catch (e3) { /* 同上 */ } }
+}
+
+function MaskQuietHost(app, fn) {
+    var s = MaskQuietBegin(app);
+    try { return fn(); } finally { MaskQuietEnd(s); }
 }

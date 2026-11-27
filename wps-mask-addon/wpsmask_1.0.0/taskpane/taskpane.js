@@ -125,7 +125,7 @@
             return '<div class="hint">这一列不处理。</div>';
         }
         if (cfg.mode === 'mixed') {
-            return '<div class="hint">每个值换成同形态的假值。</div>';
+            return '<div class="hint">数字换成数字，文本换成非数字文本。</div>';
         }
         if (cfg.mode === 'number') {
             var hidden = function (when) { return cfg.dist === when ? '' : ' style="display:none"'; };
@@ -275,7 +275,15 @@
         var auto = E.defaultCfg(col.header, col.values);
         var digits = E.suffixDigits(col.nonEmptyCount);
         if (mode === 'phone' || mode === 'keep') { return { mode: mode }; }
-        if (mode === 'mixed') { return { mode: 'mixed', digits: digits }; }
+        if (mode === 'mixed') {
+            if (auto.mode === 'mixed') { return auto; }
+            return {
+                mode: 'mixed',
+                prefix: col.header || '文本',
+                digits: digits,
+                num: auto.mode === 'number' ? auto : null
+            };
+        }
         if (mode === 'number') {
             if (auto.mode === 'number') { return auto; }
             return { mode: 'number', dist: 'uniform', min: 0, max: 1000, dec: 0, mean: 500, sd: 150, lambda: 500 };
@@ -299,8 +307,10 @@
         var mode = modeEl ? modeEl.value : (col.cfg.mode || 'text');
         var cfg;
 
-        if (mode === 'phone' || mode === 'keep' || mode === 'mixed') {
+        if (mode === 'phone' || mode === 'keep') {
             cfg = { mode: mode };
+        } else if (mode === 'mixed') {
+            cfg = defaultForMode('mixed', col);
         } else if (mode === 'number') {
             var distEl = card.querySelector('.dist');
             cfg = {
@@ -494,12 +504,8 @@
 
     function doMask() {
         if (!state.model) { setStatus('请先读取选区', 'err'); return; }
-        try {
-            var a = getApp();
-            if (isReadOnly(a)) {
-                setStatus(readOnlyText('脱敏后无法还原', '脱敏'), 'err');
-                return;
-            }
+        var a = null;
+        function run() {
             var vault = E.loadVault(a);
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
             // 轮询还没跟上时选区可能已经换成空区域：重新分析后没有列就直说，别拿旧卡片去写
@@ -545,7 +551,7 @@
                 return;
             }
             var extra = stats.skipped > 0 ? ('，跳过 ' + stats.skipped + ' 格') : '';
-            var msg = '已映射 ' + stats.written + ' 格' + extra + '，记得保存文档';
+            var msg = '已映射 ' + stats.written + ' 格' + extra;
             // 边框画失败是部分失败：数据与映射表已经写好，但成功提示会误导，必须显式说明
             var note = '', bad = false;
             if (stats.markError) {
@@ -557,6 +563,14 @@
             // 刚保存的 vault 直接交给 refresh，省一次整表解密；keepEdits 保持 refresh(true) 原语义。
             refresh(true, false, vault);
             setStatus(msg + note + '。', bad ? 'err' : 'ok');
+        }
+        try {
+            a = getApp();
+            if (isReadOnly(a)) {
+                setStatus(readOnlyText('脱敏后无法还原', '脱敏'), 'err');
+                return;
+            }
+            MaskQuietHost(a, run);
         } catch (e) {
             setStatus('映射失败：' + MaskErrText(e), 'err');
         }
@@ -564,12 +578,8 @@
 
     function doRevert() {
         if (!state.model) { setStatus('请先读取选区', 'err'); return; }
-        try {
-            var a = getApp();
-            if (isReadOnly(a)) {
-                setStatus(readOnlyText('还原结果保存不了', '反映射'), 'err');
-                return;
-            }
+        var a = null;
+        function run() {
             var vault = E.loadVault(a);
             var model = E.analyze(a, { hasHeader: $('chkHeader').checked });
             applySavedCfgs(model);
@@ -602,6 +612,14 @@
             if (stats.markError) { tail += '；区域边框没更新：' + stats.markError; }
             setStatus('已还原 ' + stats.hit + ' 格' + tail,
                 (stats.ambiguous > 0 || stats.markError) ? 'err' : 'ok');
+        }
+        try {
+            a = getApp();
+            if (isReadOnly(a)) {
+                setStatus(readOnlyText('还原结果保存不了', '反映射'), 'err');
+                return;
+            }
+            MaskQuietHost(a, run);
         } catch (e) {
             setStatus('反映射失败：' + MaskErrText(e), 'err');
         }
@@ -611,8 +629,8 @@
         if (!confirmBox('删除后已映射的数据无法还原，确定删除映射表？')) {
             return;
         }
-        try {
-            var a = getApp();
+        var a = null;
+        function run() {
             var res = E.dropVault(a);
             if (!res.dropped) {
                 // 删表失败（只读/被保护文档）时表还在、映射记录也还在，不能误报成「没有映射表」
@@ -647,6 +665,10 @@
                 return;
             }
             setStatus(msg, 'ok');
+        }
+        try {
+            a = getApp();
+            MaskQuietHost(a, run);
         } catch (e) {
             setStatus('删除失败：' + MaskErrText(e), 'err');
         }

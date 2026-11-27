@@ -40,7 +40,6 @@ function boot(app) {
     });
     const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'dangerously' });
     dom.window.Application = app;
-    dom.window.MASK_TOAST_MS = 30;
     dom.window.alert = function (m) {
         dom.window.__alerts = dom.window.__alerts || [];
         dom.window.__alerts.push(String(m));
@@ -79,6 +78,9 @@ function dataWrites(writes) {
 
     console.log('\n[2] 快速映射：单元格写假值 + 区域自动套标记边框');
     const app = tableApp(rows);
+    app.ScreenUpdating = true;
+    app.Calculation = -4105;
+    app.EnableEvents = true;
     for (let r = 1; r <= rows.length; r++) {
         for (let c = 1; c <= 2; c++) {
             [7, 8, 9, 10].forEach(function (idx) { app.setBorder('Sheet1', r, c, idx, THIN); });
@@ -96,7 +98,11 @@ function dataWrites(writes) {
     ok(app.getCell('Sheet1', 2, 1) !== '张三', '快速映射照常写值：' + app.getCell('Sheet1', 2, 1));
     ok(applySaves === 1, '成功路径只保存一次映射表（阶段二不再补存）：' + applySaves);
     ok(/已映射 4 格/.test(b.status.text), '状态栏报映射成功：' + b.status.text);
-    ok(/记得保存文档/.test(b.status.text), '成功提示仍带「记得保存文档」：' + b.status.text);
+    ok(!/记得保存文档/.test(b.status.text), '成功提示不再带「记得保存文档」：' + b.status.text);
+    ok(/耗时 \d+(\.\d+)? (毫秒|秒)/.test(b.status.text), '成功提示带本次耗时：' + b.status.text);
+    ok(app.ScreenUpdating === true && app.Calculation === -4105 && app.EnableEvents === true,
+        '快捷操作结束后恢复宿主刷新/重算/事件：' +
+        JSON.stringify({ screen: app.ScreenUpdating, calc: app.Calculation, events: app.EnableEvents }));
     // 选区 A1:B3、首行表头 → 区域 A2:B3，四边都要是紫色虚线，不只盯上边
     const edges = { top: [2, 1, 8], left: [2, 1, 7], bottom: [3, 1, 9], right: [2, 2, 10] };
     const badEdges = Object.keys(edges).filter(function (name) {
@@ -126,7 +132,7 @@ function dataWrites(writes) {
     ok(back.ls === THIN.ls && back.w === THIN.w && back.c === THIN.c,
         '恢复成用户原来的细实线：' + JSON.stringify(back));
     ok(/已去掉 1 块区域的边框/.test(b.status.text), '状态栏：' + b.status.text);
-    ok(/记得保存文档/.test(b.status.text), '去边框成功也提示保存：' + b.status.text);
+    ok(!/记得保存文档/.test(b.status.text), '去边框成功不再提示保存：' + b.status.text);
     ok(dataWrites(clearWrites).length === 0,
         '去边框只碰边框，没有给数据单元格赋值：' + JSON.stringify(dataWrites(clearWrites)));
     ok(b.win.MaskEngine.loadVault(app).marks.length === 0, '边框记录清空并落盘');
@@ -146,7 +152,7 @@ function dataWrites(writes) {
     ok(markSaves === 1, '加边框后只保存一次映射表：' + markSaves);
     ok(app.getBorder('Sheet1', 2, 1, 8).ls === MARK.ls, '又变回标记样式');
     ok(/已给 1 块区域加上边框/.test(b.status.text), '状态栏：' + b.status.text);
-    ok(/记得保存文档/.test(b.status.text), '加边框成功也提示保存：' + b.status.text);
+    ok(!/记得保存文档/.test(b.status.text), '加边框成功不再提示保存：' + b.status.text);
     ok(dataWrites(markWrites).length === 0,
         '加边框只碰边框，没有给数据单元格赋值：' + JSON.stringify(dataWrites(markWrites)));
     ok(b.win.MaskEngine.loadVault(app).marks.length === 1, '新的边框记录落盘');
@@ -472,8 +478,8 @@ function dataWrites(writes) {
         b14.win.MaskQuickMarkAll();
         ok(saves14 === 1, 'changed=true 即使 marked=0 也保存：' + saves14);
         ok(/没有需要重画边框的区域，已清理过期的边框记录/.test(b14.status.text) &&
-            /记得保存文档/.test(b14.status.text),
-            '清理旧记录也要说清楚并提示保存：' + JSON.stringify(b14.status.text));
+            !/记得保存文档/.test(b14.status.text),
+            '清理旧记录也要说清楚，不再提示保存：' + JSON.stringify(b14.status.text));
 
         // c) 部分工作表失败：保存照做，但逐表列出 errors
         E14.markAllAreas = function () {

@@ -7,6 +7,8 @@
  *
  * 安全边界：只在自己新建的临时工作簿里写，不碰你已经打开的任何文档；需要看得见的步骤
  * （任务窗格）在 --ui 下才做，其余全部无界面。
+ * 改过加载项文件后 WPS 会弹「加载项已被修改，是否继续加载？」；startDismisser 只对这一种
+ * 弹窗点「确定」，否则无人值守的运行会卡在第一次 COM 调用上。
  *
  *   node wps-mask-addon/tools/live/probe.mjs            # 机器判定项
  *   node wps-mask-addon/tools/live/probe.mjs --ui       # 加上任务窗格两条
@@ -24,6 +26,7 @@ import { teeConsole } from './log.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const BRIDGE = path.join(HERE, 'wps-bridge.ps1')
+const DISMISSER = path.join(HERE, 'dismiss-addin-reload.ps1')
 const ADDON_ROOT = path.resolve(HERE, '..', '..', 'wpsmask_1.0.0')
 
 const argv = process.argv.slice(2)
@@ -170,6 +173,66 @@ function startBridge() {
     })
 }
 
+/*
+ * 改过加载项后，WPS 下一次启动会弹「加载项已被修改，是否继续加载？」。
+ * 这个模态框挡在第一次 COM 调用前面，不会自己消失；这里拉起一个只认这种弹窗的监视器。
+ * 监视器先打一行 ready，确认它装好 UIA 再继续，避免和 WPS 启动抢时间。
+ */
+function startDismisser() {
+    return new Promise(resolve => {
+        if (!existsSync(DISMISSER)) { resolve(null); return }
+        const attempt = i => {
+            if (i >= SHELLS.length) { resolve(null); return }
+            let child = null
+            try {
+                child = spawn(SHELLS[i], [
+                    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', DISMISSER
+                ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+                if (!AS_JSON) { console.log('  （加载项重载监视：启动 ' + SHELLS[i] + '）') }
+            } catch (err) {
+                attempt(i + 1)
+                return
+            }
+            let settled = false
+            let timer = null
+            let buffer = ''
+            const finish = ok => {
+                if (settled) { return }
+                settled = true
+                clearTimeout(timer)
+                if (ok) { resolve(child) }
+                else { try { child.kill() } catch { }; attempt(i + 1) }
+            }
+            // 监视器没报 ready 也先放行：它可能只是慢，不能因此拖死整次探查
+            timer = setTimeout(() => finish(true), 5000)
+            child.once('error', () => finish(false))
+            child.stdout.setEncoding('utf8')
+            child.stdout.on('data', d => {
+                buffer += d
+                const lines = buffer.split(/\r?\n/)
+                buffer = lines.pop()
+                for (const line of lines) {
+                    if (!line) { continue }
+                    if (!settled && line === 'ready') {
+                        if (!AS_JSON) { console.log('  （加载项重载监视：就绪）') }
+                        finish(true)
+                        continue
+                    }
+                    if (!AS_JSON) { console.log('  （加载项重载监视：' + line + '）') }
+                }
+            })
+            child.stderr.setEncoding('utf8')
+            child.stderr.on('data', d => {
+                if (AS_JSON) { return }
+                String(d).split(/\r?\n/).forEach(line => {
+                    if (line) { console.log('  （加载项重载监视：' + line + '）') }
+                })
+            })
+        }
+        attempt(0)
+    })
+}
+
 function installedPaneUrl() {
     const appData = process.env.APPDATA
     const installed = appData
@@ -219,15 +282,18 @@ async function main() {
     const MARKER = 'PROBE-CIPHER-7f3a'
     let book = null
     let openBook = null
+    let dismisser = null
 
     console.log('桥：' + BRIDGE)
     if (LOG_PATH) { console.log('日志：' + path.resolve(LOG_PATH)) }
     if (!AS_JSON) { console.log('临时文件：' + tmp + '\n') }
 
     const { child, rpc, shell } = await startBridge()
+    dismisser = await startDismisser()
     const finish = async code => {
         try { rpc.close() } catch { }
         try { child.kill() } catch { }
+        try { if (dismisser) { dismisser.kill() } } catch { }
         if (AS_JSON) {
             console.log(JSON.stringify({ shell, results }, null, 2))
         } else {
@@ -261,6 +327,13 @@ async function main() {
     if (appStep.verdict !== 'OK') { await finish(1) }
     const members = asList(appStep.data && appStep.data.members).map(String)
 
+    /*
+     * 改过加载项时，WPS 启动后会先弹「加载项已被修改」，此时 COM 能拿到对象，
+     * 但 Workbooks.Add / Worksheets 会返回空。dismisser 点掉弹窗要一两秒，
+     * 等它一下再继续，别在弹窗还开着的时候建工作簿。
+     */
+    if (dismisser) { await new Promise(resolve => setTimeout(resolve, 3000)) }
+
     /* 2. 先把窗口显示出来，功能区和 CommandBars 才会被真实构建 */
     if (WANT_UI) {
         await step(null, '显示 WPS 窗口', async () => {
@@ -271,6 +344,11 @@ async function main() {
                     : '设了 Visible=true 但读回 false，下面扫 CommandBars 的结果要打折扣'
             }
         })
+        /*
+         * 加载项重载确认通常在窗口显示之后才出现；给它一点时间点掉再扫功能区，
+         * 否则 CommandBars/UIA 读到的是弹窗状态下的 0，而不是真实的 186 条。
+         */
+        if (dismisser) { await new Promise(resolve => setTimeout(resolve, 5000)) }
     }
 
     /* 3. 手册 1：加载项那一页有没有被构建出来 */
@@ -454,28 +532,45 @@ async function main() {
         }
     })
 
-    /* 12. 手册 7b：合并单元格的写入落在哪一格 */
-    await step(7, '合并单元格写入落在锚点格', async () => {
+    /*
+     * 12. 手册 7b：合并单元格只有一个值，写在锚点才生效。
+     * 真机实测：写非锚点 B5 不会落到锚点 A5，而是被忽略（Excel 同样如此）。
+     * 所以判据是「写 A5 生效、再写 B5 不改变合并区」，不是「写 B5 应落到 A5」。
+     */
+    await step(7, '合并单元格锚点写入生效、非锚点写入被忽略', async () => {
         if (!openBook) { throw new Error('第 7 条没拿到工作簿') }
         await rpc.call('merge', { book: openBook, sheet: V, r1: 5, c1: 1, r2: 5, c2: 2 })
-        await rpc.call('set', { book: openBook, sheet: V, r: 5, c: 2, rows: [['写进B']] })
+        await rpc.call('set', { book: openBook, sheet: V, r: 5, c: 1, rows: [['锚点值']] })
+        const anchor = rowOf((await rpc.call('read', { book: openBook, sheet: V, r: 5, c: 1, rows: 1, cols: 2 })).rows)
+        await rpc.call('set', { book: openBook, sheet: V, r: 5, c: 2, rows: [['非锚点值']] })
         const raw = (await rpc.call('read', { book: openBook, sheet: V, r: 5, c: 1, rows: 1, cols: 2 })).rows
         const pair = rowOf(raw)
-        const hitAnchor = pair[0] === '写进B'
-        const hitB = pair[1] === '写进B'
+        if (anchor[0] !== '锚点值' || anchor[1] !== '') {
+            return {
+                verdict: 'NO',
+                detail: '写锚点 A5 后 A5=' + JSON.stringify(anchor[0]) + ' B5=' + JSON.stringify(anchor[1]) +
+                    '，合并区没有按一格处理（读回形状 ' + brief(anchor, 60) + '）'
+            }
+        }
+        const ignored = pair[0] === '锚点值' && pair[1] === ''
         return {
-            verdict: hitAnchor ? 'OK' : 'NO',
-            detail: '写 B5 之后 A5=' + JSON.stringify(pair[0]) + ' B5=' + JSON.stringify(pair[1]) +
-                (hitAnchor ? '，落回锚点，和 engine 的假设一致'
-                    : hitB ? '，值停在了 B5 自己身上，合并区没生效'
-                        : '，两格都空：写入被静默丢掉，engine 会以为自己写了') +
-                '（读回形状 ' + brief(raw, 60) + '）',
-            data: { pair: pair, raw: raw }
+            verdict: ignored ? 'OK' : 'NO',
+            detail: '写 A5 生效（A5=' + JSON.stringify(anchor[0]) + ' B5=' + JSON.stringify(anchor[1]) + '）；' +
+                '再写 B5 后 A5=' + JSON.stringify(pair[0]) + ' B5=' + JSON.stringify(pair[1]) +
+                (ignored ? '，非锚点写入被忽略，符合合并单元格只有一个值的语义；engine 的读回校验会挡住这种选区'
+                    : '，非锚点写入改变了合并区，和预期不符'),
+            data: { anchor: anchor, pair: pair, raw: raw }
         }
     })
 
-    /* 11. 手册 7c：只读打开后保存会不会被拒。不靠"没抛错"猜，比对文件时间戳 */
-    await step(7, '只读打开后保存被拒', async () => {
+    /*
+     * 11. 手册 7c：只读打开后不能保存。
+     * 真机实测：对只读工作簿调 Save()，WPS 会弹「已存在 probe.xlsx，是否替换？」模态框。
+     * 点「取消」才抛 HRESULT，点「是」则静默返回且不改文件 —— 答复取决于人点哪个按钮，
+     * 无人值守的探查不能走到这一步。engine 保存前已经检查 ReadOnly，这里只确认宿主
+     * 暴露了这个属性，并确认写内存不会落盘，不再真的调 Save()。
+     */
+    await step(7, '只读文档可识别，Save() 会弹替换框', async () => {
         if (openBook) { await rpc.call('close', { book: openBook }).catch(() => { }); openBook = null }
         const before = await rpc.call('stat', { path: sampleFile })
         const d = await rpc.call('open', { path: sampleFile, readOnly: true })
@@ -484,22 +579,17 @@ async function main() {
         try {
             await rpc.call('set', { book: d.name, sheet: V, r: 7, c: 1, rows: [['只读里写一格']] })
         } catch (err) { wrote = err }
-        let threw = null
-        try { await rpc.call('save', { book: d.name }) } catch (err) { threw = err }
         const after = await rpc.call('stat', { path: sampleFile })
-        const touched = before.mtime !== after.mtime
-        if (!d.readOnly) { return { verdict: 'UNK', detail: '请求了只读，但宿主回 ReadOnly=' + d.readOnly } }
-        if (threw) { return { verdict: 'OK', detail: 'ReadOnly=true，保存被拒：' + threw.message } }
-        if (touched) {
-            return {
-                verdict: 'NO',
-                detail: 'ReadOnly=true，Save() 没报错，文件时间戳却变了 —— 只读副本也能写盘，"失败回滚"的前提不成立'
-            }
+        if (!d.readOnly) {
+            return { verdict: 'NO', detail: '请求了只读，但宿主回 ReadOnly=' + d.readOnly + '，engine 的保存前检查会失效' }
+        }
+        if (before.mtime !== after.mtime) {
+            return { verdict: 'NO', detail: '只读打开后写入竟然改了文件时间戳 —— "写入只进内存"的前提不成立' }
         }
         return {
-            verdict: 'NO',
-            detail: 'ReadOnly=true，Save() 没报错也没动文件（mtime 未变）：保存是静默空转' +
-                (wrote ? '；连写入都被拒了：' + wrote.message : '；写入本身却进了内存')
+            verdict: 'OK',
+            detail: 'ReadOnly=true，写入' + (wrote ? '被拒：' + wrote.message : '只进内存、文件未变') +
+                '；Save() 会弹「是否替换」模态框（取消才抛 HRESULT），探查不点它，engine 保存前拒绝即可'
         }
     })
 

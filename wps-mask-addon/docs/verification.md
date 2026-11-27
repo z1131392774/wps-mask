@@ -17,7 +17,7 @@ npm test                    # six suites: engine, aes, ribbon, taskpane, utils a
 Each suite runs alone too from the repository root, e.g. `node wps-mask-addon/test/engine.test.js`; the bridge is `wps-mask-addon/test/rpc.test.mjs`.
 
 - AES matches `node:crypto` byte for byte both ways: empty, Chinese, emoji, 5,000 characters, tamper detection, IV randomness.
-- Engine: detection, one-to-one, capacity and span errors, typed reverse mapping, trimming, the header switch and `headerAuto`, backup/read-back/rollback, damaged-table loading, migration, remembered settings, mixed shapes, leading zeros, suffix sizing, the exact-fit permutation, per-cell skip records, scoped revert (second-click no-op, ambiguous fakes), `prepareMask`/`writeMask`/`abortMask` (save-failure abort, write-failure rollback), and the outline (mixed edges unpainted, only purple cells cleared, overlapping records drawn once).
+- Engine: detection, one-to-one, capacity and span errors, typed reverse mapping, trimming, the header switch and `headerAuto`, backup/read-back/rollback, damaged-table loading, migration, remembered settings, type-based mixed mapping, suffix sizing, the exact-fit permutation, per-cell skip records, scoped revert (second-click no-op, ambiguous fakes), `prepareMask`/`writeMask`/`abortMask` (save-failure abort, write-failure rollback), and the outline (mixed edges unpainted, only purple cells cleared, overlapping records drawn once).
 - Panel: cards and parameters, mask and revert, the save-then-write flow, save-failure abort, write-failure rollback and re-save, revert saving the trimmed table, damaged-table recovery, the header-auto warning, dropping the table including partial border-restore failures, empty and late-host states, selection-change re-analysis, settings remembered by position, interval growth keeping the same fakes, and read-only refusals before any write.
 - Ribbon: a quick mask paints the outline and saves its records; 全部加边框 / 全部去边框 repaint or remove outlines, write no cell, keep the masked records, report partial failures, and refuse read-only documents.
 - Bridge: chunk splitting, CRLF and blank lines, noise kept out, an `ok:false` reason intact, timeouts local, pending calls rejected when the bridge exits, and a real child-process round-trip.
@@ -34,13 +34,14 @@ WPS Spreadsheets 12.1.0.29161, `tools/live/probe.mjs` plus one panel opened by h
 | `CreateTaskPane` takes a `file://` URL | passes | Opened from the add-in's own URL and rendered |
 | `Worksheets.Add(undefined, <last>)` | passes | Passing `Missing` works; the sheet lands at the end |
 | A hidden sheet survives a save | passes | `Visible = 2` survives and the ciphertext reads back intact |
-| The outline colour | old value confirmed, new value unretested | The first device run painted red: the host reads `Border.Color` as packed RGB, so `0x7C3AED` (8141549) came out R237 G58 B124 (#ED3A7C) — byte order confirmed on device. The shipped constant is now 15547004 = R124 G58 B237 (#7C3AED); not re-tested on a device |
+| Writing numeric text | passes | `008081` becomes 8081 in a General cell; `'008081` stays the string `008081` with General format |
+| The outline colour | passes | The first run painted red: `Border.Color` is packed RGB, so `0x7C3AED` (8141549) came out #ED3A7C — byte order confirmed. The shipped 15547004 (#7C3AED) read back correctly on 2026-11-27 |
 | 100k-row performance | local mock only | New single-save flow 8.1 s total (analyze 0.09 s, prepare incl. outline 1.5 s, save 6.4 s, write 0.1 s); the old two-save flow measured 21.1 s; not re-measured on a device |
 | A protected sheet rejects writes | passes | Host refuses; engine rolls back and reports |
 | Writes into merged cells | **caution** | A non-anchor merge cell neither throws nor takes effect; read-back catches it and rolls back |
-| Saving a read-only document | **caution** | `Save()` neither throws nor writes; the engine refuses before saving |
+| Saving a read-only document | **caution** | `Save()` opens a replace prompt; the engine refuses first |
 
-Still unverified on a device: whether `Weight` assignment forces `LineStyle` to solid (the code writes style last), whether `Border.Color` reads back the packed integer written, whether the host returns `null` for a mixed edge, whether single-cell `Borders.Item` matches range semantics, and the 4,096-block fragmentation cap error.
+Still unverified on a device: whether `Weight` assignment forces `LineStyle` to solid (the code writes style last), whether the host returns `null` for a mixed edge, whether single-cell `Borders.Item` matches range semantics, and the 4,096-block fragmentation cap error.
 
 **The add-in buttons cannot be clicked from outside.** No `CommandBars` entry or UIA tab carries them: WPS draws its ribbon itself; results came from one panel opened by hand.
 
@@ -61,10 +62,10 @@ To reproduce, run `npm run live:probe:log`: it writes only into a scratch workbo
 | A purple outline is left over | Left by an older failed mask; 全部加边框 or 全部去边框 clears it. Fragmented edges stop after 4,096 blocks and report it; the records stay, click again to finish. A mask that writes nothing leaves borders alone |
 | Numbers show as left-aligned text | Text-formatted cells kept the format; change it |
 | "装不下 N 个不同值" | The interval cannot hold the values (12 amounts in 1–5). Auto-mapping widens; this only appears after narrowing |
-| "文档是只读打开的" | A read-only document ignores `Save()` silently; save as a new file, then mask |
+| "文档是只读打开的" | A read-only Save() prompts to replace; save as a new file, then mask |
 | "写入后读回不一致" | A cell did not keep the write. Merged cells are the usual cause (non-anchor merges neither throw nor apply); a protected sheet does too |
 | "解密失败" | `KEY_TEXT` changed, the table was edited by hand, or both ciphertext copies are damaged — restore a saved copy |
-| A mixed cell came back as "字段名+数字" | It fits none of the five shapes (Chinese, one character, digit-leading, other punctuation); the fallback stays one-to-one |
+| A text cell came back as "field name + digits" | Expected under type-based mapping: every string is replaced by non-numeric text, whatever its original shape (phone, email, zero-padded code). None of the original shape is preserved |
 
 ## Missing reference material
 

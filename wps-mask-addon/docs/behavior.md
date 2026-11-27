@@ -6,15 +6,13 @@ How the add-in decides what to mask, what it writes, and what a revert restores.
 
 ## Detection order
 
-The engine reads the selection as one block and decides each column's mode in this order:
+The engine reads the selection as one block and decides each column's mode by the JavaScript type of its values:
 
-1. Any value is an email or a landline number → mixed.
-2. A matched field name with at least half the values mobile-shaped → phone.
-3. Without a name match, at least 60% of the values mobile-shaped → phone.
-4. The field name matches, whatever the values are → phone.
-5. At least 80% of the values are numeric → number.
-6. At least two of the mobile / plain-digits / letters-and-digits / text families appear → mixed.
-7. Anything else → text, with the field name as its prefix.
+1. Every non-blank value is a number → number.
+2. Every non-blank value is text (including digit strings) → text, with the field name as its prefix.
+3. Numbers and text together → mixed: numbers stay numbers, text gets non-numeric text.
+
+The type is the value's JavaScript type, not its shape: a phone number, email or zero-padded account stored as text is handled as text. That keeps numeric-looking text from being coerced to a number when it is written back.
 
 A whole column becomes row 1 to its last non-empty cell (`End(xlUp)`); a whole row stops at its last used column (`End(xlToLeft)`); entirely blank columns are dropped.
 
@@ -34,14 +32,14 @@ When the guess is weak — the header was detected, every column would be plain 
 
 Records live in the hidden table from the moment you mask; only a saved document keeps them.
 
-Each edge's style, weight and colour are recorded in that same single save, before any cell is written, and written back on removal, so the user's own borders survive. An edge whose style differs across the block's cells is unknown: it is not painted, and removal clears only the cells still in the marker style. If a protected sheet blocks painting, values are still written and the status appends `；区域边框没画上：…`. A mask that writes cells refreshes the whole sheet's outline: every recorded area gets the borders saved in its marks record back, so a border you changed after masking is restored to the recorded style.
+Each edge's style, weight and colour are recorded in that same single save, before any cell is written, and written back on removal, so the user's own borders survive. An edge whose style differs across the block's cells is unknown: it is not painted, and removal clears only the cells still in the marker style. If a protected sheet blocks painting, values are still written and the status appends `；区域边框没画上：…`. A mask that writes cells repaints the new areas and any recorded area they overlap or merge into; unrelated areas are left alone. 「全部加边框」 still repaints every recorded area.
 
 **Quick buttons.** 「快速映射」 uses detection or the remembered settings on the current selection, skipping mapped cells the same way and writing nothing when none remain. 「反映射」 restores the areas recorded in the selection; cells it never masked keep their values, and with nothing to restore it says so instead of writing.
 
-**Messages.** Quick actions report success in the status bar, e.g. `已映射 12 格` (`，跳过 3 格`) or `已还原 12 格` (`，2 格没有映射记录`; a fake owned by two originals adds `，1 格有歧义未还原`). Failures open a dialog: `这个区域已经映射过，先执行「反映射」再映射。`, `没有可还原的映射，选区要和映射时一致。`, `映射表保存失败：…，没有写入任何单元格，已撤回区域边框，请重新映射。`, `写入失败：…；已回滚，请重新映射。` (with `回滚未完成` when it could not undo), `写入失败：…；回滚后的映射表没保存：…，请检查映射表。`, or `映射表未保存：…，请勿关闭文档，重新映射前先检查映射表。` A revert whose outline could not be refreshed adds `；区域边框没更新：…`; the outline buttons answer `已给 N 块区域加上边框` / `已去掉 N 块区域的边框`, or say that nothing was recorded. The panel reports the same outcomes on its status line and appends `，记得保存文档。` after a mask.
+**Messages.** Quick actions report success in the status bar, e.g. `已映射 12 格` (`，跳过 3 格`) or `已还原 12 格` (`，2 格没有映射记录`; a fake owned by two originals adds `，1 格有歧义未还原`). Failures open a dialog: `这个区域已经映射过，先执行「反映射」再映射。`, `没有可还原的映射，选区要和映射时一致。`, `映射表保存失败：…，没有写入任何单元格，已撤回区域边框，请重新映射。`, `写入失败：…；已回滚，请重新映射。` (with `回滚未完成` when it could not undo), `写入失败：…；回滚后的映射表没保存：…，请检查映射表。`, or `映射表未保存：…，请勿关闭文档，重新映射前先检查映射表。` A revert whose outline could not be refreshed adds `；区域边框没更新：…`; the outline buttons answer `已给 N 块区域加上边框` / `已去掉 N 块区域的边框`, or say that nothing was recorded. The panel reports them; the toast persists: `。耗时 N 毫秒/秒。`
 
-**Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. Number mapping keeps the column's decimal places; integer columns get integers.
+**Conventions.** Blank cells stay blank. Columns set to "leave alone" are skipped entirely. Numeric cells read back as serial numbers (a date is one), so masked values stay numeric and the cell format is untouched; reverse mapping writes the original type back. A text original is written back with the host's leading-apostrophe text marker, so `008081` stays text and the cell format is unchanged. Number mapping keeps the column's decimal places; integer columns get integers.
 
 ## Mixed columns
 
-Account columns often mix mobiles, emails, landlines, and order codes. Set it to "混合" and each cell is handled by its own shape: a mobile becomes a valid mobile; an email becomes `u` plus six digits with its domain kept; a landline keeps area code, separator, digit count, and extension; a digit run keeps its length and leading zero; a letter-digit code is re-lettered character by character (`kf_2024_001` → `ud_9309_739`); anything else falls back to "field name + digits". One-to-one holds — the original stays the key, and reverting ignores the shape that produced a value. Two limits: the email domain stays visible, and a very short code such as `a1` can exhaust its shape space, which the add-in reports instead of repeating a value.
+A mixed column can hold numbers and text. Set it to "混合" and each cell is mapped by its JavaScript type: a number becomes a number from the column's numeric range; a text value becomes the field name plus digits, with a non-digit character guaranteed, so the host cannot coerce it. Phone numbers, emails, landlines and zero-padded codes stored as text are treated as plain text, not kept in their original shape. One-to-one holds — the original stays the key, and reverting ignores the type that produced a value.

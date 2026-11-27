@@ -30,6 +30,7 @@ var MaskEngine = (function () {
     var XL_LINE_DASH = -4115;
     var XL_LINE_NONE = -4142;
     var MARK_WEIGHT = -4138;            // xlMedium
+    var XL_COLOR_AUTOMATIC = -4105;     // xlColorIndexAutomatic，BorderAround 的第三参数
     // WPS/Excel 的 Border.Color 是 RGB() 打包的长整数：R + G*256 + B*65536（低字节是红）。
     // 15547004 = 0x00ED3A7C：R124 G58 B237 = #7C3AED（紫色）。写成 0x7C3AED 正好字节倒过来，
     // 真机上渲染成玫红 #ED3A7C。
@@ -120,62 +121,19 @@ var MaskEngine = (function () {
     /* ==================== 字段识别 ==================== */
 
     var PHONE_HEADER = /手机|手机号|电话|联系方式|联络|号码|mobile|phone|tel|cell|msisdn|contact/i;
-    var MOBILE_BODY = /^1[3-9]\d{9}$/;
-    var EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
-    // 固话：区号 0xx / 0xxx，可带分隔符，后面 7~8 位，可带分机
-    var LANDLINE_RE = /^(0\d{2,3})([-\s]?)(\d{7,8})(?:-(\d{1,6}))?$/;
-    var ALNUM_RE = /^[A-Za-z][A-Za-z0-9 _.-]*$/;
-    var PURE_DIGITS_RE = /^\d{2,}$/;
 
-    function isMobileLike(s) {
-        return MOBILE_BODY.test(String(s).replace(/\s|-/g, ''));
-    }
-
-    // 判断单个值属于哪一类标识。混合列按各值自身的形态生成，不要把邮箱替换成手机号。
-    function shapeOf(v) {
-        if (isBlank(v)) { return 'blank'; }
-        if (typeof v === 'number') { return 'digits'; }
-        var s = String(v).trim();
-        if (isMobileLike(s)) { return 'mobile'; }
-        if (EMAIL_RE.test(s)) { return 'email'; }
-        if (LANDLINE_RE.test(s)) { return 'landline'; }
-        if (PURE_DIGITS_RE.test(s)) { return 'digits'; }
-        if (ALNUM_RE.test(s)) { return 'alnum'; }
-        return 'text';
-    }
-
-    function shapeStats(samples) {
-        var st = { total: 0, mobile: 0, email: 0, landline: 0, digits: 0, alnum: 0, text: 0, numeric: 0 };
+    // 只看值的 JS 类型：数字换数字，文本换文本；不再识别手机号/邮箱/固话等形态。
+    // 纯数字字符串仍算文本，避免写回时被 WPS 当数字转掉前导零。
+    function guessMode(header, samples) {
+        var hasNumber = false, hasText = false;
         for (var i = 0; i < samples.length; i++) {
             var v = samples[i];
             if (isBlank(v)) { continue; }
-            st.total++;
-            var shape = shapeOf(v);
-            if (shape !== 'blank') { st[shape]++; }
-            if (typeof v === 'number' || /^-?\d+(\.\d+)?$/.test(String(v).trim())) { st.numeric++; }
+            if (typeof v === 'number' && !isNaN(v)) { hasNumber = true; }
+            else { hasText = true; }
         }
-        return st;
-    }
-
-    function guessMode(header, samples) {
-        var h = header == null ? '' : String(header);
-        var st = shapeStats(samples);
-        if (!st.total) { return PHONE_HEADER.test(h) ? 'phone' : 'text'; }
-        var ratio = function (n) { return n / st.total; };
-        // 邮箱和固话不能使用整列统一的生成器，只能按形态分别处理
-        if (st.email || st.landline) { return 'mixed'; }
-        if (PHONE_HEADER.test(h) && ratio(st.mobile) >= 0.5) { return 'phone'; }
-        if (ratio(st.mobile) >= 0.6) { return 'phone'; }
-        if (PHONE_HEADER.test(h)) { return 'phone'; }
-        if (ratio(st.numeric) >= 0.8) { return 'number'; }
-        // 一列里出现两种以上形态（手机+英文账号、数字+中文…）就按各自形态处理
-        var families = 0;
-        if (st.mobile) { families++; }
-        if (st.digits) { families++; }
-        if (st.alnum) { families++; }
-        if (st.text) { families++; }
-        if (families >= 2) { return 'mixed'; }
-        return 'text';
+        if (hasNumber && hasText) { return 'mixed'; }
+        return hasNumber ? 'number' : 'text';
     }
 
     /* ==================== 配置 ==================== */
@@ -253,47 +211,68 @@ var MaskEngine = (function () {
         return 8;
     }
 
+    // 文本前缀必须含非数字字符：列名为空或是纯数字时，"前缀+数字"会变成纯数字串，
+    // 写进常规格式单元格又会被宿主转成数字，前导零同样保不住。
+    function textPrefix(header) {
+        var p = header == null ? '' : String(header).trim();
+        if (!p) { return '文本'; }
+        if (/^\d+$/.test(p)) { return 'T' + p; }
+        return p;
+    }
+
+    function numbersOf(values) {
+        var out = [];
+        for (var i = 0; i < values.length; i++) {
+            var v = values[i];
+            if (typeof v === 'number' && !isNaN(v)) { out.push(v); }
+        }
+        return out;
+    }
+
+    // 数值配置只看真正的数字值；纯数字字符串按文本处理，不再生成数字形状的假值。
+    // 区间要留出空槽：不同值个数接近槽位数时，逐个随机取会撞自己的原值，10% 余量、至少多一格。
+    function numberCfgOf(values) {
+        var nums = numbersOf(values);
+        var st = numericStats(nums);
+        if (!st) { return null; }
+        var span = st.max - st.min;
+        var lo = st.min, hi = st.max;
+        if (span === 0) { lo = st.min; hi = st.min === 0 ? 100 : st.min * 2; }
+        var needN = distinctCountOf(nums);
+        var wantN = Math.max(needN + 1, Math.ceil(needN * 1.1));
+        var stepN = st.dec > 0 ? Math.pow(10, -st.dec) : 1;
+        if (slotsOf(lo, hi, stepN) < wantN) {
+            hi = st.dec > 0 ? roundTo(lo + (wantN - 1) * stepN, st.dec) : Math.ceil(lo) + wantN - 1;
+        }
+        return {
+            mode: 'number',
+            dist: 'uniform',
+            min: lo,
+            max: hi,
+            dec: st.dec,
+            mean: Math.round(st.mean * 100) / 100,
+            sd: Math.round((st.sd || (span ? span / 6 : 1)) * 100) / 100,
+            lambda: Math.round(((st.mean || 1)) * 100) / 100
+        };
+    }
+
     function defaultCfg(header, values) {
         var mode = guessMode(header, values);
-        var h = header == null ? '' : String(header).trim();
-        if (mode === 'phone') {
-            return { mode: 'phone' };
-        }
+        var h = textPrefix(header);
         if (mode === 'mixed') {
-            return { mode: 'mixed', digits: suffixDigits(areaCountOf(values)) };
+            return {
+                mode: 'mixed',
+                prefix: h,
+                digits: suffixDigits(areaCountOf(values)),
+                num: numberCfgOf(values)
+            };
         }
         if (mode === 'number') {
-            var st = numericStats(values) || { min: 0, max: 100, mean: 50, sd: 15, dec: 0 };
-            var span = st.max - st.min;
-            var lo = st.min, hi = st.max;
-            if (span === 0) { lo = st.min; hi = st.min === 0 ? 100 : st.min * 2; }
-            // 数值统计只计算数字，但不同值中可能混有 "无"、"N/A" 这类文本；
-            // 区间容纳不下时把上界提高到够用（1001~1040 差一个就调整为 1041），
-            // 避免整次映射失败，也避免直接扩大到 9999 把"年龄"映射成七千岁。
-            // 另外要留出空槽：不同值个数一旦等于区间里的槽位数，就只能整列置换，
-            // 那等于把原列整体旋转（排序后一模一样，知道一个值就能反推全部）；
-            // 逐个生成时还会在最后一个值上撞自己的原值。10% 与文本后缀同一把尺子，至少空一格。
-            // 小数列同理：20.1 / 20.2 / 20.3 三个值铺满三个槽，第一批就会失败。
-            var needN = distinctCountOf(values);
-            var wantN = Math.max(needN + 1, Math.ceil(needN * 1.1));
-            var stepN = st.dec > 0 ? Math.pow(10, -st.dec) : 1;
-            if (slotsOf(lo, hi, stepN) < wantN) {
-                hi = st.dec > 0 ? roundTo(lo + (wantN - 1) * stepN, st.dec) : Math.ceil(lo) + wantN - 1;
-            }
-            return {
-                mode: 'number',
-                dist: 'uniform',
-                min: lo,
-                max: hi,
-                dec: st.dec,
-                mean: Math.round(st.mean * 100) / 100,
-                sd: Math.round((st.sd || (span ? span / 6 : 1)) * 100) / 100,
-                lambda: Math.round(((st.mean || 1)) * 100) / 100
-            };
+            return numberCfgOf(values);
         }
         return {
             mode: 'text',
-            prefix: h || '文本',
+            prefix: h,
             digits: suffixDigits(areaCountOf(values))
         };
     }
@@ -442,109 +421,32 @@ var MaskEngine = (function () {
         var span = Math.pow(10, digits);
         for (var i = 0; i < 300; i++) {
             var s = prefix + padNum(rndInt(0, span - 1), digits);
+            // 前缀为空或纯数字时，补一个字母，保证假值不是纯数字串
+            if (/^\d+$/.test(s)) { s = 'T' + s; }
             if (s === orig || used[keyOf(s)]) { continue; }
             return s;
         }
         for (var n = 0; n < span; n++) {
             var cand = prefix + padNum(n, digits);
+            if (/^\d+$/.test(cand)) { cand = 'T' + cand; }
             if (cand !== orig && !used[keyOf(cand)]) { return cand; }
         }
         throw new Error('后缀位数不够用，请加大后缀位数');
     }
 
-    /* ==================== 混合标识（手机 / 邮箱 / 固话 / 账号 混在一列） ==================== */
-
-    var LOWER_CHARS = 'abcdefghijkmnpqrstuvwxyz';
-    var UPPER_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-
-    function randChar(pool) { return pool.charAt(rndInt(0, pool.length - 1)); }
-
-    // 邮箱：保留域名（域名原本就在数据中，不构成新增泄露），只替换本地部分
-    function genEmail(orig, used) {
-        var s = String(orig).trim();
-        var at = s.lastIndexOf('@');
-        var domain = at > 0 ? s.substring(at + 1) : 'example.com';
-        for (var i = 0; i < 300; i++) {
-            var cand = 'u' + padNum(rndInt(0, 999999), 6) + '@' + domain;
-            if (cand !== orig && !used[keyOf(cand)]) { return cand; }
-        }
-        for (var n = 0; n < 1000000; n++) {
-            var c2 = 'u' + padNum(n, 6) + '@' + domain;
-            if (c2 !== orig && !used[keyOf(c2)]) { return c2; }
-        }
-        throw new Error('邮箱地址已经用满');
-    }
-
-    // 固话：区号、分隔符、位数保持不变，只替换后面的号码
-    function genLandline(orig, used) {
-        var m = LANDLINE_RE.exec(String(orig).trim());
-        if (!m) { return null; }
-        var head = m[1] + m[2], len = m[3].length, ext = m[4] ? ('-' + m[4]) : '';
-        var lo = Math.pow(10, len - 1), hi = Math.pow(10, len) - 1;
-        for (var i = 0; i < 300; i++) {
-            var cand = head + padNum(rndInt(lo, hi), len) + ext;
-            if (cand !== orig && !used[keyOf(cand)]) { return cand; }
-        }
-        var start = rndInt(lo, hi);
-        for (var n = 0; n < 100000; n++) {
-            var num = lo + ((start - lo + n) % (hi - lo + 1));
-            var c2 = head + padNum(num, len) + ext;
-            if (c2 !== orig && !used[keyOf(c2)]) { return c2; }
-        }
-        throw new Error('固话号码已经用满');
-    }
-
-    // 纯数字账号：替换为等长随机数字，0 开头的保留前导零
-    function genDigits(orig, used) {
-        var s = String(orig).trim(), len = s.length;
-        // 前导零是编码格式的一部分（工号 000123），必须保留。仅把区间放宽到包含 0 并不够：
-        // 那样只有十分之一的概率生成 0 开头的值，其余都会变成不等宽的格式。
-        var zeros = 0;
-        while (zeros < len && s.charAt(zeros) === '0') { zeros++; }
-        if (zeros >= len) { zeros = len - 1; }
-        var head = s.substring(0, zeros), body = len - zeros;
-        var lo = body > 1 ? Math.pow(10, body - 1) : 0;
-        var hi = Math.pow(10, body) - 1;
-        for (var i = 0; i < 300; i++) {
-            var cand = head + padNum(rndInt(lo, hi), body);
-            if (cand !== s && !used[keyOf(cand)]) { return cand; }
-        }
-        var start = rndInt(lo, hi);
-        for (var n = 0; n < 100000; n++) {
-            var num = lo + ((start - lo + n) % (hi - lo + 1));
-            var c2 = head + padNum(num, body);
-            if (c2 !== s && !used[keyOf(c2)]) { return c2; }
-        }
-        throw new Error('数字账号已经用满');
-    }
-
-    // 字母数字账号：逐字符替换，数字换成数字、字母换成字母、符号保持不变
-    function genSameShape(orig, used) {
-        var s = String(orig).trim();
-        for (var i = 0; i < 300; i++) {
-            var out = '';
-            for (var k = 0; k < s.length; k++) {
-                var ch = s.charAt(k);
-                if (ch >= '0' && ch <= '9') { out += String(rndInt(0, 9)); }
-                else if (ch >= 'a' && ch <= 'z') { out += randChar(LOWER_CHARS); }
-                else if (ch >= 'A' && ch <= 'Z') { out += randChar(UPPER_CHARS); }
-                else { out += ch; }
-            }
-            if (out !== s && !used[keyOf(out)]) { return out; }
-        }
-        throw new Error('同形态的账号已经用满');
-    }
-
+    // 混合列按值类型分派：数字换数字，文本换非数字文本。
+    // 文本不再识别手机号/邮箱/固话/账号形态；纯数字字符串也按文本处理。
     function genMixed(textCfg, orig, used) {
-        var shape = shapeOf(orig);
-        if (shape === 'mobile') { return genPhone(String(orig), used); }
-        if (shape === 'email') { return genEmail(orig, used); }
-        if (shape === 'landline') {
-            var land = genLandline(orig, used);
-            if (land != null) { return land; }
+        if (typeof orig === 'number' && !isNaN(orig)) {
+            var numCfg = textCfg.num;
+            if (!numCfg) {
+                numCfg = {
+                    mode: 'number', dist: 'uniform', min: 0, max: 100, dec: 0,
+                    mean: 50, sd: 15, lambda: 50
+                };
+            }
+            return genNumber(numCfg, orig, used);
         }
-        if (shape === 'digits') { return genDigits(orig, used); }
-        if (shape === 'alnum') { return genSameShape(orig, used); }
         return genText(textCfg, String(orig), used);
     }
 
@@ -683,15 +585,44 @@ var MaskEngine = (function () {
         return vault;
     }
 
+    // loadVault 刚读到的 A 列密文挂在 vault 上（不可枚举，不会写进文档）：
+    // saveVault 判断备份时直接用它，省掉一次整列读取和一次整表解密。
+    function rememberVaultCipher(vault, cipher, valid) {
+        if (!vault) { return; }
+        try {
+            Object.defineProperty(vault, '__cipherA', {
+                value: String(cipher == null ? '' : cipher), enumerable: false, configurable: true
+            });
+            Object.defineProperty(vault, '__cipherAValid', {
+                value: !!valid, enumerable: false, configurable: true
+            });
+        } catch (eDef) {
+            // 冻结对象或宿主不支持 defineProperty：不缓存，saveVault 退回整列读取
+        }
+    }
+
+    function forgetVaultCipher(vault) {
+        if (!vault) { return; }
+        try { delete vault.__cipherA; } catch (e1) { /* 冻结对象删不掉，下一次仍用它 */ }
+        try { delete vault.__cipherAValid; } catch (e2) { /* 同上 */ }
+    }
+
     function loadVault(app) {
         var wb = app.ActiveWorkbook;
         if (!wb) { return emptyVault(); }
         var ws = findSheet(wb, VAULT_SHEET);
-        if (!ws) { return emptyVault(); }
+        if (!ws) {
+            var fresh = emptyVault();
+            rememberVaultCipher(fresh, '', true);
+            return fresh;
+        }
         var marker = readCellText(ws, 1, 1);
         var cipherA = readColumnText(ws, 1);
         var a = tryParseVault(cipherA);
-        if (a.ok) { return a.vault; }
+        if (a.ok) {
+            rememberVaultCipher(a.vault, cipherA, true);
+            return a.vault;
+        }
         // A 列可解析时上面就返回了：正常的映射表一次也不读备份列（每读一列都是整列 I/O）。
         // A 坏了/空了才读备份区；主密文坏了但备份完整：返回上一份完整映射，绝不静默返回空表
         var hasBackup = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER;
@@ -700,7 +631,11 @@ var MaskEngine = (function () {
             if (b.ok) { return markRecovered(b.vault); }
         }
         // 既没有密文也没有本加载项的标记：这不是本加载项维护过的表（新文档）
-        if (!cipherA && !marker) { return emptyVault(); }
+        if (!cipherA && !marker) {
+            var empty = emptyVault();
+            rememberVaultCipher(empty, '', true);
+            return empty;
+        }
         if (!cipherA) {
             throw new Error('映射表密文为空，为保护数据不返回空映射表（如果这是新建的映射表，请用「删除映射表」重建）');
         }
@@ -844,13 +779,29 @@ var MaskEngine = (function () {
         }
         ensureVaultMarker(ws);
 
-        var oldA = readColumnText(ws, 1);
+        var oldA = '';
+        var aValid = false;
+        var cached = false;
+        try {
+            cached = Object.prototype.hasOwnProperty.call(vault, '__cipherAValid') && vault.__cipherAValid === true;
+        } catch (eCache) {
+            cached = false;
+        }
+        if (cached) {
+            oldA = String(vault.__cipherA == null ? '' : vault.__cipherA);
+            aValid = true;
+            // 用掉就摘掉：本次保存失败时下一次必须重新读盘，不能拿旧缓存当现状
+            forgetVaultCipher(vault);
+        } else {
+            oldA = readColumnText(ws, 1);
+            aValid = tryParseVault(oldA).ok;
+        }
         // 备份哪一份：优先当前可读的 A 区；A 区已坏但备份可读时保留可读的那份，
         // 不要用坏数据覆盖备份。都坏时保留 A 区原始字节，至少不丢现场。
         // A 区可解析是正常路径，这时不读 B 列：每次保存都整列读一遍旧备份纯属白读。
         var backup = '';
         var oldB = '';
-        if (tryParseVault(oldA).ok) {
+        if (aValid) {
             backup = oldA;
         } else {
             oldB = readCellText(ws, 1, BACKUP_COL) === BACKUP_MARKER ? readColumnText(ws, BACKUP_COL) : '';
@@ -899,6 +850,8 @@ var MaskEngine = (function () {
         } catch (eDelRec) {
             // 调用方冻结了 vault 时删不掉：只是面板会多提示一次，落盘数据不受影响
         }
+        // 新密文已经校验通过：下一次 saveVault 直接拿它当"上一份"，不必再读盘
+        rememberVaultCipher(vault, cipher, true);
         return ws;
     }
 
@@ -1232,6 +1185,9 @@ var MaskEngine = (function () {
         var out = copyCfg(base);
         for (var k in saved) { if (Object.prototype.hasOwnProperty.call(saved, k)) { out[k] = saved[k]; } }
         out.mode = saved.mode || base.mode;
+        // 混合列的数字子区间按本批数据重算：上次的区间只够上次那批数字，
+        // 补行后新数字会撞满旧区间。文本前缀/位数是用户设置，照旧保留。
+        if (out.mode === 'mixed') { out.num = base.num; }
         return out;
     }
 
@@ -1637,6 +1593,25 @@ var MaskEngine = (function () {
         b.LineStyle = XL_LINE_DASH;
     }
 
+    // 只画区域外圈：Range.Borders 的整组读写还包含 xlInsideVertical / xlInsideHorizontal，
+    // 在大区域上既慢，又会把用户原有的内部网格线改成标记色。
+    // BorderAround 一次只写四条外边；宿主不支持时退回逐边，语义相同。
+    function paintAreaEdges(rng) {
+        try {
+            rng.BorderAround(XL_LINE_DASH, MARK_WEIGHT, XL_COLOR_AUTOMATIC, MARK_COLOR);
+        } catch (eAround) {
+            for (var i = 0; i < BORDER_EDGES.length; i++) { paintEdge(rng, BORDER_EDGES[i]); }
+        }
+    }
+
+    function clearAreaEdges(rng) {
+        try {
+            rng.BorderAround(XL_LINE_NONE, 2);
+        } catch (eAround) {
+            for (var i = 0; i < BORDER_EDGES.length; i++) { clearEdge(rng, BORDER_EDGES[i]); }
+        }
+    }
+
     // 只动"还是标记样式"的边：用户后来自己改过的边框不动。
     // 线宽不作为判据——宿主可能按线型把粗细归一化，颜色 + 虚线才是标记的身份。
     function edgeIsMarked(rng, idx) {
@@ -1722,36 +1697,104 @@ var MaskEngine = (function () {
     // 记成"原本无边框"，绝不把紫色当原样式再写回去。
     // 单个区域画到一半出错时，用该区域已经记下的原样式把已画的边写回，
     // 不留半涂的紫边；vault.marks 只在全部成功后整体替换。
-    function refreshSheetMarks(ws, vault) {
+    function rectsOverlap(a, b) {
+        return a.r1 <= b.r2 && a.r2 >= b.r1 && a.c1 <= b.c2 && a.c2 >= b.c1;
+    }
+
+    function anyRectOverlap(rect, list) {
+        for (var i = 0; i < list.length; i++) {
+            if (rectsOverlap(rect, list[i])) { return true; }
+        }
+        return false;
+    }
+
+    // filterRects 为空时刷新整张表（「全部加边框」/回滚用）；
+    // 映射时只传本次新写入的区域，避免为几条旧边框把整张表几百条 marks 全部读写一遍。
+    function refreshSheetMarks(ws, vault, filterRects) {
         var name = String(ws.Name);
         var marks = marksOf(vault);
-        var kept = [], restored = 0;
-        for (var i = 0; i < marks.length; i++) {
-            if (marks[i] && marks[i].s === name) { restoreMark(ws, marks[i]); restored++; }
-            else { kept.push(marks[i]); }
+        var areas = outlineAreas(vault);
+        var filter = null, fi, f;
+        if (isArr(filterRects) && filterRects.length) {
+            filter = [];
+            for (fi = 0; fi < filterRects.length; fi++) {
+                f = filterRects[fi];
+                if (!f || f.s !== name) { continue; }
+                var fr1 = Math.floor(Number(f.r1)), fr2 = Math.floor(Number(f.r2));
+                var fc1 = Math.floor(Number(f.c1)), fc2 = Math.floor(Number(f.c2));
+                if (!isFinite(fr1) || !isFinite(fr2) || !isFinite(fc1) || !isFinite(fc2)) { continue; }
+                if (fr1 < 1 || fr2 < fr1 || fc1 < 1 || fc2 < fc1) { continue; }
+                filter.push({ r1: fr1, c1: fc1, r2: fr2, c2: fc2 });
+            }
         }
-        var areas = outlineAreas(vault), painted = 0;
-        for (var j = 0; j < areas.length; j++) {
-            var rec = areas[j];
-            if (rec.sheet !== name) { continue; }
-            var rng = null, saved = {}, paintedEdges = [];
+
+        var processed = [];
+        for (var ai = 0; ai < areas.length; ai++) {
+            var area = areas[ai];
+            if (area.sheet !== name) { continue; }
+            if (filter && !anyRectOverlap(area, filter)) { continue; }
+            processed.push(area);
+        }
+
+        var kept = [];
+        for (var i = 0; i < marks.length; i++) {
+            var mk = marks[i];
+            if (!mk || mk.s !== name) { kept.push(mk); continue; }
+            // 旧 marks 如果和本次处理的区域重叠（含相邻列合并成一大块），先恢复原样式；
+            // 完全无关的旧区域原样保留，不动它的边框。
+            if (filter && !anyRectOverlap(mk, processed)) { kept.push(mk); continue; }
+            restoreMark(ws, mk);
+        }
+
+        var painted = 0;
+        for (var j = 0; j < processed.length; j++) {
+            var rec = processed[j];
+            var rng = null, saved = {}, paintedEdges = [], uniform = false;
             try {
                 rng = areaRange(ws, rec);
+                // 只读四条外边：既拿到回滚需要的原样式，也不会碰到内部网格线。
+                // 四边各读一次，样式一致时用一次 BorderAround 画外框；否则逐边处理。
+                var specs = [], base = null;
+                uniform = true;
                 for (var r = 0; r < BORDER_EDGES.length; r++) {
-                    var idx = BORDER_EDGES[r];
-                    var spec = readEdge(rng, idx);
-                    if (isMarkSpec(spec)) {
-                        // 旧失败态残留在表上的紫线不是用户原样式：先清掉、记成无边框
-                        clearEdge(rng, idx);
-                        spec = { ls: XL_LINE_NONE, w: 0, c: 0 };
-                    }
-                    saved[String(idx)] = spec;
+                    var spec = readEdge(rng, BORDER_EDGES[r]);
+                    specs.push(spec);
+                    if (spec === null) { uniform = false; continue; }
+                    if (base === null) { base = spec; }
+                    else if (base.ls !== spec.ls || base.w !== spec.w || base.c !== spec.c) { uniform = false; }
                 }
-                for (var p = 0; p < BORDER_EDGES.length; p++) {
-                    var pidx = BORDER_EDGES[p];
-                    if (saved[String(pidx)] === null) { continue; }   // 混合边：不画，也不去动它
-                    paintEdge(rng, pidx);
-                    paintedEdges.push(pidx);
+                if (uniform && base) {
+                    if (isMarkSpec(base)) {
+                        // 四边都是旧标记：一次清掉外框；宿主不支持时退回逐边
+                        clearAreaEdges(rng);
+                        base = { ls: XL_LINE_NONE, w: 0, c: 0 };
+                    }
+                    for (var se = 0; se < BORDER_EDGES.length; se++) {
+                        saved[String(BORDER_EDGES[se])] = base;
+                    }
+                } else {
+                    for (var r2 = 0; r2 < BORDER_EDGES.length; r2++) {
+                        var idx = BORDER_EDGES[r2];
+                        var spec2 = specs[r2];
+                        if (isMarkSpec(spec2)) {
+                            // 旧失败态残留在表上的紫线不是用户原样式：先清掉、记成无边框
+                            clearEdge(rng, idx);
+                            spec2 = { ls: XL_LINE_NONE, w: 0, c: 0 };
+                        }
+                        saved[String(idx)] = spec2;
+                    }
+                }
+                if (uniform) {
+                    // 四边同一样式：一次 BorderAround 只画外框；先把四条边都记进回滚表
+                    paintedEdges = BORDER_EDGES.slice();
+                    paintAreaEdges(rng);
+                } else {
+                    for (var p = 0; p < BORDER_EDGES.length; p++) {
+                        var pidx = BORDER_EDGES[p];
+                        if (saved[String(pidx)] === null) { continue; }   // 混合边：不画，也不去动它
+                        paintEdge(rng, pidx);
+                        paintedEdges.push(pidx);
+                    }
                 }
             } catch (ePaint) {
                 var rbErrors = [];
@@ -1767,14 +1810,15 @@ var MaskEngine = (function () {
             if (paintedEdges.length) { painted++; }
         }
         vault.marks = kept;
-        return { painted: painted, restored: restored };
+        return { painted: painted };
     }
 
     // 边框失败不能连累已经写好的数据：错误交给调用方挂到 stats 上如实报告
-    function tryRefreshMarks(ws, vault) {
+    function tryRefreshMarks(ws, vault, filterRects) {
         if (!ws) { return { painted: 0, error: '' }; }
         try {
-            return { painted: refreshSheetMarks(ws, vault).painted, error: '' };
+            var r = refreshSheetMarks(ws, vault, filterRects);
+            return { painted: r.painted, error: '' };
         } catch (e) {
             return { painted: 0, error: String((e && e.message) || e) };
         }
@@ -1998,8 +2042,9 @@ var MaskEngine = (function () {
             // 混合列的"中文/其他文本"分支沿用文本模式的前缀与位数
             var textCfg = {
                 mode: 'text',
-                prefix: cfg.prefix || col.header || '文本',
-                digits: cfg.digits || 4
+                prefix: cfg.prefix || textPrefix(col.header),
+                digits: cfg.digits || 4,
+                num: cfg.num || null
             };
             // 区间刚好装下这批不同值时，先整列算好错位置换，避免逐个随机取走进死胡同
             var batch = null;
@@ -2076,7 +2121,7 @@ var MaskEngine = (function () {
         // 一格都没写（整段已经映射过）时调用方会立即返回、也不保存：这时不刷新边框，
         // 否则会把用户在此期间手改过的边框按 marks 记录恢复回原样，白丢用户改动。
         if (stats.written > 0 && !(opts && opts.paintMarks === false)) {
-            var mark = tryRefreshMarks(model.sheet, vault);
+            var mark = tryRefreshMarks(model.sheet, vault, ranges);
             stats.marked = mark.painted;
             stats.markError = mark.error;
         }
@@ -2097,9 +2142,24 @@ var MaskEngine = (function () {
         var model = plan.model;
         var tried = [];
         try {
-            for (var i = 0; i < plan.columns.length; i++) {
-                tried.push(plan.columns[i]);
-                writeColumn(model, plan.columns[i].col, plan.columns[i].values);
+            for (var i = 0; i < plan.columns.length;) {
+                // 连续多列合并成一次 Value2 写入/读回：3 列分 3 次写 + 3 次读回，
+                // 真机上光 COM 往返就是几百毫秒。只合并列号连续、行数相同的列。
+                var group = [plan.columns[i]];
+                var j = i + 1;
+                while (j < plan.columns.length &&
+                       plan.columns[j].col.col === group[group.length - 1].col.col + 1 &&
+                       plan.columns[j].values.length === group[0].values.length) {
+                    group.push(plan.columns[j]);
+                    j++;
+                }
+                for (var g = 0; g < group.length; g++) { tried.push(group[g]); }
+                if (group.length === 1) {
+                    writeColumn(model, group[0].col, group[0].values);
+                } else {
+                    writeColumnBlock(model, group);
+                }
+                i = j;
             }
         } catch (eWrite) {
             var rollbackErrors = [];
@@ -2203,13 +2263,60 @@ var MaskEngine = (function () {
         checkWritten(model, col, 0, values);
     }
 
+    // 连续多列的一次写入 + 一次读回；列号/行数来自 prepareMask 的输出。
+    function writeColumnBlock(model, group) {
+        var rows = group[0].values.length;
+        var cols = group.length;
+        if (!rows) { return; }
+        var startRow = model.top + model.firstDataRow;
+        var firstCol = group[0].col.col;
+        var arr = [];
+        for (var r = 0; r < rows; r++) {
+            var line = [];
+            for (var c = 0; c < cols; c++) { line.push(group[c].values[r]); }
+            arr.push(line);
+        }
+        var rng = model.sheet.Cells.Item(startRow, firstCol).Resize(rows, cols);
+        rng.Value2 = arr;
+        checkWrittenBlock(model, group, arr);
+    }
+
+    function checkWrittenBlock(model, group, expected) {
+        var rows = expected.length;
+        var cols = group.length;
+        if (!rows) { return; }
+        var startRow = model.top + model.firstDataRow;
+        var firstCol = group[0].col.col;
+        var rng = model.sheet.Cells.Item(startRow, firstCol).Resize(rows, cols);
+        var grid = to2D(rng.Value2, rows, cols);
+        for (var r = 0; r < rows; r++) {
+            for (var c = 0; c < cols; c++) {
+                var got = (grid[r] && grid[r].length) ? grid[r][c] : null;
+                if (looseOf(got) !== looseOf(expected[r][c])) {
+                    throw new Error('写入后读回不一致：' + model.sheetName + '!' +
+                        (startRow + r) + ',' + (firstCol + c) +
+                        '，期望「' + looseOf(expected[r][c]) + '」，实际「' + looseOf(got) + '」');
+                }
+            }
+        }
+    }
+
+    // 常规格式的单元格会把数字形状的字符串解析成数字，前导零会丢。
+    // 前导单引号是宿主的文本标记：值仍是字符串、格式不变，Value2 读回不带引号。
+    // 只给非空字符串加；数字、布尔、null 原样写。
+    function textForWrite(v) {
+        if (typeof v !== 'string' || v === '') { return v; }
+        if (v.length >= 32767) { return v; } // 单元格字符上限，再加标记会超限
+        return "'" + v;
+    }
+
     // 只写给的连续行段，选区里没被映射过的行一个单元格都不碰
     function writeColumnParts(model, col, values, parts) {
         for (var i = 0; i < parts.length; i++) {
             var start = parts[i].start, end = parts[i].end;
             if (end < start || start < 0) { continue; }
             var arr = [];
-            for (var r = start; r <= end; r++) { arr.push([values[r]]); }
+            for (var r = start; r <= end; r++) { arr.push([textForWrite(values[r])]); }
             if (!arr.length) { continue; }
             var rng = model.sheet.Cells.Item(model.top + model.firstDataRow + start, col.col).Resize(arr.length, 1);
             rng.Value2 = arr;
@@ -2365,8 +2472,9 @@ var MaskEngine = (function () {
             if (cfg.mode === 'mixed') {
                 var tcfg = {
                     mode: 'text',
-                    prefix: col.header || '文本',
-                    digits: cfg.digits || 4
+                    prefix: cfg.prefix || textPrefix(col.header),
+                    digits: cfg.digits || 4,
+                    num: cfg.num || null
                 };
                 return genMixed(tcfg, orig == null ? '' : orig, {});
             }
@@ -2415,8 +2523,6 @@ var MaskEngine = (function () {
             genNumber: genNumber,
             genText: genText,
             genMixed: genMixed,
-            genSameShape: genSameShape,
-            shapeOf: shapeOf,
             suffixDigits: suffixDigits,
             areaCountOf: areaCountOf,
             outlineAreas: outlineAreas,

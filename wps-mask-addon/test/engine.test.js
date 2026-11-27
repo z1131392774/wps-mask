@@ -69,7 +69,7 @@ ok(model.dataRows === 10, '数据行数 = 10，实际 ' + model.dataRows);
 ok(model.columns.length === 4, '识别出 4 个字段');
 const modes = model.columns.map(c => c.header + ':' + Engine.defaultCfg(c.header, c.values).mode);
 ok(model.columns[0].header === '姓名' && Engine.defaultCfg('姓名', model.columns[0].values).mode === 'text', '姓名 → 文本');
-ok(Engine.defaultCfg('手机号', model.columns[1].values).mode === 'phone', '手机号 → 手机号');
+ok(Engine.defaultCfg('手机号', model.columns[1].values).mode === 'text', '手机号（文本值）→ 文本');
 ok(Engine.defaultCfg('年龄', model.columns[2].values).mode === 'number', '年龄 → 数字');
 ok(Engine.defaultCfg('备注', model.columns[3].values).mode === 'text', '备注 → 文本');
 console.log('    ' + modes.join(' | '));
@@ -97,7 +97,9 @@ const dNote = Engine.suffixDigits(notes.filter(Boolean).length);
 ok(newNames.every(v => new RegExp('^姓名\\d{' + dName + '}$').test(v)),
     '姓名映射形态为「姓名 + ' + dName + ' 位数字」（10 格 → ' + dName + ' 位），如 ' + newNames[0]);
 ok(newNames[0] === newNames[3] && newNames[3] === newNames[6], '同名同映射：张三 3 次映射一致 → ' + newNames[0]);
-ok(newPhones.every(v => /^1[3-9]\d{9}$/.test(v)), '手机号全部合法（11 位、1[3-9] 开头）');
+const dPhone = Engine.suffixDigits(phones.length);
+ok(newPhones.every(v => new RegExp('^手机号\\d{' + dPhone + '}$').test(v)),
+    '手机号按文本映射为「手机号 + ' + dPhone + ' 位数字」：' + newPhones[0]);
 ok(newPhones[0] === newPhones[2], '同号同映射：13800138000 两次映射一致 → ' + newPhones[0]);
 ok(new Set(newPhones).size === new Set(phones).size, '不同号码映射到不同号码（无碰撞）');
 ok(newAges.every(v => typeof v === 'number' && v >= 19 && v <= 51), '年龄映射为数值且落在原区间 [19,51]：' + newAges.join(','));
@@ -130,7 +132,9 @@ ok(typeof cipherCell === 'string' && cipherCell.indexOf('M1:') === 0, '内容是
 ok(String(cipherCell).indexOf('张三') < 0 && String(cipherCell).indexOf('13800138000') < 0, '密文中不含任何原文');
 const reloaded = Engine.loadVault(app);
 ok(!!reloaded.settings['姓名'], '设置被记住：' + JSON.stringify(reloaded.settings['姓名']));
-ok(!!reloaded.maps['phone'], '手机号映射表已持久化，' + Object.keys(reloaded.maps['phone']).length + ' 条');
+const phoneSig = Engine.sigOf(Engine.defaultCfg('手机号', phones));
+ok(!!reloaded.maps[phoneSig], '手机号映射表已持久化，' +
+    (reloaded.maps[phoneSig] ? Object.keys(reloaded.maps[phoneSig]).length : 0) + ' 条');
 
 // 换一个"新打开的文档"，把密文整体搬过去，验证跨会话稳定
 const app2 = freshApp();
@@ -290,7 +294,9 @@ mixed.select('Sheet1', 1, 1, mixedRows.length, 1);
 const mMixVault = Engine.loadVault(mixed);
 const mMix = Engine.hydrate(Engine.analyze(mixed, {}), mMixVault);
 const mCfg = Engine.defaultCfg(mMix.columns[0].header, mMix.columns[0].values);
-ok(mCfg.max === 1006, '上界抬到刚好够用还留一格空槽的 ' + mCfg.max + '（原数据 1001~1004 + 一个文本值）');
+ok(mCfg.mode === 'mixed' && mCfg.num && mCfg.num.max === 1005,
+    '数值子区间抬到刚好够用还留一格空槽的 ' + (mCfg.num && mCfg.num.max) +
+    '（4 个数字占 1001~1004，文本值不占数字槽）');
 const mStats = Engine.applyMask(mMix, mMixVault, {});
 ok(mStats.written === 5, '5 格全部映射成功，实际 ' + mStats.written);
 
@@ -326,19 +332,15 @@ for (let round = 0; round < 8; round++) {
 ok(tightBad === 0, '40 个值占满 40 个整数槽：8 轮全部成功、无不动点、列内不重复（失败 ' + tightBad + ' 轮）');
 ok(rotBad === 0, '都不是整体旋转，位次差不恒定（旋转 ' + rotBad + ' 轮）');
 
-/* ---------- 17. 混合账号列：手机 / 邮箱 / 固话 / 字母账号 / 中文 混在一列 ---------- */
-console.log('\n[17] 混合标识列按各自的形态映射');
-const mixOrig = [
-    '13800138000', 'zhang.wei@corp.com', '010-88886666', 'kf_2024_001',
-    '0755-12345678', 'li.na@corp.com', 'wxid_abc123', '王小明',
-    '021-65432100', 'zhao@example.org'
-];
+/* ---------- 17. 混合列：数字换数字，文本换非数字文本 ---------- */
+console.log('\n[17] 混合列按值类型映射，不再按手机/邮箱形态');
+const mixOrig = ['13800138000', 'zhang.wei@corp.com', 42, '王小明', 3.5, '008081'];
 const mixApp = new MockWPS();
 mixApp.setTable('Sheet1', 1, 1, [['账号']].concat(mixOrig.map(v => [v])));
 mixApp.select('Sheet1', 1, 1, mixOrig.length + 1, 1);
 const mixModel0 = Engine.analyze(mixApp, {});
 ok(mixModel0.hasHeader === true, '混合列首行仍识别为表头');
-ok(Engine.guessMode('账号', mixModel0.columns[0].values) === 'mixed', '混合列被识别为 mixed');
+ok(Engine.guessMode('账号', mixModel0.columns[0].values) === 'mixed', '数字+文本混排识别为 mixed');
 const mixVault = Engine.loadVault(mixApp);
 const mixStats = Engine.applyMask(Engine.hydrate(mixModel0, mixVault), mixVault, {});
 const mixOut = [];
@@ -346,21 +348,18 @@ for (let r = 2; r <= mixOrig.length + 1; r++) { mixOut.push(mixApp.getCell('Shee
 ok(mixStats.written === mixOrig.length, mixOrig.length + ' 格全部替换，实际 ' + mixStats.written);
 ok(mixOut.every((v, i) => v !== mixOrig[i]), '没有一个值等于它自己');
 ok(new Set(mixOut).size === mixOut.length, '列内不重复');
-ok(/^1[3-9]\d{9}$/.test(mixOut[0]), '手机号仍是合法手机号：' + mixOut[0]);
-ok(/@corp\.com$/.test(mixOut[1]) && !/^zhang/.test(mixOut[1]), '邮箱保留域名、换掉本地部分：' + mixOut[1]);
-ok(/^010-\d{8}$/.test(mixOut[2]), '固话保留区号与位数：' + mixOut[2]);
-ok(/^[A-Za-z]{2}_\d{4}_\d{3}$/.test(mixOut[3]) && mixOut[3].length === mixOrig[3].length,
-    '字母数字账号按原形态逐字替换：' + mixOut[3]);
-ok(/^0755-\d{8}$/.test(mixOut[4]) && /^021-\d{8}$/.test(mixOut[8]), '另外两个固话同样保形');
-ok(/^账号\d{2}$/.test(mixOut[7]), '中文值回落到「字段名+数字」（10 个不同值 → 2 位）：' + mixOut[7]);
-ok(/@example\.org$/.test(mixOut[9]), '不同域名的邮箱各自保留自己的域名：' + mixOut[9]);
+ok(typeof mixOut[2] === 'number' && typeof mixOut[4] === 'number',
+    '数值格仍是数字：' + mixOut[2] + ' / ' + mixOut[4]);
+ok([0, 1, 3, 5].every(i => typeof mixOut[i] === 'string' && /\D/.test(mixOut[i])),
+    '文本格换成非数字文本，不会被 WPS 当数字：' + [0, 1, 3, 5].map(i => mixOut[i]).join(' / '));
+ok(/^账号\d+$/.test(mixOut[5]), '前导零文本不再生成 000xxx 形状：' + mixOut[5]);
 const mixBack = Engine.revert(Engine.hydrate(Engine.analyze(mixApp, {}), mixVault), mixVault, {});
 ok(mixBack.hit === mixOrig.length, '反映射命中 ' + mixBack.hit + ' 格');
 let mixOk = true;
 for (let i = 0; i < mixOrig.length; i++) {
     if (mixApp.getCell('Sheet1', i + 2, 1) !== mixOrig[i]) { mixOk = false; }
 }
-ok(mixOk, '十个值逐个精确还原');
+ok(mixOk, '所有值逐个精确还原');
 
 /* ---------- 18. used 的键格式必须和写入时一致（曾导致 6% 的重号） ---------- */
 console.log('\n[18] 生成器认可 keyOf 形式的占位');
@@ -388,24 +387,19 @@ console.log('\n[19] 单一形态的列保持原有识别');
 ok(Engine.guessMode('订单号', ['SO-2024-0001', 'SO-2024-0002']) === 'text', '纯字母数字列仍按文本处理');
 ok(Engine.guessMode('备注', ['老客户', '待跟进']) === 'text', '纯中文列仍是文本');
 ok(Engine.guessMode('工号', [1001, 1002, 1003]) === 'number', '纯数字列仍是数字');
-ok(Engine.guessMode('手机号', ['13800138000', '13912345678']) === 'phone', '纯手机号列仍是手机号');
+ok(Engine.guessMode('手机号', ['13800138000', '13912345678']) === 'text', '纯手机号列按文本处理');
+ok(Engine.guessMode('金额', ['008081', '007280']) === 'text', '纯数字字符串列按文本处理');
 
-/* ---------- 20. 前导零是格式的一部分，不能丢 ---------- */
-console.log('\n[20] 纯数字账号的前导零原样留住');
+/* ---------- 20. 文本值不生成纯数字假值（前导零不再被宿主吃掉） ---------- */
+console.log('\n[20] 文本值映射为非数字文本，前导零不会在写回时丢失');
 const gMix = v => Engine._internal.genMixed({ mode: 'mixed', prefix: '账号', digits: 2 }, v, {});
 let zeroBad = 0;
 for (let i = 0; i < 200; i++) {
     const out = gMix('000123');
-    if (!/^000\d{3}$/.test(out) || out === '000123') { zeroBad++; }
+    if (typeof out !== 'string' || /^\d+$/.test(out) || out === '000123') { zeroBad++; }
 }
-ok(zeroBad === 0, '000123 两百次都是 000 开头的六位数，异常 ' + zeroBad);
-const allZero = gMix('000000');
-ok(/^0{5}\d$/.test(allZero), '000000 仍是六位、仍以 0 开头：' + allZero);
-const twoDigit = gMix('01');
-ok(/^0\d$/.test(twoDigit), '两位编码 01 仍给两位、仍以 0 开头：' + twoDigit);
-const oneDigit = gMix('0');
-ok(/^账号\d{2}$/.test(oneDigit), '单个数字太短，按文本兜底（已知取舍）：' + oneDigit);
-ok(/^[1-9]\d{5}$/.test(gMix('123456')), '本来没有前导零的不会凭空长出前导零');
+ok(zeroBad === 0, '000123 两百次都得到非数字文本，异常 ' + zeroBad);
+ok(/^账号\d{2}$/.test(gMix('123456')), '普通文本也按「账号+2位」生成：' + gMix('123456'));
 
 const zipApp = new MockWPS();
 const zipRows = [['账号'], ['000123'], ['li.na@corp.com'], ['13800138000'], ['020-88997766']];
@@ -413,16 +407,35 @@ zipApp.setTable('Sheet1', 1, 1, zipRows);
 zipApp.select('Sheet1', 1, 1, zipRows.length, 1);
 const zipVault = Engine.loadVault(zipApp);
 const zipModel = Engine.analyze(zipApp, {});
-ok(Engine.guessMode('账号', zipModel.columns[0].values) === 'mixed', '带前导零的混合列仍判为 mixed');
+ok(Engine.guessMode('账号', zipModel.columns[0].values) === 'text', '全是文本值 → text');
 Engine.applyMask(Engine.hydrate(zipModel, zipVault), zipVault, {});
 const zipCel = r => zipApp.getCell('Sheet1', r, 1);
-ok(/^000\d{3}$/.test(zipCel(2)), '写入后前导零还在：' + zipCel(2));
-ok(/@corp\.com$/.test(zipCel(3)) && /^1[3-9]\d{9}$/.test(zipCel(4)) && /^020-/.test(zipCel(5)),
-    '同一列的其它形态照旧保形');
+ok(typeof zipCel(2) === 'string' && /\D/.test(zipCel(2)),
+    '前导零文本写成非数字文本：' + zipCel(2));
+ok([3, 4, 5].every(r => typeof zipCel(r) === 'string' && /\D/.test(zipCel(r))),
+    '邮箱/手机/固话也都按文本处理：' + [3, 4, 5].map(zipCel).join(' / '));
 Engine.revert(Engine.hydrate(Engine.analyze(zipApp, {}), zipVault), zipVault, {});
 let zipOk = true;
 for (let i = 0; i < 4; i++) { if (zipCel(i + 2) !== zipRows[i + 1][0]) { zipOk = false; } }
-ok(zipOk, '四个值（含前导零的那个）逐个还原');
+ok(zipOk, '四个值逐个还原');
+
+/* ---------- 20b. 反映射写数字形状文本：靠宿主文本标记保住前导零 ---------- */
+console.log('\n[20b] 反映射用文本标记保住前导零');
+const leadApp = new MockWPS();
+leadApp.coerceGeneralText = true;   // 模拟 WPS：常规格式会把数字形状字符串转成数字
+const leadRows = [['账号'], ['008081'], ['007280'], ['000123'], ["'abc"], ['abc']];
+leadApp.setTable('Sheet1', 1, 1, leadRows);
+leadApp.select('Sheet1', 1, 1, leadRows.length, 1);
+const leadVault = Engine.loadVault(leadApp);
+Engine.applyMask(Engine.hydrate(Engine.analyze(leadApp, {}), leadVault), leadVault, {});
+const leadCel = r => leadApp.getCell('Sheet1', r, 1);
+ok(leadCel(2) !== '008081', '映射后不再等于原值：' + leadCel(2));
+Engine.revert(Engine.hydrate(Engine.analyze(leadApp, {}), leadVault), leadVault, {});
+ok(leadCel(2) === '008081', '008081 原样还原，实际 ' + leadCel(2));
+ok(leadCel(3) === '007280', '007280 原样还原，实际 ' + leadCel(3));
+ok(leadCel(4) === '000123', '000123 原样还原，实际 ' + leadCel(4));
+ok(leadCel(5) === "'abc", '本身以单引号开头的文本也原样还原，实际 ' + leadCel(5));
+ok(leadCel(6) === 'abc', '普通文本照旧还原，实际 ' + leadCel(6));
 
 /* ---------- 21. 后缀位数按待写的格子数给，留 1.1 倍余量 ---------- */
 console.log('\n[21] 后缀位数只按需要给');
@@ -748,13 +761,14 @@ ok(wrote28 === plan28.stats && wrote28.written === 38, 'writeMask 返回 plan.st
 ok(splitApp.getCell('Sheet1', 2, 1) !== names[0] && splitVault.ranges.length === 4,
     'writeMask 只写表，区域记录不重复登记（仍 4 条），实际 ranges ' + splitVault.ranges.length);
 
-// 写中失败：第 3 列抛出，已写的列要按原值回滚
+// 写中失败：整块写到第 3 列时抛出，尝试过的列要按原值回滚
 const rbApp28 = freshApp();
 const rbVault28 = Engine.loadVault(rbApp28);
 const rbPlan28 = Engine.prepareMask(Engine.hydrate(Engine.analyze(rbApp28, {}), rbVault28), rbVault28);
 let threw28 = false;
 rbApp28.setWriteHook(function (info) {
-    if (!threw28 && info.sheet === 'Sheet1' && !info.single && info.col === 3) {
+    if (!threw28 && info.sheet === 'Sheet1' && !info.single &&
+        info.col <= 3 && info.col + info.cols - 1 >= 3) {
         threw28 = true;
         return 'throw';
     }
@@ -763,9 +777,9 @@ rbApp28.setWriteHook(function (info) {
 let rbErr28 = null;
 try { Engine.writeMask(rbPlan28); } catch (e) { rbErr28 = e; }
 rbApp28.clearWriteHook();
-ok(!!rbErr28 && /已回滚/.test(rbErr28.message), '第 3 列写失败 → 回滚并 rethrow：' + (rbErr28 && rbErr28.message));
-ok(!!rbErr28 && rbErr28.rollback && rbErr28.rollback.ok === true && rbErr28.rollback.columns === 3,
-    '回滚结果 ok=true、尝试过 3 列，实际 ' + JSON.stringify(rbErr28 && rbErr28.rollback));
+ok(!!rbErr28 && /已回滚/.test(rbErr28.message), '写整块到第 3 列时失败 → 回滚并 rethrow：' + (rbErr28 && rbErr28.message));
+ok(!!rbErr28 && rbErr28.rollback && rbErr28.rollback.ok === true && rbErr28.rollback.columns === 4,
+    '回滚结果 ok=true、尝试过整块 4 列，实际 ' + JSON.stringify(rbErr28 && rbErr28.rollback));
 let rbSame28 = true;
 for (let r = 0; r < table.length; r++) {
     for (let c = 0; c < 4; c++) {
@@ -1541,7 +1555,8 @@ const rbPlan47 = Engine.prepareMask(Engine.hydrate(Engine.analyze(rbApp47, {}), 
 ok(sameEdge(rbApp47.getBorder('Sheet1', 2, 1, EDGE_TOP), MARK_EDGE), 'prepareMask 先把边框画上');
 let threw47 = false;
 rbApp47.setWriteHook(function (info) {
-    if (!threw47 && info.sheet === 'Sheet1' && !info.single && info.col === 3) {
+    if (!threw47 && info.sheet === 'Sheet1' && !info.single &&
+        info.col <= 3 && info.col + info.cols - 1 >= 3) {
         threw47 = true;
         return 'throw';
     }
@@ -1816,6 +1831,8 @@ const origRange57 = halfApp57.sheets[0].Range;
 let bottomCalls57 = 0;
 halfApp57.sheets[0].Range = function (a, b) {
     const rng57 = origRange57.call(this, a, b);
+    // 快路径失败后应退回逐边；逐边再在画下边时抛错，验证半涂回滚
+    rng57.BorderAround = function () { throw new Error('模拟边框写入失败'); };
     const origItem57 = rng57.Borders.Item;
     rng57.Borders.Item = function (idx) {
         // 第 4 次读是下边（正常），第二次碰下边就是"画下边时抛错"
@@ -2084,7 +2101,7 @@ ok(fallback61.recovered === true && ioFallback61.bValueReads > 0,
     '，B 值读取 ' + ioFallback61.bValueReads + ' 次');
 
 /* ---------- 62. saveVault 正常路径不再做第二次解密 ---------- */
-console.log('\n[62] saveVault 正常路径只解密 1 次（读回校验不再解密）');
+console.log('\n[62] saveVault 正常路径不再解密（loadVault 已经解过）');
 const aesModule62 = require(path.join(__dirname, '..', 'wpsmask_1.0.0', 'js', 'aes.js'));
 const decApp62 = new MockWPS();
 const decVault62 = Engine.loadVault(decApp62);
@@ -2101,7 +2118,7 @@ let saveErr62 = null;
 try { Engine.saveVault(decApp62, decVault62); } catch (e) { saveErr62 = e; }
 aesModule62.decrypt = origDecrypt62;
 ok(saveErr62 === null, '保存成功' + (saveErr62 ? '：' + saveErr62.message : ''));
-ok(decrypts62 === 1, '只解密 1 次（仅是判断旧 A 能否解析），读回校验不再整份解密：实际 ' + decrypts62);
+ok(decrypts62 === 0, 'loadVault 已解密过，saveVault 不再为判断备份整表解密：实际 ' + decrypts62);
 const reread62 = Engine.loadVault(decApp62);
 ok(JSON.stringify(reread62.maps) === JSON.stringify(decVault62.maps), '读回校验通过，落盘数据正确');
 
@@ -2248,6 +2265,62 @@ const back65 = Engine.loadVault(app65);
 ok(Object.keys(back65.maps['text|批量|1']).length === 6000 &&
     back65.maps['text|批量|1']['s:假6000'] === '原6000',
     '整块写入后重新读取内容完整（6000 条，末条正确）');
+
+/* ---------- 66. 新映射不重刷无关旧区域的边框 ---------- */
+console.log('\n[66] 新映射只刷新本次区域，无关旧区域边框不动');
+const table66 = [['姓名', '手机号', '备注', '其他']];
+for (let i = 1; i <= 10; i++) { table66.push(['人' + i, '1381000000' + i, '备注' + i, '其他' + i]); }
+table66.push(['', '', '', '']);
+for (let i = 1; i <= 10; i++) { table66.push(['乙' + i, '1391000000' + i, '复' + i, '别' + i]); }
+const app66 = new MockWPS();
+app66.setTable('Sheet1', 1, 1, table66);
+paintUserBorders(app66, 'Sheet1', 1, 1, table66.length, 4, THIN_EDGE);
+const v66 = Engine.loadVault(app66);
+app66.select('Sheet1', 1, 1, 11, 4);
+const plan66a = Engine.prepareMask(Engine.hydrate(Engine.analyze(app66, {}), v66), v66);
+Engine.saveVault(app66, v66);
+Engine.writeMask(plan66a);
+ok(v66.marks.length === 1, '第一块映射后有 1 条边框记录');
+const THICK66 = { ls: 1, w: 4, c: 255 };
+app66.setBorder('Sheet1', 2, 1, EDGE_TOP, THICK66);
+app66.select('Sheet1', 13, 1, 11, 4);
+const model66b = Engine.hydrate(Engine.analyze(app66, { hasHeader: false }), v66);
+const plan66b = Engine.prepareMask(model66b, v66);
+Engine.saveVault(app66, v66);
+Engine.writeMask(plan66b);
+ok(v66.marks.length === 2, '第二块映射后共 2 条边框记录：' + v66.marks.length);
+ok(sameEdge(app66.getBorder('Sheet1', 2, 1, EDGE_TOP), THICK66),
+    '无关旧区域的手改边框没有被回放：' + JSON.stringify(app66.getBorder('Sheet1', 2, 1, EDGE_TOP)));
+ok(sameEdge(app66.getBorder('Sheet1', 13, 1, EDGE_TOP), MARK_EDGE),
+    '本次新区域照常画标记边框');
+
+/* ---------- 67. 标记外框不碰区域内部网格线 ---------- */
+console.log('\n[67] 画标记外框不改内部网格线，回滚也不碰');
+const app67 = freshApp();
+paintUserBorders(app67, 'Sheet1', 1, 1, table.length, 4, THIN_EDGE);
+// 11/12 是区域内部的横竖线；按整组 Borders 赋值会把它们一起改成紫色
+for (let r = 2; r <= table.length; r++) {
+    for (let c = 1; c <= 4; c++) {
+        app67.setBorder('Sheet1', r, c, 11, THIN_EDGE);
+        app67.setBorder('Sheet1', r, c, 12, THIN_EDGE);
+    }
+}
+const vault67 = Engine.loadVault(app67);
+const stats67 = mapNow(app67, vault67);
+ok(stats67.marked === 1, '映射后画了 1 块标记边框');
+ok(app67.borderAroundCalls === 1,
+    '外框用一次 BorderAround 画完，没有逐边写：' + app67.borderAroundCalls);
+ok(sameEdge(app67.getBorder('Sheet1', 5, 2, 11), THIN_EDGE) &&
+    sameEdge(app67.getBorder('Sheet1', 5, 2, 12), THIN_EDGE),
+    '区域内部的横竖网格线保持用户原样');
+ok(sameEdge(app67.getBorder('Sheet1', 2, 1, EDGE_TOP), MARK_EDGE), '外框照常是紫色虚线');
+
+const rev67 = Engine.revert(Engine.hydrate(Engine.analyze(app67, {}), vault67), vault67, {});
+ok(rev67.hit === 38, '38 格全部还原：' + rev67.hit);
+ok(sameEdge(app67.getBorder('Sheet1', 2, 1, EDGE_TOP), THIN_EDGE) &&
+    sameEdge(app67.getBorder('Sheet1', 5, 2, 11), THIN_EDGE) &&
+    sameEdge(app67.getBorder('Sheet1', 5, 2, 12), THIN_EDGE),
+    '外框回到原细实线，内部网格线始终没被碰过');
 
 console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

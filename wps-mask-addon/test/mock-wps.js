@@ -8,10 +8,13 @@ function MockWPS(rows, cols) {
     this.maxCols = cols || 16384;
     this.grid = {};   // "sheet!r,c" -> value
     this.cellBorders = {};   // "sheet!r,c" -> { 边框索引: {ls, w, c} }，和宿主一样按单元格存四条边
+    this.borderAroundCalls = 0;   // 区域外框一次画完的调用次数（性能回归用）
     this._maxRow = {};
     this.sheets = [];
     this._writeHook = null;
     this._deleteHook = null;
+    // 模拟 WPS：常规格式写入数字形状字符串会转成数字；默认关闭，保持纯值模型
+    this.coerceGeneralText = false;
     this.activeSheet = null;
     this.DisplayAlerts = true;
     this.Selection = null;
@@ -117,6 +120,17 @@ MockSheet.prototype.Activate = function () {
     this.app.activeSheet = this;
 };
 
+// 模拟 WPS 的写入解析：常规格式的单元格会把数字形状的字符串转成数字。
+// 前导单引号是宿主的文本标记，写入时去掉标记、值保持字符串。
+// 只有测试显式打开 coerceGeneralText 时才生效，默认保持纯值模型。
+function hostWrittenValue(app, v) {
+    if (typeof v !== 'string') { return v; }
+    if (v.charAt(0) === "'") { return v.substring(1); }
+    if (!app.coerceGeneralText) { return v; }
+    if (/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(v)) { return Number(v); }
+    return v;
+}
+
 function makeRange(sheet, row, col, rows, cols) {
     var rng = {
         sheet: sheet,
@@ -133,9 +147,11 @@ function makeRange(sheet, row, col, rows, cols) {
         Resize: function (r, c) {
             return makeRange(sheet, row, col, r == null ? rows : r, c == null ? cols : c);
         },
-        // 边框集合：和宿主一样按"单元格的四条边"存，整条边不一致时读取返回 null
-        Borders: {
-            Item: function (idx) { return makeBorder(sheet, row, col, rows, cols, idx); }
+        // 边框集合：和宿主一样按"单元格的四条边"存，整条边不一致时读取返回 null。
+        // 集合本身还包含 xlInsideVertical / xlInsideHorizontal（11/12），整组赋值会连内部网格一起改。
+        Borders: makeBorders(sheet, row, col, rows, cols),
+        BorderAround: function (lineStyle, weight, colorIndex, color) {
+            borderAround(sheet, row, col, rows, cols, lineStyle, weight, color);
         },
         End: function (dir) {
             var app = sheet.app;
@@ -204,7 +220,7 @@ function makeRange(sheet, row, col, rows, cols) {
                 }
             }
             if (rows === 1 && cols === 1 && !Array.isArray(val)) {
-                sheet.app.grid[sheet.Name + '!' + row + ',' + col] = val;
+                sheet.app.grid[sheet.Name + '!' + row + ',' + col] = hostWrittenValue(sheet.app, val);
                 if (val !== null && val !== undefined && val !== '') {
                     sheet.app._maxRow[sheet.Name] = Math.max(sheet.app._maxRow[sheet.Name] || 0, row);
                 }
@@ -214,7 +230,7 @@ function makeRange(sheet, row, col, rows, cols) {
             for (var r = 0; r < rows; r++) {
                 for (var c = 0; c < cols; c++) {
                     var v = val[r] ? val[r][c] : null;
-                    sheet.app.grid[sheet.Name + '!' + (row + r) + ',' + (col + c)] = v;
+                    sheet.app.grid[sheet.Name + '!' + (row + r) + ',' + (col + c)] = hostWrittenValue(sheet.app, v);
                     if (v !== null && v !== undefined && v !== '') {
                         sheet.app._maxRow[sheet.Name] = Math.max(sheet.app._maxRow[sheet.Name] || 0, row + r);
                     }
@@ -230,11 +246,13 @@ function makeRange(sheet, row, col, rows, cols) {
  * 宿主把边框按单元格存（每个单元格四条边），区域上的 Borders.Item(idx) 是这一圈边的视图：
  * 读取时整条边不一致返回 null，写入时写到范围内每个单元格上。mock 照这个模型实现，
  * 「标记边框」的记录与恢复才有和真机一样的语义。
+ * 11/12 是区域的内部横竖线：整组 Borders 赋值会连它们一起改，BorderAround 不会。
  */
 var EDGE_NONE = { ls: -4142, w: 1, c: 0 };   // xlLineStyleNone
+var BORDER_INDEXES = [7, 8, 9, 10, 11, 12];
 
 function edgeCells(row, col, rows, cols, idx) {
-    var out = [], i;
+    var out = [], i, r, c;
     if (idx === 8) {              // xlEdgeTop
         for (i = col; i < col + cols; i++) { out.push([row, i]); }
     } else if (idx === 9) {       // xlEdgeBottom
@@ -243,6 +261,14 @@ function edgeCells(row, col, rows, cols, idx) {
         for (i = row; i < row + rows; i++) { out.push([i, col]); }
     } else if (idx === 10) {      // xlEdgeRight
         for (i = row; i < row + rows; i++) { out.push([i, col + cols - 1]); }
+    } else if (idx === 11) {      // xlInsideVertical
+        for (r = row; r < row + rows; r++) {
+            for (c = col; c < col + cols - 1; c++) { out.push([r, c]); }
+        }
+    } else if (idx === 12) {      // xlInsideHorizontal
+        for (r = row; r < row + rows - 1; r++) {
+            for (c = col; c < col + cols; c++) { out.push([r, c]); }
+        }
     } else {
         throw new Error('mock 不支持该边框索引：' + idx);
     }
@@ -259,6 +285,16 @@ function getEdge(app, sheetName, r, c, idx) {
     return s ? { ls: s.ls, w: s.w, c: s.c } : { ls: EDGE_NONE.ls, w: EDGE_NONE.w, c: EDGE_NONE.c };
 }
 
+function writeEdgeProp(app, sheetName, r, c, idx, prop, val) {
+    var key = borderKey(sheetName, r, c);
+    var box = app.cellBorders[key] || (app.cellBorders[key] = {});
+    var s = box[idx] || (box[idx] = { ls: EDGE_NONE.ls, w: EDGE_NONE.w, c: EDGE_NONE.c });
+    // 宿主语义：给 Weight 赋值会把 LineStyle 顶成 xlSolid（当前为 xlNone 时不动）。
+    // engine 的清边/恢复必须按"颜色 → 粗细 → 线型"顺序写，否则线型会被顶回实线。
+    if (prop === 'w' && s.ls !== EDGE_NONE.ls) { s.ls = 1; }
+    s[prop] = val;
+}
+
 function makeBorder(sheet, row, col, rows, cols, idx) {
     var app = sheet.app;
     var cells = edgeCells(row, col, rows, cols, idx);
@@ -273,13 +309,7 @@ function makeBorder(sheet, row, col, rows, cols, idx) {
     }
     function write(prop, val) {
         for (var i = 0; i < cells.length; i++) {
-            var key = borderKey(sheet.Name, cells[i][0], cells[i][1]);
-            var box = app.cellBorders[key] || (app.cellBorders[key] = {});
-            var s = box[idx] || (box[idx] = { ls: EDGE_NONE.ls, w: EDGE_NONE.w, c: EDGE_NONE.c });
-            // 宿主语义：给 Weight 赋值会把 LineStyle 顶成 xlSolid（当前为 xlNone 时不动）。
-            // engine 的清边/恢复必须按"颜色 → 粗细 → 线型"顺序写，否则线型会被顶回实线。
-            if (prop === 'w' && s.ls !== EDGE_NONE.ls) { s.ls = 1; }
-            s[prop] = val;
+            writeEdgeProp(app, sheet.Name, cells[i][0], cells[i][1], idx, prop, val);
         }
     }
     var b = {};
@@ -296,6 +326,71 @@ function makeBorder(sheet, row, col, rows, cols, idx) {
         set: function (v) { write('c', v); }
     });
     return b;
+}
+
+// 区域边框集合：包含四条外边和两条内部线，整组读写会一起改。
+function makeBorders(sheet, row, col, rows, cols) {
+    var app = sheet.app;
+    var borders = {
+        Item: function (idx) { return makeBorder(sheet, row, col, rows, cols, idx); }
+    };
+    function propKey(prop) {
+        return prop === 'LineStyle' ? 'ls' : (prop === 'Weight' ? 'w' : 'c');
+    }
+    function readAll(prop) {
+        var key = propKey(prop), first, has = false;
+        for (var n = 0; n < BORDER_INDEXES.length; n++) {
+            var idx = BORDER_INDEXES[n];
+            var cells = edgeCells(row, col, rows, cols, idx);
+            for (var i = 0; i < cells.length; i++) {
+                var v = getEdge(app, sheet.Name, cells[i][0], cells[i][1], idx)[key];
+                if (!has) { first = v; has = true; }
+                else if (v !== first) { return null; }
+            }
+        }
+        return has ? first : null;
+    }
+    function writeAll(prop, val) {
+        var key = propKey(prop);
+        for (var n = 0; n < BORDER_INDEXES.length; n++) {
+            var idx = BORDER_INDEXES[n];
+            var cells = edgeCells(row, col, rows, cols, idx);
+            for (var i = 0; i < cells.length; i++) {
+                writeEdgeProp(app, sheet.Name, cells[i][0], cells[i][1], idx, key, val);
+            }
+        }
+    }
+    ['LineStyle', 'Weight', 'Color'].forEach(function (prop) {
+        Object.defineProperty(borders, prop, {
+            get: function () { return readAll(prop); },
+            set: function (v) { writeAll(prop, v); }
+        });
+    });
+    return borders;
+}
+
+// 只画/清四条外边，内部横竖线保持原样；参数顺序同宿主：线型、粗细、ColorIndex、颜色。
+function borderAround(sheet, row, col, rows, cols, lineStyle, weight, color) {
+    var app = sheet.app;
+    app.borderAroundCalls++;
+    var edges = [8, 9, 7, 10];
+    for (var e = 0; e < edges.length; e++) {
+        var idx = edges[e];
+        var cells = edgeCells(row, col, rows, cols, idx);
+        for (var i = 0; i < cells.length; i++) {
+            var r = cells[i][0], c = cells[i][1];
+            if (lineStyle === EDGE_NONE.ls) {
+                // 真机清外框后：颜色 0、粗细给定值（默认 2）、线型 none
+                writeEdgeProp(app, sheet.Name, r, c, idx, 'c', 0);
+                writeEdgeProp(app, sheet.Name, r, c, idx, 'w', weight == null ? 2 : weight);
+                writeEdgeProp(app, sheet.Name, r, c, idx, 'ls', lineStyle);
+            } else {
+                if (color != null) { writeEdgeProp(app, sheet.Name, r, c, idx, 'c', color); }
+                if (weight != null) { writeEdgeProp(app, sheet.Name, r, c, idx, 'w', weight); }
+                writeEdgeProp(app, sheet.Name, r, c, idx, 'ls', lineStyle);
+            }
+        }
+    }
 }
 
 // 测试用：读/写某个单元格某条边的样式（8=上 9=下 7=左 10=右）

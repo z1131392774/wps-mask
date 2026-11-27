@@ -10,9 +10,9 @@ The table is keyed `n:`/`s:`/`b:` (number, string, boolean); probe `used[keyOf(c
 
 When a numeric interval only just holds the distinct values, permute the whole column with `sattolo()` (one cycle, no fixed points); generating value by value forces the last one onto itself, and a fixed offset is the original column rotated. `assignExact` computes the span before materialising: 1,000,000 is the ceiling, a non-finite bound is rejected, and a too-wide stretch falls back to random assignment. An interval too small fails naming the column by letter and header.
 
-## Mixed-column shapes
+## Mixed columns
 
-`shapeOf()` returns mobile, email, landline, digits, alnum or text; `genMixed` dispatches to a generator that keeps that shape, else `genText`. A new shape needs a `shapeOf` branch, a generator and a test for what must survive: domain, area code, digits, leading zero. Revert stays keyed on the original, so the shape that produced a fake is irrelevant.
+Values are typed, not shaped. A number becomes one from the column range; a string goes through `genText`, which appends digits to the field-name prefix and guarantees a non-digit character. On revert, `writeColumnParts` prefixes every string with `'`, the host's text marker, so `008081` survives a general-format cell with format unchanged. Revert stays keyed on the original.
 
 ## Vault format
 

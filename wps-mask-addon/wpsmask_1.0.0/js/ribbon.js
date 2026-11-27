@@ -105,13 +105,23 @@ function MaskReadOnlyText(what, retry) {
 /* ---------- 快捷操作（不打开面板，用自动识别或上次记住的设置） ---------- */
 
 function MaskQuickApply() {
+    var started = Date.now();
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
     if (MaskReadOnly(app)) {
         MaskAlert(MaskReadOnlyText('脱敏后无法还原', '脱敏'));
         return;
     }
+    var result = MaskQuietHost(app, function () { return MaskQuickApplyRun(app); });
+    // 耗时在恢复刷新/重算之后再算，包含最后这次还原
+    if (result && result.toast) {
+        var total = Date.now() - started;
+        var toast = result.toast;
+        MaskToast(toast, total);
+    }
+}
 
+function MaskQuickApplyRun(app) {
     var vault = MaskEngine.loadVault(app);
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
 
@@ -152,23 +162,28 @@ function MaskQuickApply() {
     }
 
     var skip = plan.stats.skipped > 0 ? '，跳过 ' + plan.stats.skipped + ' 格' : '';
-    var msg = '已映射 ' + plan.stats.written + ' 格' + skip + '，记得保存文档';
+    var msg = '已映射 ' + plan.stats.written + ' 格' + skip;
     // 边框画失败是部分失败：数据与映射表已经写好，但成功提示会误导，必须显式说明
     if (plan.stats.markError) {
         MaskAlert(msg + '；区域边框没画上：' + plan.stats.markError + '。');
         return;
     }
-    MaskToast(msg + '。');
+    return { toast: msg + '。' };
 }
 
 function MaskQuickRevert() {
+    var started = Date.now();
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
     if (MaskReadOnly(app)) {
         MaskAlert(MaskReadOnlyText('还原结果保存不了', '反映射'));
         return;
     }
+    var result = MaskQuietHost(app, function () { return MaskQuickRevertRun(app); });
+    if (result && result.toast) { MaskToast(result.toast, Date.now() - started); }
+}
 
+function MaskQuickRevertRun(app) {
     var vault = MaskEngine.loadVault(app);
     var model = MaskEngine.hydrate(MaskEngine.analyze(app, {}), vault);
     var stats = MaskEngine.revert(model, vault, {});
@@ -196,7 +211,7 @@ function MaskQuickRevert() {
         MaskAlert('已还原 ' + stats.hit + ' 格' + tail + '；区域边框没更新：' + stats.markError);
         return;
     }
-    MaskToast('已还原 ' + stats.hit + ' 格' + tail);
+    return { toast: '已还原 ' + stats.hit + ' 格' + tail };
 }
 
 /* ---------- 标记边框（功能区，不打开面板） ----------
@@ -221,13 +236,18 @@ function MaskErrList(errors) {
 }
 
 function MaskQuickMarkAll() {
+    var started = Date.now();
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
     if (MaskReadOnly(app)) {
         MaskAlert(MaskReadOnlyText('边框变化保存不了', '加边框'));
         return;
     }
+    var result = MaskQuietHost(app, function () { return MaskQuickMarkAllRun(app); });
+    if (result && result.toast) { MaskToast(result.toast, Date.now() - started); }
+}
 
+function MaskQuickMarkAllRun(app) {
     var vault = MaskEngine.loadVault(app);
     var r = MaskEngine.markAllAreas(app, vault);
     // marked=0 也可能清理了旧记录/旧紫线：真正的"没动"是 changed=false
@@ -251,20 +271,25 @@ function MaskQuickMarkAll() {
         ? ('已给 ' + r.marked + ' 块区域加上边框' + tail)
         : ('没有需要重画边框的区域，已清理过期的边框记录' + tail);
     if (r.errors.length) {
-        MaskAlert(msg + '；没画上的工作表：' + MaskErrList(r.errors) + '，记得保存文档。');
+        MaskAlert(msg + '；没画上的工作表：' + MaskErrList(r.errors) + '。');
         return;
     }
-    MaskToast(msg + '，记得保存文档。');
+    return { toast: msg + '。' };
 }
 
 function MaskQuickClearMarks() {
+    var started = Date.now();
     var app = MaskGetApp();
     if (!app) { throw new Error('未取到 WPS 应用对象'); }
     if (MaskReadOnly(app)) {
         MaskAlert(MaskReadOnlyText('边框变化保存不了', '去边框'));
         return;
     }
+    var result = MaskQuietHost(app, function () { return MaskQuickClearMarksRun(app); });
+    if (result && result.toast) { MaskToast(result.toast, Date.now() - started); }
+}
 
+function MaskQuickClearMarksRun(app) {
     var vault = MaskEngine.loadVault(app);
     var r = MaskEngine.clearAllMarks(app, vault);
     // errors 非空时即便 cleared=0 也要落盘：失败的表保留记录，成功清掉的部分得记住
@@ -286,8 +311,8 @@ function MaskQuickClearMarks() {
         ? ('已去掉 ' + r.cleared + ' 块区域的边框' + tail)
         : ('没有去掉边框' + tail);
     if (r.errors.length) {
-        MaskAlert(msg + '；没去掉的工作表：' + MaskErrList(r.errors) + '，记得保存文档。');
+        MaskAlert(msg + '；没去掉的工作表：' + MaskErrList(r.errors) + '。');
         return;
     }
-    MaskToast(msg + '，记得保存文档。');
+    return { toast: msg + '。' };
 }

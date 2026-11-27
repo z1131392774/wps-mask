@@ -138,7 +138,8 @@ function spyEngine(win) {
     const firstBody = cards[0].querySelector('.cb').textContent;
     ok(/前缀/.test(firstBody), '文本字段显示「前缀」参数');
     ok(cards[0].querySelector('.f-prefix').value === '姓名', '前缀默认取字段名');
-    ok(/189|1[3-9]\d{9}/.test(cards[1].querySelector('.samp').textContent), '手机号列示例是合法号码：' + cards[1].querySelector('.samp').textContent);
+    ok(/^手机号\d+$/.test(cards[1].querySelector('.samp').textContent),
+        '手机号列示例是文本假值：' + cards[1].querySelector('.samp').textContent);
     ok(/均匀/.test(cards[2].querySelector('.dist').textContent), '数字列默认均匀分布');
     ok(!/个不同值/.test(doc.body.textContent), '卡片不再显示「本列 N 个不同值」（WPS 状态栏本身就会数）');
     ok(cards[2].querySelector('.samp').textContent !== '', '数字列有示例：' + cards[2].querySelector('.samp').textContent);
@@ -169,7 +170,8 @@ function spyEngine(win) {
     const statusText = doc.getElementById('status').textContent;
     ok(/已映射/.test(statusText), '状态栏：' + statusText);
     ok(app.getCell('Sheet1', 2, 2) !== table[1][1], '手机号已被替换 → ' + app.getCell('Sheet1', 2, 2));
-    ok(/^1[3-9]\d{9}$/.test(app.getCell('Sheet1', 2, 2)), '替换后仍是合法手机号');
+    ok(typeof app.getCell('Sheet1', 2, 2) === 'string' && /\D/.test(app.getCell('Sheet1', 2, 2)),
+        '替换后是非数字文本：' + app.getCell('Sheet1', 2, 2));
     ok(app.getCell('Sheet1', 2, 1) !== table[1][0], '姓名已被替换 → ' + app.getCell('Sheet1', 2, 1));
     ok(app.getCell('Sheet1', 4, 1) === app.getCell('Sheet1', 2, 1), '同名同映射（张三 两行一致）');
     ok(app.getCell('Sheet1', 2, 4) === '老客户', '「不处理」列保持原值');
