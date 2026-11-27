@@ -70,40 +70,45 @@ function MaskErrText(e) {
 /*
  * 大批量写入期间关掉宿主的屏幕刷新、自动重算和事件，结束时按原值恢复。
  * 这三个属性都是可选优化：宿主没有或不支持就跳过，不能让操作因此失败。
+ * 「需不需要恢复」只看赋值前是否读到了原值并准备赋值（restore* 意图标记），
+ * 不看赋值后的读回：COM 忙时读回可能抛错或返回旧值，拿读回当恢复依据的宿主
+ * 会永久停在 ScreenUpdating=false / Calculation=manual / EnableEvents=false，
+ * 只能重启 WPS。多写一次原值没有副作用，漏恢复会坏掉整个会话，
+ * 所以判断方向只能是「只要改过就必须恢复」，不能反过来。
  * 恢复放在 finally，写入抛错也不会把宿主留在手动计算/事件关闭的状态。
  * Calculation 的 -4135 是 xlCalculationManual。
  */
 function MaskQuietBegin(app) {
-    var s = { app: app, hasScreen: false, screen: null, hasCalc: false, calc: null, hasEvents: false, events: null };
+    var s = { app: app, restoreScreen: false, screen: null, restoreCalc: false, calc: null, restoreEvents: false, events: null };
     if (!app) { return s; }
     try {
         if (typeof app.ScreenUpdating !== 'undefined') {
             s.screen = app.ScreenUpdating;
+            // 先记「需恢复」再赋值：setter 可能生效后才抛错，未标记就再也没有恢复路径
+            s.restoreScreen = true;
             app.ScreenUpdating = false;
-            var sv = app.ScreenUpdating;
-            s.hasScreen = (sv === false || sv === 0);
         }
     } catch (eScreen) {
-        s.hasScreen = false;
+        /* 读原值或赋值抛错（COM 忙等）：这只是可选优化，不能让业务操作失败。
+           原值没读到就无从恢复（restoreScreen 仍为 false）；读到了则已标记，由 MaskQuietEnd 写回。 */
     }
     try {
         if (typeof app.Calculation !== 'undefined') {
             s.calc = app.Calculation;
+            s.restoreCalc = true;
             app.Calculation = -4135;
-            s.hasCalc = (Number(app.Calculation) === -4135);
         }
     } catch (eCalc) {
-        s.hasCalc = false;
+        /* 同上 */
     }
     try {
         if (typeof app.EnableEvents !== 'undefined') {
             s.events = app.EnableEvents;
+            s.restoreEvents = true;
             app.EnableEvents = false;
-            var ev = app.EnableEvents;
-            s.hasEvents = (ev === false || ev === 0);
         }
     } catch (eEvents) {
-        s.hasEvents = false;
+        /* 同上 */
     }
     return s;
 }
@@ -111,10 +116,12 @@ function MaskQuietBegin(app) {
 function MaskQuietEnd(s) {
     if (!s || !s.app) { return; }
     var app = s.app;
-    // 先恢复重算（屏幕还关着），再恢复事件，最后打开屏幕重绘
-    if (s.hasCalc) { try { app.Calculation = s.calc; } catch (e1) { /* 恢复失败只能放弃，不能倒回去开屏幕 */ } }
-    if (s.hasEvents) { try { app.EnableEvents = s.events; } catch (e2) { /* 同上 */ } }
-    if (s.hasScreen) { try { app.ScreenUpdating = s.screen; } catch (e3) { /* 同上 */ } }
+    // 先恢复重算（屏幕还关着），再恢复事件，最后打开屏幕重绘。
+    // 按 Begin 记下的意图无条件写回原值；恢复失败只能放弃，不能反过来补偿
+    // （比如强制打开屏幕、改成自动重算），那会改掉用户原本的设置。
+    if (s.restoreCalc) { try { app.Calculation = s.calc; } catch (e1) { /* 恢复失败只能放弃，不能倒回去开屏幕 */ } }
+    if (s.restoreEvents) { try { app.EnableEvents = s.events; } catch (e2) { /* 同上 */ } }
+    if (s.restoreScreen) { try { app.ScreenUpdating = s.screen; } catch (e3) { /* 同上 */ } }
 }
 
 function MaskQuietHost(app, fn) {

@@ -45,9 +45,10 @@
         return a;
     }
 
-    // 只读文档上 Save() 既不抛错也不写盘（真机量过，见 engine.js saveVault）：映射表会静默丢掉。
-    // 引擎在阶段一就可能先画边框，所以必须在调用 prepareMask/revert 之前拒绝，不能等保存失败。
-    // 文案与 engine.js saveVault 的只读提示同义（只读时 Save() 不抛错也不写盘），两处改一处必须同步。
+    // 只读文档上 Save() 不是静默失败：真机会弹「是否替换该文件？」模态框——点「取消」抛 HRESULT，
+    // 点「是」静默返回但文件内容不变；无人值守时这个框还会挡住后面的 COM 调用（见 tools/live/HANDOFF.md）。
+    // 映射表存不进去，引擎在阶段一就可能先画边框，所以必须在调用 prepareMask/revert 之前用 ReadOnly 拒绝。
+    // 文案与 engine.js saveVault 的只读提示同义，两处改一处必须同步。
     function isReadOnly(app) {
         var wb = null;
         try { wb = app && app.ActiveWorkbook; } catch (e) { wb = null; }
@@ -56,7 +57,7 @@
     }
 
     function readOnlyText(what, retry) {
-        return '文档是只读打开的，映射表存不进去（保存会被静默忽略），' + what +
+        return '文档是只读打开的，映射表存不进去（保存会弹替换提示，即使确认也写不进文件），' + what +
             '。请先另存为新文件，再' + retry + '。';
     }
 
@@ -407,7 +408,8 @@
     // 表头值还是自动判定出来的（或沿用了上一次的自动判定）、而用户自己从没勾选/取消过时，
     // 首行可能其实是数据：它不会被脱敏，整行都会泄露。给一句能直接照着做的提示。
     // 只在"有歧义"时提示：全部列都只能按文本处理时，表头和数据行长得一样，启发式才可能猜错；
-    // 有手机号/数字这类强证据的列时，首行几乎不可能是数据，提示只会变成每次开面板都刷屏的噪音。
+    // 有数字这类强证据的列时，首行几乎不可能是数据，提示只会变成每次开面板都刷屏的噪音。
+    // guessMode 只按 JS 类型判断强证据（数值/文本），手机号这类字符串形状不再参与识别。
     // 用户手动切换过 chkHeader（headerTouched）就不再提示，避免对已经核对过的表反复刷屏。
     function headerWarn(model) {
         if (!(model.hasHeader && (model.headerAuto || !state.headerTouched))) { return ''; }
@@ -535,10 +537,10 @@
             try {
                 E.writeMask(plan);
             } catch (writeErr) {
-                // writeMask 已按原值回滚单元格，并把 plan.vault 的区域/边框记录恢复到 pre-mask；
-                // 这份"没写成功"的映射表必须写回磁盘，否则下次映射会把这些区域当成已映射。
+                // writeMask 已按原值回滚单元格：回滚成功时区域/边框记录回到 pre-mask，失败时只保留失败列
+                // 的逐格计划假值快照（partial）。这份"没写成功"的映射表必须写回磁盘，否则失败列的反映射线索丢失。
                 var tail = (writeErr && writeErr.rollback && writeErr.rollback.ok === false)
-                    ? '；回滚未完成，请检查表格后重新映射。'
+                    ? '；回滚未完成，请按提示核对受损单元格。'
                     : '；已回滚，请重新映射。';
                 var fail = '写入失败：' + MaskErrText(writeErr) + tail;
                 try {

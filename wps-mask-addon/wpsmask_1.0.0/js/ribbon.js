@@ -85,9 +85,11 @@ function MaskTogglePane() {
 }
 
 /* ---------- 只读文档 ----------
- * 只读打开时 Save() 既不抛错也不写盘（真机量过，见 engine.js saveVault）：映射表会"保存成功"地丢掉。
- * 映射、反映射、加/去边框都要改映射表，所以在动任何单元格或边框之前就拒绝。
- * 文案与 engine.js saveVault 的只读提示同义（只读时 Save() 不抛错也不写盘），两处改一处必须同步。
+ * 只读打开时 Save() 不是静默失败：真机会弹「是否替换该文件？」模态框——点「取消」抛 HRESULT，
+ * 点「是」静默返回但文件内容不变；无人值守时这个框还会挡住后面的 COM 调用（见 tools/live/HANDOFF.md）。
+ * 两种结局都存不下映射表，所以必须在保存前用 ReadOnly 拒绝：映射、反映射、加/去边框都要改映射表，
+ * 在动任何单元格或边框之前就退出。
+ * 文案与 engine.js saveVault 的只读提示同义，两处改一处必须同步。
  */
 
 function MaskReadOnly(app) {
@@ -98,7 +100,7 @@ function MaskReadOnly(app) {
 }
 
 function MaskReadOnlyText(what, retry) {
-    return '文档是只读打开的，映射表存不进去（保存会被静默忽略），' + what +
+    return '文档是只读打开的，映射表存不进去（保存会弹替换提示，即使确认也写不进文件），' + what +
         '。请先另存为新文件，再' + retry + '。';
 }
 
@@ -145,10 +147,10 @@ function MaskQuickApplyRun(app) {
     try {
         MaskEngine.writeMask(plan);
     } catch (writeErr) {
-        // writeMask 已按原值回滚单元格，并把 plan.vault 的区域/边框记录恢复到 pre-mask；
-        // 这份"没写成功"的映射表必须写回磁盘，否则下次映射会把这些区域当成已映射。
+        // writeMask 已按原值回滚单元格：回滚成功时区域/边框记录回到 pre-mask，失败时只保留失败列
+        // 的逐格计划假值快照（partial）。这份"没写成功"的映射表必须写回磁盘，否则失败列的反映射线索丢失。
         var tail = (writeErr && writeErr.rollback && writeErr.rollback.ok === false)
-            ? '；回滚未完成，请检查表格后重新映射。'
+            ? '；回滚未完成，请按提示核对受损单元格。'
             : '；已回滚，请重新映射。';
         var fail = '写入失败：' + MaskErrText(writeErr) + tail;
         try {
@@ -206,7 +208,8 @@ function MaskQuickRevertRun(app) {
     }
     var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有映射记录') : '';
     if (stats.ambiguous > 0) { tail += '，' + stats.ambiguous + ' 格有歧义未还原'; }
-    // 边框没更新是部分失败：状态栏 4 秒就清掉，用户容易以为全部还原成功，必须弹窗
+    // 边框没更新是部分失败：状态栏提示只说还原成功（MaskToast 常驻到下一次提示替换，还带耗时），
+    // 不会提边框没更新，用户容易以为全部还原成功，必须弹窗
     if (stats.markError) {
         MaskAlert('已还原 ' + stats.hit + ' 格' + tail + '；区域边框没更新：' + stats.markError);
         return;

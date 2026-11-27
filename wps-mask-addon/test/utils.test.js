@@ -150,6 +150,102 @@ function trackedApp() {
     seventh.dom.window.MaskQuietHost(noProps, function () { ran = true; });
     ok(ran && Object.keys(noProps).length === 0, '宿主没有这些属性时原样跳过');
 
+    // 回归 P1-2：赋值后读回抛错（COM 忙）时，旧实现把 has* 置 false → 永不恢复，
+    // 整个 WPS 会话停在 ScreenUpdating=false / Calculation=manual / EnableEvents=false。
+    // 现在按「赋值前已记录原值」的意图恢复，读回不参与判断。
+    console.log('\n[8] 读回或赋值抛错时也必须恢复，不能永久静默');
+    const eighth = boot(null);
+
+    // (a) ScreenUpdating 的 setter 生效，但赋值后读回（getter）抛错
+    const readFailScreen = {};
+    const screenWrites = [];
+    let screenReal = true;
+    Object.defineProperty(readFailScreen, 'ScreenUpdating', {
+        get() { if (screenWrites.length > 0) { throw new Error('COM 忙，读回失败'); } return screenReal; },
+        set(v) { screenWrites.push(v); screenReal = v; }
+    });
+    const duringScreen = {};
+    eighth.dom.window.MaskQuietHost(readFailScreen, function () { duringScreen.value = screenReal; });
+    ok(duringScreen.value === false, '操作期间屏幕刷新已关：' + duringScreen.value);
+    ok(screenReal === true, 'ScreenUpdating 读回抛错后仍恢复原值：' + screenReal);
+    ok(JSON.stringify(screenWrites) === JSON.stringify([false, true]),
+        '写入序列为先关后恢复，没有漏恢复：' + JSON.stringify(screenWrites));
+
+    // (b) Calculation 的 setter 生效，但赋值后读回抛错
+    const readFailCalc = {};
+    const calcWrites = [];
+    let calcReal = -4105;
+    Object.defineProperty(readFailCalc, 'Calculation', {
+        get() { if (calcWrites.length > 0) { throw new Error('COM 忙，读回失败'); } return calcReal; },
+        set(v) { calcWrites.push(v); calcReal = v; }
+    });
+    const duringCalc = {};
+    eighth.dom.window.MaskQuietHost(readFailCalc, function () { duringCalc.value = calcReal; });
+    ok(duringCalc.value === -4135, '操作期间重算切换为手动：' + duringCalc.value);
+    ok(calcReal === -4105, 'Calculation 读回抛错后仍恢复原值：' + calcReal);
+    ok(JSON.stringify(calcWrites) === JSON.stringify([-4135, -4105]),
+        '重算写入序列为先手动后恢复：' + JSON.stringify(calcWrites));
+
+    // (c) setter 生效后才抛错：也必须尝试把原值写回去
+    const throwAfterSet = {};
+    const eventsWrites = [];
+    let eventsReal = true;
+    let throwOnce = true;
+    Object.defineProperty(throwAfterSet, 'EnableEvents', {
+        get() { return eventsReal; },
+        set(v) {
+            eventsWrites.push(v);
+            eventsReal = v;
+            if (throwOnce) { throwOnce = false; throw new Error('COM 忙，赋值后抛错'); }
+        }
+    });
+    const duringEvents = {};
+    eighth.dom.window.MaskQuietHost(throwAfterSet, function () { duringEvents.value = eventsReal; });
+    ok(duringEvents.value === false, 'setter 抛错前事件已关闭：' + duringEvents.value);
+    ok(eventsReal === true, 'setter 生效后抛错，结束仍写回原值：' + eventsReal);
+    ok(JSON.stringify(eventsWrites) === JSON.stringify([false, true]),
+        '抛错后仍有一次恢复写入：' + JSON.stringify(eventsWrites));
+
+    // (d) 读原值就抛错：不赋值，也不写回未知值（不能拿 null 覆盖宿主设置）
+    const unreadable = { sets: 0 };
+    Object.defineProperty(unreadable, 'Calculation', {
+        get() { throw new Error('COM 忙，读不到原值'); },
+        set(v) { unreadable.sets++; }
+    });
+    let unreadableRan = false;
+    eighth.dom.window.MaskQuietHost(unreadable, function () { unreadableRan = true; });
+    ok(unreadableRan && unreadable.sets === 0, '原值读不到时不赋值、不写回未知值');
+
+    // (e) 正常路径值序列不变：恢复顺序保持 Calculation → EnableEvents → ScreenUpdating
+    const order = [];
+    const normal = {
+        _screen: true, _calc: -4105, _events: true,
+        get ScreenUpdating() { return this._screen; },
+        set ScreenUpdating(v) { order.push('ScreenUpdating=' + v); this._screen = v; },
+        get Calculation() { return this._calc; },
+        set Calculation(v) { order.push('Calculation=' + v); this._calc = v; },
+        get EnableEvents() { return this._events; },
+        set EnableEvents(v) { order.push('EnableEvents=' + v); this._events = v; }
+    };
+    const duringNormal = {};
+    eighth.dom.window.MaskQuietHost(normal, function () {
+        duringNormal.screen = normal._screen;
+        duringNormal.calc = normal._calc;
+        duringNormal.events = normal._events;
+    });
+    ok(duringNormal.screen === false && duringNormal.calc === -4135 && duringNormal.events === false,
+        '正常路径操作期间三个属性照旧关闭：' + JSON.stringify(duringNormal));
+    ok(JSON.stringify(order) === JSON.stringify([
+        'ScreenUpdating=false', 'Calculation=-4135', 'EnableEvents=false',
+        'Calculation=-4105', 'EnableEvents=true', 'ScreenUpdating=true'
+    ]), '正常路径写入与恢复顺序不变：' + order.join(','));
+
+    // (f) 没有这些属性的宿主：原样跳过，不报错
+    const bare = {};
+    let bareRan = false;
+    eighth.dom.window.MaskQuietHost(bare, function () { bareRan = true; });
+    ok(bareRan && Object.keys(bare).length === 0, '无属性宿主原样跳过、不报错');
+
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');
     process.exit(fail === 0 ? 0 : 1);
 })();

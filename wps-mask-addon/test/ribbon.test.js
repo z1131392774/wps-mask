@@ -449,7 +449,7 @@ function dataWrites(writes) {
         b13c.win.MaskQuickApply();
         E13c.writeMask = origWrite13c;
         const alerts13c = b13c.win.__alerts || [];
-        ok(alerts13c.length === 1 && /回滚未完成，请检查表格后重新映射/.test(alerts13c[0]),
+        ok(alerts13c.length === 1 && /回滚未完成，请按提示核对/.test(alerts13c[0]),
             '回滚未完成要明说：' + JSON.stringify(alerts13c));
     }
 
