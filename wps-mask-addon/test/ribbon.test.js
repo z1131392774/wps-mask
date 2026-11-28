@@ -44,6 +44,14 @@ function boot(app) {
         dom.window.__alerts = dom.window.__alerts || [];
         dom.window.__alerts.push(String(m));
     };
+    // 清除脱敏记录会先弹确认框：默认点「确定」，测试用 __confirmAnswer=false 模拟取消、
+    // __confirmThrows=true 模拟宿主没有对话框（jsdom 默认的 confirm 直接不实现，会 throw）。
+    dom.window.__confirmCalls = [];
+    dom.window.confirm = function (msg) {
+        dom.window.__confirmCalls.push(String(msg));
+        if (dom.window.__confirmThrows) { throw new Error('模拟没有可用对话框'); }
+        return dom.window.__confirmAnswer !== false;
+    };
     SCRIPTS.forEach(function (f) {
         dom.window.eval(fs.readFileSync(path.join(JS, f), 'utf8'));
     });
@@ -187,8 +195,22 @@ function dataWrites(writes) {
         const buttons = Array.from(xdoc.getElementsByTagName('button'));
         const xmlIds = buttons.map(function (el) { return el.getAttribute('id'); });
         const iconIds = Object.keys(b.win.MASK_ICONS);
-        ok(xmlIds.length === 5 && xmlIds.every(function (id) { return !!id; }),
-            '5 个按钮且 id 都不为空：' + xmlIds.join(','));
+        ok(xmlIds.length === 6 && xmlIds.every(function (id) { return !!id; }),
+            '6 个按钮且 id 都不为空：' + xmlIds.join(','));
+        ok(xmlIds.indexOf('btnMaskClearRecords') >= 0, '功能区有「清除脱敏记录」按钮：' + xmlIds.join(','));
+        // 入口必须挂在「脱敏记录」分组里，且标签是表格用户听得懂的说法（不出现「映射表」）
+        const groups = Array.from(xdoc.getElementsByTagName('group'));
+        const recordsGroup = groups.filter(function (el) {
+            return el.getAttribute('id') === 'grpRecords';
+        })[0];
+        ok(recordsGroup && recordsGroup.getAttribute('label') === '脱敏记录',
+            '清除入口在「脱敏记录」分组里：' + (recordsGroup ? recordsGroup.getAttribute('label') : '缺分组'));
+        const clearBtn = buttons.filter(function (el) {
+            return el.getAttribute('id') === 'btnMaskClearRecords';
+        })[0];
+        ok(clearBtn && clearBtn.getAttribute('label') === '清除脱敏记录' &&
+            clearBtn.getAttribute('size') === 'large',
+            '清除按钮标签是「清除脱敏记录」、大图标：' + (clearBtn ? clearBtn.getAttribute('label') : '缺按钮'));
         ok(sameSet(xmlIds, iconIds),
             'XML 按钮 id == MASK_ICONS keys：[' + xmlIds.join(',') + '] vs [' + iconIds.join(',') + ']');
 
@@ -214,10 +236,10 @@ function dataWrites(writes) {
         ok(b.win.GetImage({ Id: '不认识的按钮' }) === '' && b.win.GetImage(null) === '',
             '未知 id 返回空字符串（宿主不会补占位图）');
 
-        // OnAction 实际分发的 id 集合：把五个处理函数换成记录器，逐个按钮回调。
+        // OnAction 实际分发的 id 集合：把六个处理函数换成记录器，逐个按钮回调。
         // XML 里 id 拼错、或 OnAction 少一个分支，这里都会红。
         const handlers = ['MaskTogglePane', 'MaskQuickApply', 'MaskQuickRevert',
-            'MaskQuickMarkAll', 'MaskQuickClearMarks'];
+            'MaskQuickMarkAll', 'MaskQuickClearMarks', 'MaskQuickClearRecords'];
         const orig = {};
         const called = [];
         handlers.forEach(function (n) {
@@ -278,15 +300,18 @@ function dataWrites(writes) {
         ro.win.MaskQuickRevert();
         ro.win.MaskQuickMarkAll();
         ro.win.MaskQuickClearMarks();
+        ro.win.MaskQuickClearRecords();
         const got = alerts();
-        ok(got.length === 4 && got.every(function (m) {
+        ok(got.length === 5 && got.every(function (m) {
             return /文档是只读打开的/.test(m) && /另存为新文件/.test(m);
-        }), '四个操作都拒绝并说明只读原因：' + JSON.stringify(got));
+        }), '五个操作都拒绝并说明只读原因：' + JSON.stringify(got));
         ok(/脱敏后无法还原/.test(got[0] || ''), '映射提示「脱敏后无法还原」');
         ok(/还原结果保存不了/.test(got[1] || ''), '反映射提示「还原结果保存不了」');
         ok(/边框变化保存不了/.test(got[2] || '') && /边框变化保存不了/.test(got[3] || ''),
             '加/去边框提示「边框变化保存不了」');
-        ok(writes.length === 0, '只读拒绝时一个 Value2 都没写（连映射表都没建）：' + writes.length);
+        ok(/脱敏记录删不掉/.test(got[4] || ''), '清除脱敏记录提示「脱敏记录删不掉」：' + (got[4] || ''));
+        ok(ro.win.__confirmCalls.length === 0, '只读拒绝发生在确认框之前，不拿删不掉的确认框骚扰用户');
+        ok(writes.length === 0, '只读拒绝时一个 Value2 都没写（连脱敏记录表都没建）：' + writes.length);
         ok(roApp.getCell('Sheet1', 2, 1) === rows[1][0], '单元格值没动：' + roApp.getCell('Sheet1', 2, 1));
         ok(roApp.getBorder('Sheet1', 2, 1, 8).ls === THIN.ls, '边框没动');
         ok(!roApp.sheets.some(function (s) { return s.Name === '脱敏映射表'; }), '没有生成映射表');
@@ -362,7 +387,7 @@ function dataWrites(writes) {
         E11.abortMask = origAbort11;
         const alerts11 = b11.win.__alerts || [];
         ok(alerts11.length === 1 &&
-            /映射表保存失败：.*没有写入任何单元格，已撤回区域边框，请重新映射/.test(alerts11[0]),
+            /脱敏记录保存失败：.*没有写入任何单元格，已撤回区域边框，请重新映射/.test(alerts11[0]),
             '弹窗说明已撤回区域边框：' + JSON.stringify(alerts11));
         ok(abortCalls === 1 && abortedPlan && abortedPlan.baseMarks, '调用了 abortMask 并拿到含 baseMarks 的 plan');
         ok(dataWrites(writes11).length === 0, '没有写任何数据单元格：' + dataWrites(writes11).length);
@@ -434,7 +459,7 @@ function dataWrites(writes) {
         const alerts13b = b13b.win.__alerts || [];
         ok(saves13b === 2, '回滚后仍尝试写回一次：' + saves13b);
         ok(alerts13b.length === 1 &&
-            /回滚后的映射表没保存：模拟二次保存失败，请检查映射表/.test(alerts13b[0]),
+            /回滚后的脱敏记录没保存：模拟二次保存失败，请检查脱敏记录/.test(alerts13b[0]),
             '写回失败要 loud：' + JSON.stringify(alerts13b));
 
         // c) 引擎报告回滚未完成：照实转告，不粉饰
@@ -544,6 +569,125 @@ function dataWrites(writes) {
 
         E15.revert = origRevert15;
         E15.saveVault = origSave15;
+    }
+
+    console.log('\n[16] 功能区「清除脱敏记录」：确认 → 删表 → 恢复边框 → toast；失败 loud');
+    {
+        // 只读拒绝已在 [8] 覆盖；这里走真实表格，确认框用 boot() 的模拟。
+        function maskedApp() {
+            const a = tableApp(rows);
+            for (let r = 1; r <= rows.length; r++) {
+                for (let c = 1; c <= 2; c++) {
+                    [7, 8, 9, 10].forEach(function (idx) { a.setBorder('Sheet1', r, c, idx, THIN); });
+                }
+            }
+            const bb = boot(a);
+            bb.win.MaskQuickApply();
+            return { app: a, b: bb };
+        }
+        function vaultSheets(a) {
+            return a.sheets.filter(function (sh) { return sh.Name === '脱敏映射表'; });
+        }
+
+        // a) 没有记录：确认后只提示，不建表、不写单元格
+        const app16a = tableApp(rows);
+        const b16a = boot(app16a);
+        const writes16a = trackWrites(app16a);
+        b16a.win.MaskQuickClearRecords();
+        const alerts16a = b16a.win.__alerts || [];
+        ok(alerts16a.length === 1 && alerts16a[0] === '本文档没有脱敏记录。',
+            '没有记录时只提示「本文档没有脱敏记录。」：' + JSON.stringify(alerts16a));
+        ok(b16a.win.__confirmCalls.length === 1 &&
+            b16a.win.__confirmCalls[0] === '清除后，本文档中已脱敏的数据将无法还原。确定清除脱敏记录？',
+            '确认框文案指明不可还原、并叫「脱敏记录」：' + JSON.stringify(b16a.win.__confirmCalls));
+        ok(vaultSheets(app16a).length === 0 && writes16a.length === 0 && b16a.status.text === '',
+            '没有记录时不建表、不写单元格、不报成功：' +
+            JSON.stringify({ sheets: vaultSheets(app16a).length, writes: writes16a.length, status: b16a.status.text }));
+
+        // b) confirm 返回 false：什么都不动
+        const m16b = maskedApp();
+        const fake16b = m16b.app.getCell('Sheet1', 2, 1);
+        const writes16b = trackWrites(m16b.app);
+        const statusBefore16b = m16b.b.status.text;
+        m16b.b.win.__confirmAnswer = false;
+        m16b.b.win.MaskQuickClearRecords();
+        ok(m16b.b.win.__confirmCalls.length === 1, '取消时只弹一次确认框：' + m16b.b.win.__confirmCalls.length);
+        ok(vaultSheets(m16b.app).length === 1, '取消后脱敏记录表还在');
+        ok(m16b.app.getCell('Sheet1', 2, 1) === fake16b, '取消后单元格值没变');
+        ok(m16b.app.getBorder('Sheet1', 2, 1, 8).ls === MARK.ls, '取消后标记边框没动');
+        ok(dataWrites(writes16b).length === 0 && m16b.b.status.text === statusBefore16b,
+            '取消后不写数据单元格、不覆盖状态栏：' +
+            JSON.stringify({ writes: dataWrites(writes16b).length, status: m16b.b.status.text }));
+
+        // c) 确认框本身抛异常：按「没确认」处理（fail-closed）
+        const m16c = maskedApp();
+        m16c.b.win.__confirmThrows = true;
+        let threw16c = null;
+        try { m16c.b.win.MaskQuickClearRecords(); } catch (e) { threw16c = e; }
+        ok(!threw16c, '确认框不可用时不把异常抛给宿主' + (threw16c ? '：' + threw16c.message : ''));
+        ok(vaultSheets(m16c.app).length === 1 && (m16c.b.win.__alerts || []).length === 0,
+            '确认框不可用时按没确认处理：表还在、不弹完成提示');
+
+        // d) 确认后：隐藏表删除、边框恢复、toast 说清结果
+        const m16d = maskedApp();
+        const writes16d = trackWrites(m16d.app);
+        // quiet host 在动作期间关掉刷新/计算/事件，结束后三件都恢复原样
+        m16d.app.ScreenUpdating = true;
+        m16d.app.Calculation = -4105;
+        m16d.app.EnableEvents = true;
+        m16d.b.win.MaskQuickClearRecords();
+        ok(m16d.app.ScreenUpdating === true && m16d.app.Calculation === -4105 &&
+            m16d.app.EnableEvents === true,
+            '清除动作结束后恢复刷新/计算/事件：' + JSON.stringify({
+                screen: m16d.app.ScreenUpdating, calc: m16d.app.Calculation, events: m16d.app.EnableEvents
+            }));
+        const alerts16d = m16d.b.win.__alerts || [];
+        ok(vaultSheets(m16d.app).length === 0, '确认后隐藏表已删除');
+        const border16d = m16d.app.getBorder('Sheet1', 2, 1, 8);
+        ok(border16d.ls === THIN.ls && border16d.w === THIN.w && border16d.c === THIN.c,
+            '边框恢复成用户自己的样式：' + JSON.stringify(border16d));
+        ok(/脱敏记录已清除。/.test(m16d.b.status.text), 'toast 说记录已清除：' + JSON.stringify(m16d.b.status.text));
+        ok(/已恢复 1 块区域的边框。/.test(m16d.b.status.text), 'toast 报恢复的边框块数：' + JSON.stringify(m16d.b.status.text));
+        ok(/记得保存文档。/.test(m16d.b.status.text), 'toast 提醒保存：' + JSON.stringify(m16d.b.status.text));
+        ok(/耗时 \d+(\.\d+)? (毫秒|秒)/.test(m16d.b.status.text), 'toast 带耗时：' + JSON.stringify(m16d.b.status.text));
+        ok(alerts16d.length === 0, '成功时不弹窗：' + JSON.stringify(alerts16d));
+        ok(dataWrites(writes16d).length === 0, '清除动作只动隐藏表，不写任何数据单元格：' + dataWrites(writes16d).length);
+
+        // e) 删除失败：engine 的 message 已带「清除脱敏记录失败：」前缀，不能再拼一层
+        const m16e = maskedApp();
+        const E16e = m16e.b.win.MaskEngine;
+        const origDrop16e = E16e.dropVault;
+        E16e.dropVault = function () {
+            return { dropped: false, cleared: 0, missing: [], errors: [
+                { sheet: E16e.VAULT_SHEET, message: '清除脱敏记录失败：模拟删除失败' }
+            ] };
+        };
+        m16e.b.win.MaskQuickClearRecords();
+        E16e.dropVault = origDrop16e;
+        const alerts16e = m16e.b.win.__alerts || [];
+        ok(alerts16e.length === 1 && /清除脱敏记录失败：模拟删除失败/.test(alerts16e[0]),
+            '删表失败要 loud：' + JSON.stringify(alerts16e));
+        ok((String(alerts16e[0] || '').match(/清除脱敏记录失败/g) || []).length === 1,
+            '失败前缀不重复拼：' + JSON.stringify(alerts16e));
+        ok((String(alerts16e[0] || '')).indexOf(E16e.VAULT_SHEET) < 0,
+            '失败提示不把隐藏表的内部表名甩给用户：' + JSON.stringify(alerts16e));
+        ok(!/脱敏记录已清除/.test(m16e.b.status.text), '失败时绝不报成功 toast：' + JSON.stringify(m16e.b.status.text));
+
+        // f) 表删了但有善后没做完（缺工作表）：不能只说成功
+        const m16f = maskedApp();
+        const E16f = m16f.b.win.MaskEngine;
+        const origDrop16f = E16f.dropVault;
+        E16f.dropVault = function () {
+            return { dropped: true, cleared: 0, missing: ['Sheet9'],
+                errors: [{ sheet: 'Sheet2', message: '模拟恢复边框失败' }] };
+        };
+        m16f.b.win.MaskQuickClearRecords();
+        E16f.dropVault = origDrop16f;
+        const alerts16f = m16f.b.win.__alerts || [];
+        ok(alerts16f.length === 1 && /脱敏记录已清除，但有些善后没做完/.test(alerts16f[0]) &&
+            /Sheet9/.test(alerts16f[0]) && /Sheet2：模拟恢复边框失败/.test(alerts16f[0]),
+            '部分失败列出具体工作表：' + JSON.stringify(alerts16f));
+        ok(!/脱敏记录已清除。/.test(m16f.b.status.text), '部分失败不用成功 toast 掩盖：' + JSON.stringify(m16f.b.status.text));
     }
 
     console.log(fail === 0 ? '\n全部通过 ✓' : '\n失败 ' + fail + ' 项');

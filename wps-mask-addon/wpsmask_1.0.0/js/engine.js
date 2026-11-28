@@ -598,11 +598,11 @@ var MaskEngine = (function () {
 
     function vaultParseError(reason, error) {
         if (reason === 'decrypt') {
-            return new Error('映射表解密失败（可能被改动过，或密钥已更换）：' + error.message);
+            return new Error('脱敏记录解密失败（可能被改动过，或密钥已更换）：' + error.message);
         }
-        if (reason === 'json') { return new Error('映射表内容损坏，无法解析'); }
-        if (reason === 'shape') { return new Error('映射表内容损坏：缺少 maps 结构'); }
-        return new Error('映射表密文为空');
+        if (reason === 'json') { return new Error('脱敏记录内容损坏，无法解析'); }
+        if (reason === 'shape') { return new Error('脱敏记录内容损坏：缺少 maps 结构'); }
+        return new Error('脱敏记录为空');
     }
 
     // 从备份区恢复时带一个不可枚举的标记：不写进文档，只让界面知道"这一份是旧的"。
@@ -667,7 +667,7 @@ var MaskEngine = (function () {
             return empty;
         }
         if (!cipherA) {
-            throw new Error('映射表密文为空，为保护数据不返回空映射表（如果这是新建的映射表，请用「删除映射表」重建）');
+            throw new Error('脱敏记录为空，为保护数据不返回空记录（如果这是新建的脱敏记录，请先用「清除脱敏记录」清理）');
         }
         throw vaultParseError(a.reason, a.error);
     }
@@ -737,7 +737,7 @@ var MaskEngine = (function () {
         if (readCellText(ws, 1, 1) === VAULT_MARKER) { return; }
         ws.Cells.Item(1, 1).Value2 = VAULT_MARKER;
         if (readCellText(ws, 1, 1) !== VAULT_MARKER) {
-            throw new Error('映射表标记写入失败（工作表可能被保护），未改动原数据');
+            throw new Error('脱敏记录标记写入失败（工作表可能被保护），未改动原数据');
         }
     }
 
@@ -761,11 +761,11 @@ var MaskEngine = (function () {
     }
 
     function vaultSaveFailure(what, cause, rollback) {
-        var msg = '映射表保存失败：' + what + '（' + cause.message + '）';
+        var msg = '脱敏记录保存失败：' + what + '（' + cause.message + '）';
         if (rollback.ok && rollback.hadBackup) {
-            msg += '；已回滚到上一份映射表';
+            msg += '；已回滚到上一份脱敏记录';
         } else if (rollback.ok) {
-            msg += '；已清空本次未完成写入（此前没有可用映射表）';
+            msg += '；已清空本次未完成写入（此前没有可用的脱敏记录）';
         } else {
             msg += '；回滚未完成（' + rollback.error.message + '），备份区保留上一份密文，重新读取时会自动恢复';
         }
@@ -786,7 +786,7 @@ var MaskEngine = (function () {
         var readOnly = false;
         try { readOnly = !!wb.ReadOnly; } catch (eRo) { readOnly = false; }
         if (readOnly) {
-            throw new Error('文档是只读打开的，映射表保存不进去（保存会弹替换提示，即使确认也写不进文件），脱敏后无法还原。' +
+            throw new Error('文档是只读打开的，脱敏记录保存不进去（保存会弹替换提示，即使确认也写不进文件），脱敏后无法还原。' +
                 '请先另存为新文件，再脱敏。');
         }
         pruneUnusedBuckets(vault);
@@ -794,19 +794,19 @@ var MaskEngine = (function () {
         try {
             json = JSON.stringify(vault);
         } catch (eJson) {
-            throw new Error('映射表内容无法序列化：' + eJson.message);
+            throw new Error('脱敏记录内容无法序列化：' + eJson.message);
         }
         var cipher;
         try {
             cipher = Cipher.encrypt(json);
         } catch (eEnc) {
-            throw new Error('映射表加密失败：' + eEnc.message);
+            throw new Error('脱敏记录加密失败：' + eEnc.message);
         }
         var ws;
         try {
             ws = getVaultSheet(app);
         } catch (eSheet) {
-            throw new Error('无法创建映射表工作表：' + eSheet.message);
+            throw new Error('无法创建脱敏记录工作表：' + eSheet.message);
         }
         ensureVaultMarker(ws);
 
@@ -852,7 +852,7 @@ var MaskEngine = (function () {
                     throw new Error('备份标记写入后读回不一致');
                 }
             } catch (eBackup) {
-                throw new Error('映射表保存失败：旧映射表备份未成功（' + eBackup.message + '），原数据未改动');
+                throw new Error('脱敏记录保存失败：旧脱敏记录备份未成功（' + eBackup.message + '），原数据未改动');
             }
         }
 
@@ -943,7 +943,7 @@ var MaskEngine = (function () {
         } catch (eLoad) {
             out.errors.push({
                 sheet: VAULT_SHEET,
-                message: '读取映射表失败，无法恢复标记边框：' + String((eLoad && eLoad.message) || eLoad)
+                message: '读取脱敏记录失败，无法恢复标记边框：' + String((eLoad && eLoad.message) || eLoad)
             });
         }
         if (vault) {
@@ -971,7 +971,7 @@ var MaskEngine = (function () {
             out.dropped = false;
             out.errors.push({
                 sheet: VAULT_SHEET,
-                message: '删除映射表失败：' + String((eDel && eDel.message) || eDel)
+                message: '清除脱敏记录失败：' + String((eDel && eDel.message) || eDel)
             });
             try { ws.Visible = 2; } catch (eHide) { /* 连隐藏都失败时只能靠 errors 让用户手动处理 */ }
         } finally {
@@ -2327,7 +2327,7 @@ var MaskEngine = (function () {
                     ? '第 ' + failedColumns.join('、') + ' 列'
                     : '部分列';
                 var okText = tried.length > failedColumns.length ? '其余列已恢复原值，' : '';
-                msg += '；' + okText + '只有' + failedText + '未能回滚，映射记录只保留失败列；' +
+                msg += '；' + okText + '只有' + failedText + '未能回滚，脱敏记录只保留失败列；' +
                     '可执行「反映射」按逐格计划假值还原' + failedText + '剩余假值，并人工核对受损单元格';
             }
             var err = new Error(msg);

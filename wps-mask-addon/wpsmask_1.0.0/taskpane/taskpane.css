@@ -377,7 +377,6 @@ select:focus, input[type="text"]:focus {
 
 .links a + a { margin-left: 14px; }
 .links a:hover { color: #1f6feb; text-decoration: underline; }
-.links a.danger:hover { color: #b3261e; }
 
 /* ---------------- 栅格版式（支持 CSS Grid 时启用） ----------------
  * 上面的规则是回退布局，任何引擎都能排下来。本块只在 @supports (display: grid)

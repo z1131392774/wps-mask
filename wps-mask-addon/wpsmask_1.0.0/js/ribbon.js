@@ -30,6 +30,8 @@ function OnAction(control) {
             MaskQuickMarkAll();
         } else if (id === 'btnMaskUnmark') {
             MaskQuickClearMarks();
+        } else if (id === 'btnMaskClearRecords') {
+            MaskQuickClearRecords();
         } else {
             try { console.log('未处理的按钮：' + id); } catch (e3) { }
         }
@@ -48,7 +50,8 @@ var MASK_ICONS = {
     btnMaskQuick: 'images/quick.png',
     btnMaskRevert: 'images/revert.png',
     btnMaskMark: 'images/mark.png',
-    btnMaskUnmark: 'images/unmark.png'
+    btnMaskUnmark: 'images/unmark.png',
+    btnMaskClearRecords: 'images/clear.png'
 };
 
 function GetImage(control) {
@@ -100,7 +103,7 @@ function MaskReadOnly(app) {
 }
 
 function MaskReadOnlyText(what, retry) {
-    return '文档是只读打开的，映射表存不进去（保存会弹替换提示，即使确认也写不进文件），' + what +
+    return '文档是只读打开的，脱敏记录存不进去（保存会弹替换提示，即使确认也写不进文件），' + what +
         '。请先另存为新文件，再' + retry + '。';
 }
 
@@ -139,7 +142,7 @@ function MaskQuickApplyRun(app) {
     } catch (saveErr) {
         // 单元格还没写，但表格上已经画了紫边、vault 里也登记了区域：撤回到 pre-mask 再说
         var ab = MaskEngine.abortMask(plan);
-        MaskAlert('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，' +
+        MaskAlert('脱敏记录保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，' +
             (ab.ok ? '已撤回区域边框，请重新映射。'
                    : '区域边框可能没恢复（' + ab.error + '），请检查表格后重新映射。'));
         return;
@@ -156,8 +159,8 @@ function MaskQuickApplyRun(app) {
         try {
             MaskEngine.saveVault(app, plan.vault);
         } catch (resaveErr) {
-            fail = '写入失败：' + MaskErrText(writeErr) + '；回滚后的映射表没保存：' +
-                MaskErrText(resaveErr) + '，请检查映射表。';
+            fail = '写入失败：' + MaskErrText(writeErr) + '；回滚后的脱敏记录没保存：' +
+                MaskErrText(resaveErr) + '，请检查脱敏记录。';
         }
         MaskAlert(fail);
         return;
@@ -201,12 +204,12 @@ function MaskQuickRevertRun(app) {
         try {
             MaskEngine.saveVault(app, vault);
         } catch (saveErr) {
-            MaskAlert('映射表未保存：' + MaskErrText(saveErr) +
-                '，请勿关闭文档，重新映射前先检查映射表。');
+            MaskAlert('脱敏记录未保存：' + MaskErrText(saveErr) +
+                '，请勿关闭文档，重新映射前先检查脱敏记录。');
             return;
         }
     }
-    var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有映射记录') : '';
+    var tail = stats.miss > 0 ? ('，' + stats.miss + ' 格没有可还原的记录') : '';
     if (stats.ambiguous > 0) { tail += '，' + stats.ambiguous + ' 格有歧义未还原'; }
     // 边框没更新是部分失败：状态栏提示只说还原成功（MaskToast 常驻到下一次提示替换，还带耗时），
     // 不会提边框没更新，用户容易以为全部还原成功，必须弹窗
@@ -265,7 +268,7 @@ function MaskQuickMarkAllRun(app) {
     try {
         MaskEngine.saveVault(app, vault);
     } catch (saveErr) {
-        MaskAlert((r.marked > 0 ? '边框已加上，但映射表没保存：' : '边框记录没保存：') +
+        MaskAlert((r.marked > 0 ? '边框已加上，但脱敏记录没保存：' : '边框记录没保存：') +
             MaskErrText(saveErr) + '，去掉边框时只能清除。');
         return;
     }
@@ -306,7 +309,7 @@ function MaskQuickClearMarksRun(app) {
     try {
         MaskEngine.saveVault(app, vault);
     } catch (saveErr) {
-        MaskAlert('边框已去掉，但映射表没保存：' + MaskErrText(saveErr) + '，请检查映射表。');
+        MaskAlert('边框已去掉，但脱敏记录没保存：' + MaskErrText(saveErr) + '，请检查脱敏记录。');
         return;
     }
     var tail = MaskMarkTail(r);
@@ -318,4 +321,67 @@ function MaskQuickClearMarksRun(app) {
         return;
     }
     return { toast: msg + '。' };
+}
+
+/* ---------- 清除脱敏记录（功能区，不打开面板） ----------
+ * 删掉隐藏记录表是这里唯一会丢数据的动作：表一删，已脱敏的假值就再也还原不了。
+ * 面板底部原来那个入口去掉了，功能搬到这里，所以必须再确认一次。
+ */
+
+function MaskQuickClearRecords() {
+    var started = Date.now();
+    var app = MaskGetApp();
+    if (!app) { throw new Error('未取到 WPS 应用对象'); }
+    if (MaskReadOnly(app)) {
+        MaskAlert(MaskReadOnlyText('脱敏记录删不掉', '清除脱敏记录'));
+        return;
+    }
+    // 确认框放在关闭刷新之前：用户可以想多久都行，别让文档在这期间看起来卡住。
+    if (!MaskClearRecordsConfirmed()) { return; }
+    var result = MaskQuietHost(app, function () { return MaskQuickClearRecordsRun(app); });
+    if (result && result.toast) { MaskToast(result.toast, Date.now() - started); }
+}
+
+// confirm 在宿主里不可用（或抛异常）时按"不删"处理：删除不可逆，宁可没清也不能静默清掉。
+function MaskClearRecordsConfirmed() {
+    try {
+        return !!window.confirm('清除后，本文档中已脱敏的数据将无法还原。确定清除脱敏记录？');
+    } catch (e) {
+        return false;  // 宿主没有可用对话框：fail-closed，不删
+    }
+}
+
+// errors 里的 sheet 可能是隐藏记录表的内部表名，用户看不到也不需要知道，只显示 message；
+// 真正缺失的工作表另外用 missing 列出来。引擎的 message 有些已带「清除脱敏记录失败：」前缀，
+// 这里原样拼接，不再加一层前缀免得多出一个重复的「失败：失败：」。
+function MaskRecordsErrList(errors) {
+    var parts = [];
+    for (var i = 0; i < errors.length; i++) {
+        var item = errors[i];
+        parts.push(item.sheet === MaskEngine.VAULT_SHEET
+            ? item.message
+            : (item.sheet + '：' + item.message));
+    }
+    return parts.join('；');
+}
+
+function MaskQuickClearRecordsRun(app) {
+    var r = MaskEngine.dropVault(app);
+    var problems = MaskRecordsErrList(r.errors);
+    if (r.missing && r.missing.length) {
+        problems = (problems ? problems + '；' : '') + '这些工作表已不存在：' + r.missing.join('、');
+    }
+    if (!r.dropped) {
+        // 没有隐藏表时 errors 是空的；有 errors 说明表在但没清掉，照原样 loud 报出来。
+        MaskAlert(problems || '本文档没有脱敏记录。');
+        return;
+    }
+    if (problems) {
+        MaskAlert('脱敏记录已清除，但有些善后没做完：' + problems + '。');
+        return;
+    }
+    var msg = '脱敏记录已清除。';
+    if (r.cleared > 0) { msg += '已恢复 ' + r.cleared + ' 块区域的边框。'; }
+    msg += '记得保存文档。';
+    return { toast: msg };
 }
