@@ -18,7 +18,9 @@ Every panel action reloaded and decrypted the whole mapping table. On the tables
 
 **A content stamp for the panel cache.** `Engine.vaultStamp(app)` returns a string derived from the hidden sheet: the A1 marker, the last row of column A (located with `End`, not a column scan), and the first, middle and last chunk cells, each folded with FNV-1a. It reads at most four cells and never whole columns, and it never decrypts. The same content gives the same stamp; `saveVault` rewrites the column with a random IV, so a save always changes it. `''` means no table, an empty table, or a read failure, and the function never throws — `loadVault` stays the loud path. The panel never caches `''`.
 
-**The panel reuses what it has.** `refresh(useRemember, keepEdits, vaultOverride)` accepts a freshly loaded or saved vault, so `doMask` and `doRevert` load the table once instead of twice. A plain refresh compares the stamp and skips `loadVault` on a hit: a 30,000-cell refresh drops from 82 ms to 42 ms (MockWPS). A `loadVault` error clears the cache and is rethrown, and `doDrop` resets it. Ribbon commands share no panel state; the panel sees their writes as a changed stamp on its next refresh.
+**The panel reuses what it has.** `refresh(useRemember, keepEdits, vaultOverride)` accepts a freshly loaded or saved vault, so `doMask` and `doRevert` load the table once instead of twice. A plain refresh compares the stamp and skips `loadVault` on a hit: a 30,000-cell refresh drops from 82 ms to 42 ms (MockWPS). A `loadVault` error clears the cache and is rethrown, and the table's delete path resets it. Ribbon commands share no panel state; the panel sees their writes as a changed stamp on its next refresh.
+
+**Updated 2026-11-28:** the pane no longer deletes the records; the ribbon's 「清除脱敏记录」 calls the same drop path ([clear records in the ribbon](2026-11-28-clear-records-in-ribbon.md)).
 
 ## Alternatives considered
 

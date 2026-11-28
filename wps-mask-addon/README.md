@@ -17,6 +17,7 @@ Select a range and replace every value with realistic fake data; the originals a
 | One-click reverse mapping, mapping stored encrypted | 「反映射回原值」 looks each cell up in the encrypted table and writes the original back, preserving number/text type and blanks; a text original is written with the host's text marker, so `008081` keeps its zeros and the cell format is unchanged. It only touches areas this add-in recorded as masked: expanding a selection is safe, and a second click is a no-op. A fake value that two originals could own is left alone and counted. The table is AES-128-CBC ciphertext in a hidden worksheet ([storage](docs/storage.md)) |
 | Remember the last settings for this document | Per-field type, distribution, parameters, and prefix are stored in the same encrypted blob, keyed by field name; a numeric interval only grows (union with the current data), so a wider column elsewhere never trips the old range; "重新识别" ignores them and re-detects |
 | See what is masked at a glance | Mapped areas get a purple dashed outline automatically, no panel needed; 全部加边框 / 全部去边框 on the ribbon redraw or remove every outline in one click, changing appearance only |
+| Clear this document's masking records | The ribbon's 「脱敏记录」 → 「清除脱敏记录」 deletes the hidden records table after one confirmation and restores the outlines. Masked cells keep their fakes and cannot be restored afterwards; the document still has to be saved |
 
 Detection, the header rule, messages and mixed columns are in [masking behavior](docs/behavior.md); the hidden table and its encryption limits are in [storage](docs/storage.md).
 
@@ -45,7 +46,7 @@ jsaddons\
    ├─ index.html        entry page
    ├─ main.js           script loader
    ├─ ribbon.xml        ribbon definition
-   ├─ images\           ribbon icons: panel, quick, revert, mark, unmark, each with an @2x copy
+   ├─ images\           ribbon icons: panel, quick, revert, mark, unmark, clear, each with an @2x copy
    ├─ js\
    │   ├─ utils.js      host object, resource path
    │   ├─ aes.js        AES-128-CBC, plain JS
@@ -72,7 +73,7 @@ A junction needs no admin rights or developer mode, and a hard link cannot point
 
 ## Usage
 
-**Panel.** Select the range (whole column, whole row, or any block) and open "映射面板". It reads the selection and updates when it changes; there is no refresh button. Each column gets a card — detected type and a sample in the header, parameters on demand — then 「映射并写入」 replaces the range in place, and 「反映射回原值」 restores the areas this add-in masked in the selection; cells it never wrote are left untouched. Card settings you edit survive a selection refresh: they are remembered per sheet and column position.
+**Panel.** Select the range (whole column, whole row, or any block) and open "映射面板". It reads the selection and updates when it changes; there is no refresh button. Each column gets a card — detected type and a sample in the header, parameters on demand — then 「映射并写入」 replaces the range in place, and 「反映射回原值」 restores the areas this add-in masked in the selection; cells it never wrote are left untouched. Card settings you edit survive a selection refresh: they are remembered per sheet and column position. Clearing this document's records is not in the panel: use 「脱敏记录」 → 「清除脱敏记录」 on the ribbon.
 
 **Header row.** The checkbox 「首行是表头」 decides whether the first row is data. Checked: row 1 is never masked, and supplies the column name and the text prefix. Unchecked: row 1 is data. A fresh selection starts from a guess — the box is checked when the selection starts at row 1 and the first row has a non-empty cell and no number: position and type, never cell wording. All-text data starting at row 1 is therefore guessed as a header; the panel says so, and unchecking the box is the fix. The full rule is under [The header row](docs/behavior.md#the-header-row).
 
@@ -84,12 +85,12 @@ A junction needs no admin rights or developer mode, and a hard link cannot point
 
 Messages, conventions and mixed columns are in [masking behavior](docs/behavior.md).
 
-## Mapping storage and encryption limits
+## Masking-record storage and encryption limits
 
 - **Where the originals live:** a hidden worksheet named "脱敏映射表" holds AES-128-CBC ciphertext; `KEY_TEXT` in `js/aes.js` is the key. A second, backup column keeps the previous ciphertext.
 - **A failed save writes nothing:** the panel saves the table (backup, write, read-back and decrypt check) before writing any cell. A damaged main copy is either recovered from the backup or reported loudly — never mistaken for a new document.
 - **Protection limit:** the key ships with the code, so this is obfuscation only. Anyone holding this add-in can revert without a passphrase; uninstalling it, switching machines or forwarding the workbook leaves no UI path to the originals, while WPS's backup center, version history and undo stack may still hold pre-masking values.
-- **What does not survive:** formula cells are overwritten and only their values come back; a hidden sheet is not a lock against macros; at most the last 200 masked areas are remembered; a read-only document is refused before saving. Deleting the table restores the outlines first, lists any sheet whose borders could not be restored or no longer exists, and deletes the table anyway.
+- **What does not survive:** formula cells are overwritten and only their values come back; a hidden sheet is not a lock against macros; at most the last 200 masked areas are remembered; a read-only document is refused before saving. Clearing the records restores the outlines first, lists any sheet whose borders could not be restored or no longer exists, and deletes the table anyway; masked cells keep their fakes, and only a saved copy of the document brings the originals back.
 
 Everything else — the algorithm, the failure messages, who can restore, the full limits list — is in [storage](docs/storage.md).
 

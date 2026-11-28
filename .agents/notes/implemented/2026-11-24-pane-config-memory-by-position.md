@@ -12,6 +12,8 @@ The pane re-reads the selection on every change and rebuilds the cards. To keep 
 
 Key the snapshot by sheet name plus column position (`cfgKey(sheetName, col)`), and keep only the columns the user actually edited (`state.edited`). Untouched columns go through `hydrate()` again, so they pick up the remembered settings that belong to the new selection. A full refresh — changed selection, 重新识别, or dropping the table — clears `state.edited` first.
 
+**Updated 2026-11-28:** clearing now runs from the ribbon's 「清除脱敏记录」, not the panel ([clear records in the ribbon](2026-11-28-clear-records-in-ribbon.md)).
+
 ## Alternatives considered
 
 **Key by header only.** Rejected: that is the collision above.

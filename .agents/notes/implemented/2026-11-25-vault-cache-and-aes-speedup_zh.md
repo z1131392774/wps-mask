@@ -18,7 +18,9 @@ Status: implemented
 
 **给面板缓存一个内容戳。** `Engine.vaultStamp(app)` 从隐藏表算出一个字符串：A1 标记、A 列末行（用 `End` 定位，不整列扫描），以及首、中、末三片各一格，逐段用 FNV-1a 折叠。最多读四个单元格，不整列读，不解密。内容相同戳就相同；`saveVault` 会用随机 IV 重写整列，所以保存后戳必变。`''` 表示没有映射表、空表或读取失败，函数从不抛错——真正读映射表的 `loadVault` 仍是大声报错的路径。面板对 `''` 一律不缓存。
 
-**面板复用已有的东西。** `refresh(useRemember, keepEdits, vaultOverride)` 接受刚加载或刚保存的 vault，`doMask`、`doRevert` 因此只加载一次映射表而不是两次。普通刷新先比内容戳，命中就跳过 `loadVault`：3 万格刷新从 82 ms 降到 42 ms（MockWPS）。`loadVault` 抛错时清掉缓存并把错误抛出去；`doDrop` 重置缓存。功能区的命令不共享面板状态，面板在下一次刷新时通过变化的戳看到它们的写入。
+**面板复用已有的东西。** `refresh(useRemember, keepEdits, vaultOverride)` 接受刚加载或刚保存的 vault，`doMask`、`doRevert` 因此只加载一次映射表而不是两次。普通刷新先比内容戳，命中就跳过 `loadVault`：3 万格刷新从 82 ms 降到 42 ms（MockWPS）。`loadVault` 抛错时清掉缓存并把错误抛出去；删除记录的路径会重置缓存。功能区的命令不共享面板状态，面板在下一次刷新时通过变化的戳看到它们的写入。
+
+**2026-11-28 更新：** 面板不再删除脱敏记录；功能区的「清除脱敏记录」走同一条删除路径（[清除脱敏记录移到功能区](2026-11-28-clear-records-in-ribbon_zh.md)）。
 
 ## 考虑过的其他方案
 
