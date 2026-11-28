@@ -17,6 +17,10 @@
                     <button id="btnMaskMark" label="全部加边框" onAction="OnAction" getImage="GetImage" size="large"/>
                     <button id="btnMaskUnmark" label="全部去边框" onAction="OnAction" getImage="GetImage" size="large"/>
                 </group>
+                <!-- 清除入口放在功能区，不用先打开面板；删除不可逆，动作里会再确认一次。 -->
+                <group id="grpRecords" label="脱敏记录">
+                    <button id="btnMaskClearRecords" label="清除脱敏记录" onAction="OnAction" getImage="GetImage" size="large"/>
+                </group>
             </tab>
         </tabs>
     </ribbon>

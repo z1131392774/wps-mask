@@ -47,7 +47,7 @@
 
     // 只读文档上 Save() 不是静默失败：真机会弹「是否替换该文件？」模态框——点「取消」抛 HRESULT，
     // 点「是」静默返回但文件内容不变；无人值守时这个框还会挡住后面的 COM 调用（见 tools/live/HANDOFF.md）。
-    // 映射表存不进去，引擎在阶段一就可能先画边框，所以必须在调用 prepareMask/revert 之前用 ReadOnly 拒绝。
+    // 脱敏记录存不进去，引擎在阶段一就可能先画边框，所以必须在调用 prepareMask/revert 之前用 ReadOnly 拒绝。
     // 文案与 engine.js saveVault 的只读提示同义，两处改一处必须同步。
     function isReadOnly(app) {
         var wb = null;
@@ -57,18 +57,8 @@
     }
 
     function readOnlyText(what, retry) {
-        return '文档是只读打开的，映射表存不进去（保存会弹替换提示，即使确认也写不进文件），' + what +
+        return '文档是只读打开的，脱敏记录存不进去（保存会弹替换提示，即使确认也写不进文件），' + what +
             '。请先另存为新文件，再' + retry + '。';
-    }
-
-    // 引擎按表独立 try/catch，失败放在 errors:[{sheet,message}]：一张表被保护不该埋掉，
-    // 多张表时要逐条列出来，用户才知道去修哪张。
-    function errList(errors) {
-        var parts = [];
-        for (var i = 0; i < errors.length; i++) {
-            parts.push(errors[i].sheet + '：' + errors[i].message);
-        }
-        return parts.join('；');
     }
 
     // 配置记忆的键：工作表名 + 列位置。表头可能为空（无表头）也可能重名，
@@ -488,7 +478,7 @@
             setStatus(useRemember === false ? '已按数据类型重新识别' : '', '');
             // 主密文坏了、这次是从备份区恢复的：提醒用户重新保存，否则下次打开还是坏的
             if (state.vault && state.vault.recovered) {
-                setStatus('映射表损坏，已用备份恢复，请重新保存', 'err');
+                setStatus('脱敏记录损坏，已用备份恢复，请重新保存', 'err');
             }
         } catch (e) {
             state.model = null;
@@ -504,12 +494,6 @@
             else if (/至少两个单元格/.test(msg)) { showEmpty('small'); }
             else { showEmpty('error', MaskErrText(e)); }
         }
-    }
-
-    // 确认框被拦（宿主/浏览器策略）时按「没确认」处理：删除映射表不可逆，不能 fail-open。
-    // 弹窗不可用是宿主限制，不是用户点了确定。
-    function confirmBox(msg) {
-        try { return confirm(msg); } catch (e) { return false; }
     }
 
     function doMask() {
@@ -537,7 +521,7 @@
             } catch (saveErr) {
                 // 单元格还没写，但表格上已经画了紫边、vault 里也登记了区域：撤回到 pre-mask 再说
                 var ab = E.abortMask(plan);
-                setStatus('映射表保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，' +
+                setStatus('脱敏记录保存失败：' + MaskErrText(saveErr) + '，没有写入任何单元格，' +
                     (ab.ok ? '已撤回区域边框，请重新映射。'
                            : '区域边框可能没恢复（' + ab.error + '），请检查表格后重新映射。'), 'err');
                 return;
@@ -554,8 +538,8 @@
                 try {
                     E.saveVault(a, plan.vault);
                 } catch (resaveErr) {
-                    fail = '写入失败：' + MaskErrText(writeErr) + '；回滚后的映射表没保存：' +
-                        MaskErrText(resaveErr) + '，请检查映射表。';
+                    fail = '写入失败：' + MaskErrText(writeErr) + '；回滚后的脱敏记录没保存：' +
+                        MaskErrText(resaveErr) + '，请检查脱敏记录。';
                 }
                 setStatus(fail, 'err');
                 return;
@@ -609,11 +593,11 @@
                 }
             }
             // 保存成功时内存 vault 就是磁盘内容，直接交给 refresh 复用，省一次整表解密；
-            // 保存失败时映射表以磁盘为准，仍走 refresh 原来的读盘路径。
+            // 保存失败时脱敏记录以磁盘为准，仍走 refresh 原来的读盘路径。
             if (saveErr) { refresh(true); } else { refresh(true, false, vault); }
             if (saveErr) {
-                setStatus('映射表未保存：' + MaskErrText(saveErr) +
-                    '，请勿关闭文档，重新映射前先检查映射表。', 'err');
+                setStatus('脱敏记录未保存：' + MaskErrText(saveErr) +
+                    '，请勿关闭文档，重新映射前先检查脱敏记录。', 'err');
                 return;
             }
             var tail = '';
@@ -635,55 +619,6 @@
         }
     }
 
-    function doDrop() {
-        if (!confirmBox('删除后已映射的数据无法还原，确定删除映射表？')) {
-            return;
-        }
-        var a = null;
-        function run() {
-            var res = E.dropVault(a);
-            if (!res.dropped) {
-                // 删表失败（只读/被保护文档）时表还在、映射记录也还在，不能误报成「没有映射表」
-                if (res.errors && res.errors.length) {
-                    // engine 的 message 已以「删除映射表失败：」开头，这里只拼工作表名，避免重复
-                    var failMsg = errList(res.errors);
-                    if (res.missing && res.missing.length) {
-                        failMsg += '；这些工作表已不存在：' + res.missing.join('、');
-                    }
-                    setStatus(failMsg, 'err');
-                    MaskAlert(failMsg);
-                    return;
-                }
-                setStatus('本文档没有映射表', '');
-                return;
-            }
-            // 映射表和记忆一起没了：清掉面板里的旧配置与缓存，再刷新让卡片回到自动识别
-            state.vault = null;
-            state.edited = {};
-            state.vaultStamp = '';
-            state.vaultKnown = false;
-            refresh(true);
-            var msg = '映射表已删除';
-            if (res.cleared > 0) { msg += '，已恢复 ' + res.cleared + ' 块区域的边框'; }
-            var problems = [];
-            if (res.errors.length) { problems.push('以下工作表恢复边框失败：' + errList(res.errors)); }
-            if (res.missing.length) { problems.push('这些工作表已不存在：' + res.missing.join('、')); }
-            if (problems.length) {
-                // 部分失败不能只留在状态栏：可能还有紫边没清掉，用户要看到具体哪张表
-                setStatus(msg + '，但没有全部处理完：' + problems.join('；'), 'err');
-                MaskAlert(msg + '。' + problems.join('；') + '。');
-                return;
-            }
-            setStatus(msg, 'ok');
-        }
-        try {
-            a = getApp();
-            MaskQuietHost(a, run);
-        } catch (e) {
-            setStatus('删除失败：' + MaskErrText(e), 'err');
-        }
-    }
-
     function showHelp() {
         var text = [
             '用法：',
@@ -696,10 +631,11 @@
             '已映射的单元格会被跳过，对同一区域重复执行「映射」不会叠加。',
             '映射过的区域会自动套一圈紫色虚线边框，不用打开面板也看得到。',
             '功能区的「全部加边框」「全部去边框」可以手动重画或一次去掉；反映射后边框跟着区域一起消失。',
+            '功能区「脱敏记录」组里的「清除脱敏记录」会删掉本文档的脱敏还原记录，删掉后已脱敏的数据无法再还原。',
             '要基于映射后的值再映射一遍，先「反映射」。',
             '',
             '同一原值始终映射为同一结果，不同原值映射为不同结果。',
-            '映射关系加密保存在隐藏工作表「' + E.VAULT_SHEET + '」中，「反映射」因此能精确还原。',
+            '映射关系加密保存在文档里一张隐藏的脱敏记录表中，「反映射」因此能精确还原。',
             '',
             '均匀=范围内等概率；正态=按均值/标准差聚集，越界折回；指数=多数靠近下限，λ 越大越平缓。',
             '',
@@ -711,7 +647,7 @@
             '',
             '「重新识别」只在本文档保存过设置时显示，点击后忽略已记设置重新判断。',
             '',
-            '密钥内置在代码中，持有这份加载项的人都能解密映射表，因此这只是混淆级保护。'
+            '密钥内置在代码中，持有这份加载项的人都能解密脱敏记录，因此这只是混淆级保护。'
         ].join('\n');
         MaskAlert(text);
     }
@@ -787,7 +723,6 @@
     });
     $('btnMask').addEventListener('click', doMask);
     $('btnRevert').addEventListener('click', doRevert);
-    $('btnDrop').addEventListener('click', doDrop);
     $('btnHelp').addEventListener('click', showHelp);
 
     /* ---------------- 自动读取 ----------------

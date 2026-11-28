@@ -204,25 +204,17 @@ function spyEngine(win) {
     fire(chk, 'change');
     ok(/首行为字段名/.test(doc.getElementById('selInfo').textContent), '恢复表头：' + doc.getElementById('selInfo').textContent);
 
-    console.log('\n[7] 清除映射表');
+    console.log('\n[7] 面板不再有清除入口：删除由功能区动作完成');
     const hadSheet = app.sheets.some(s => s.Name === '脱敏映射表');
     ok(hadSheet, '映射期间已生成隐藏工作表');
-
-    // 删除不可逆：确认框被拦（宿主策略）时必须按「没确认」处理，不能 fail-open
-    const confirmReal = win.confirm;
-    win.confirm = () => { throw new Error('dialog blocked'); };
-    doc.getElementById('btnDrop').click();
-    ok(app.sheets.some(s => s.Name === '脱敏映射表'), 'confirm 抛异常时不删除映射表');
-    ok(!/已删除/.test(doc.getElementById('status').textContent), 'confirm 抛异常时不报「已删除」');
-    win.confirm = () => false;
-    doc.getElementById('btnDrop').click();
-    ok(app.sheets.some(s => s.Name === '脱敏映射表'), 'confirm 返回 false 时不删除映射表');
-    win.confirm = confirmReal;
-
+    ok(!doc.getElementById('btnDrop'), '面板页脚没有清除链接（入口已挪到功能区）');
+    ok(!/清除本文档映射表/.test(doc.body.textContent), '面板不再出现「清除本文档映射表」文案');
     ok(doc.getElementById('btnAuto').style.display !== 'none', '删除前本文档有记忆，「重新识别」可见');
-    doc.getElementById('btnDrop').click();
+    // 功能区按钮走同一个引擎入口：这里直接调它，再让面板刷新（面板不再有清除钩子）。
+    const drop7 = win.MaskEngine.dropVault(app);
+    ok(drop7 && drop7.dropped === true, 'dropVault 报告删除成功');
+    fire(doc.getElementById('chkHeader'), 'change');     // 触发 refresh 跟上删除后的文档
     ok(!app.sheets.some(s => s.Name === '脱敏映射表'), '清除后工作表已删除');
-    ok(/已删除/.test(doc.getElementById('status').textContent), '状态栏：' + doc.getElementById('status').textContent);
     ok(doc.getElementById('btnAuto').style.display === 'none', '删除后没有可重新识别的记忆，「重新识别」消失');
     ok(doc.querySelectorAll('.card')[3].querySelector('.mode').value !== 'keep',
         '删除后卡片回到自动识别（备注列不再是不处理）');
@@ -535,7 +527,7 @@ function spyEngine(win) {
         ok(topB.ls === THIN_B.ls && topB.w === THIN_B.w && topB.c === THIN_B.c,
             'abortMask 把已画的边框恢复到映射前：' + JSON.stringify(topB));
         const st = d.getElementById('status').textContent;
-        ok(/映射表保存失败/.test(st) && /没有写入任何单元格/.test(st) &&
+        ok(/脱敏记录保存失败/.test(st) && /没有写入任何单元格/.test(st) &&
             /已撤回区域边框/.test(st) && /请重新映射/.test(st),
             '状态栏说明保存失败、已撤回边框并提示重映射：' + st);
         ok(!/已映射/.test(st), '不误报成功');
@@ -611,7 +603,7 @@ function spyEngine(win) {
         b.dom.window.close();
     }
 
-    console.log('\n[20] 映射表主密文损坏：从备份恢复并提示重新保存');
+    console.log('\n[20] 脱敏记录主密文损坏：从备份恢复并提示重新保存');
     {
         const b = boot();
         await waitLoad(b.dom);
@@ -625,7 +617,7 @@ function spyEngine(win) {
         b.app.select('Sheet1', 1, 2, table.length, 2);    // 选区变化触发自动刷新
         await sleep(1900);
         const st = d.getElementById('status').textContent;
-        ok(/映射表损坏，已用备份恢复，请重新保存/.test(st), '面板提示从备份恢复：' + st);
+        ok(/脱敏记录损坏，已用备份恢复，请重新保存/.test(st), '面板提示从备份恢复：' + st);
         ok(!/读取选区失败/.test(d.body.textContent), '不是「读取失败」空态');
         ok(d.querySelectorAll('.card').length === 2,
             '恢复后照常识别选区，卡片 ' + d.querySelectorAll('.card').length + ' 张');
@@ -634,7 +626,7 @@ function spyEngine(win) {
         d.getElementById('btnMask').click();
         ok(/已映射/.test(d.getElementById('status').textContent),
             '恢复后可以继续映射：' + d.getElementById('status').textContent);
-        ok(!/映射表损坏/.test(d.getElementById('status').textContent), '保存成功后不再提示损坏');
+        ok(!/脱敏记录损坏/.test(d.getElementById('status').textContent), '保存成功后不再提示损坏');
         b.dom.window.close();
     }
 
@@ -720,9 +712,16 @@ function spyEngine(win) {
             '面板已加载出字段卡片，实际 ' + d.querySelectorAll('.card').length + ' 张');
         ok(!d.getElementById('btnAreas') && !d.querySelector('.areas'),
             '面板里不再有区域列表入口');
-        const footBtns = ['btnMask', 'btnRevert', 'btnDrop', 'btnHelp'];
+        const footBtns = ['btnMask', 'btnRevert', 'btnHelp'];
         ok(footBtns.every(function (id) { return !!d.getElementById(id); }),
-            '页脚按钮（映射/反映射/清除/说明）都还在');
+            '页脚按钮（映射/反映射/说明）都还在');
+        ok(!d.getElementById('btnDrop'), '页脚不再有「清除本文档映射表」链接（入口在功能区）');
+        // 帮助要告诉用户新入口，且不再出现「映射表」这个用户不需要知道的名词
+        const alertsBefore22 = (b.dom.window.__alerts || []).length;
+        d.getElementById('btnHelp').click();
+        const help22 = (b.dom.window.__alerts || []).slice(alertsBefore22);
+        ok(help22.length === 1 && /清除脱敏记录/.test(help22[0]) && !/映射表/.test(help22[0]),
+            '帮助说明功能区新入口且不出现「映射表」：' + JSON.stringify(help22));
         b.dom.window.close();
     }
 
@@ -837,101 +836,9 @@ function spyEngine(win) {
         E.saveVault = realSave;
         ok(saves === 2, '回滚后又尝试写回一次映射表：' + saves);
         const st = d.getElementById('status').textContent;
-        ok(/写入失败/.test(st) && /回滚后的映射表没保存：模拟二次保存失败/.test(st) &&
-            /请检查映射表/.test(st), '状态栏 loud 说明映射表没写回：' + st);
+        ok(/写入失败/.test(st) && /回滚后的脱敏记录没保存：模拟二次保存失败/.test(st) &&
+            /请检查脱敏记录/.test(st), '状态栏 loud 说明脱敏记录没写回：' + st);
         spy.restore();
-        b.dom.window.close();
-    }
-
-    console.log('\n[26] 删除映射表：用新返回对象报告 dropped/cleared/errors/missing');
-    {
-        // a) 没有映射表：dropped=false，直接说没有
-        const b0 = boot();
-        await waitLoad(b0.dom);
-        const d0 = b0.dom.window.document;
-        d0.getElementById('btnDrop').click();
-        ok(/本文档没有映射表/.test(d0.getElementById('status').textContent),
-            'dropped=false 时提示没有映射表：' + d0.getElementById('status').textContent);
-        b0.dom.window.close();
-
-        // b) 有映射表：删除前先清掉紫边，报表恢复了几块区域
-        const b1 = boot();
-        await waitLoad(b1.dom);
-        const d1 = b1.dom.window.document;
-        const THIN_D = { ls: 1, w: 2, c: 0 };
-        for (let r = 1; r <= table.length; r++) {
-            for (let c = 1; c <= table[0].length; c++) {
-                [7, 8, 9, 10].forEach(idx => b1.app.setBorder('Sheet1', r, c, idx, THIN_D));
-            }
-        }
-        d1.getElementById('btnMask').click();
-        ok(b1.app.getBorder('Sheet1', 2, 1, 8).ls !== THIN_D.ls, '删除前区域已套紫边');
-        d1.getElementById('btnDrop').click();
-        const st1 = d1.getElementById('status').textContent;
-        ok(/映射表已删除/.test(st1) && /已恢复 1 块区域的边框/.test(st1),
-            '删除后报告恢复的边框：' + st1);
-        ok(!b1.app.sheets.some(s => s.Name === '脱敏映射表'), '工作表已删除');
-        ok(b1.app.getBorder('Sheet1', 2, 1, 8).ls === THIN_D.ls, '紫边已恢复成原样式');
-        b1.dom.window.close();
-
-        // c) 部分失败：errors/missing 要弹窗 + err 状态逐条列出，不能只留一句「已删除」
-        const b2 = boot();
-        await waitLoad(b2.dom);
-        const d2 = b2.dom.window.document;
-        const E2 = b2.dom.window.MaskEngine;
-        const origDrop2 = E2.dropVault;
-        E2.dropVault = function () {
-            return {
-                dropped: true, cleared: 2, missing: ['Sheet9'],
-                errors: [{ sheet: 'Sheet2', message: '模拟保护' }]
-            };
-        };
-        d2.getElementById('btnDrop').click();
-        E2.dropVault = origDrop2;
-        const alerts2 = b2.dom.window.__alerts || [];
-        const st2 = d2.getElementById('status').textContent;
-        ok(alerts2.length === 1 && /映射表已删除/.test(alerts2[0]) &&
-            /以下工作表恢复边框失败：Sheet2：模拟保护/.test(alerts2[0]) &&
-            /这些工作表已不存在：Sheet9/.test(alerts2[0]),
-            '部分失败弹窗逐条列出：' + JSON.stringify(alerts2));
-        ok(/没有全部处理完/.test(st2) && d2.getElementById('status').className.includes('err'),
-            '状态栏也标成 err：' + st2);
-        b2.dom.window.close();
-    }
-
-
-    console.log('\n[27] 删除映射表失败（只读/保护文档）：不能误报成「没有映射表」');
-    {
-        const b = boot();
-        await waitLoad(b.dom);
-        const d = b.dom.window.document;
-        const E = b.dom.window.MaskEngine;
-        d.getElementById('btnMask').click();
-        await sleep(200);
-        ok(E.loadVault(b.app).ranges.length > 0, '先映射出映射表');
-
-        // 模拟只读/被保护文档：删工作表抛错
-        b.app.setDeleteHook(function (s) { return s.Name === '脱敏映射表' ? 'throw' : undefined; });
-        const alertsBefore = (b.dom.window.__alerts || []).length;
-        d.getElementById('btnDrop').click();
-        await sleep(50);
-        const st = d.getElementById('status').textContent;
-        const alerts = (b.dom.window.__alerts || []).slice(alertsBefore);
-        ok(/删除映射表失败/.test(st) && d.getElementById('status').className.includes('err'),
-            '状态栏报删除失败且是 err：' + st);
-        ok(alerts.length === 1 && /删除映射表失败/.test(alerts[0]),
-            '弹窗也说明删除失败：' + JSON.stringify(alerts));
-        ok(!/本文档没有映射表/.test(st), '不把删除失败说成没有映射表');
-        ok(b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表仍在');
-        ok(E.loadVault(b.app).ranges.length > 0, '映射记录仍在（错误没有吞掉状态）');
-
-        // 解除删除故障后重试：真的删掉
-        b.app.setDeleteHook(null);
-        d.getElementById('btnDrop').click();
-        await sleep(50);
-        ok(/映射表已删除/.test(d.getElementById('status').textContent),
-            '重试删除成功：' + d.getElementById('status').textContent);
-        ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表已删掉');
         b.dom.window.close();
     }
 
@@ -1024,16 +931,12 @@ function spyEngine(win) {
             '刷新后沿用保存的「备注」前缀：' + d.querySelectorAll('.card')[3].querySelector('.f-prefix').value);
 
         const spy = spyEngine(b.dom.window);
-        const origDrop = E.dropVault;
-        let dropRes = null;
-        E.dropVault = function (app) { dropRes = origDrop.call(E, app); return dropRes; };
-        d.getElementById('btnDrop').click();
-        E.dropVault = origDrop;
+        // 面板不再有清除钩子：功能区动作直接调引擎，随后面板的 refresh 要跟上
+        const dropRes = E.dropVault(b.app);
         ok(dropRes && dropRes.dropped === true, 'dropVault 报告删除成功');
         ok(!b.app.sheets.some(s => s.Name === '脱敏映射表'), '映射表已删除');
         ok(E.vaultStamp(b.app) === '', '删除后内容戳为空');
-        ok(/映射表已删除/.test(d.getElementById('status').textContent),
-            '状态栏：' + d.getElementById('status').textContent);
+        fire(d.getElementById('chkHeader'), 'change');     // 触发 refresh 跟上删除后的文档
         // dropVault 内部那次读是引擎闭包，从公开 API 数不到；这里数的是面板 refresh 的读取
         ok(spy.loads === 1, '删除后 refresh 读一次空表（stamp 为空时不读密文）：实际 ' + spy.loads);
         ok(d.querySelectorAll('.card')[3].querySelector('.f-prefix').value === '备注',
@@ -1078,7 +981,7 @@ function spyEngine(win) {
         d.getElementById('btnRevert').click();             // 旧密文写进备份列
         b.app.grid['脱敏映射表!2,1'] = 'broken-cipher';    // 主密文坏掉
         fire(d.getElementById('chkHeader'), 'change');     // 重新读取：从备份恢复
-        ok(/映射表损坏，已用备份恢复/.test(d.getElementById('status').textContent),
+        ok(/脱敏记录损坏，已用备份恢复/.test(d.getElementById('status').textContent),
             '主密文坏时提示从备份恢复：' + d.getElementById('status').textContent);
 
         d.getElementById('btnMask').click();               // 重新保存：引擎保存成功会清掉内存 vault 的 recovered
@@ -1087,7 +990,7 @@ function spyEngine(win) {
         const spy = spyEngine(b.dom.window);
         fire(d.getElementById('chkHeader'), 'change');     // 普通 refresh 命中缓存，不再读盘
         ok(spy.loads === 0, '保存成功后普通 refresh 命中缓存、不再解密：实际 ' + spy.loads);
-        ok(!/映射表损坏/.test(d.getElementById('status').textContent),
+        ok(!/脱敏记录损坏/.test(d.getElementById('status').textContent),
             '保存成功后不再重复提示损坏：' + d.getElementById('status').textContent);
         spy.restore();
         b.dom.window.close();

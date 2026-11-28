@@ -874,7 +874,7 @@ Engine.saveVault(emptyCipherApp31, Engine.loadVault(emptyCipherApp31));
 clearCells(emptyCipherApp31, Engine.VAULT_SHEET, 1, 2, 50);   // 只清密文，A1 标记还在
 let err31 = null;
 try { Engine.loadVault(emptyCipherApp31); } catch (e) { err31 = e.message; }
-ok(!!err31 && /密文为空|损坏/.test(err31), '标记在而密文空 → 明确抛错：' + err31);
+ok(!!err31 && /脱敏记录为空|损坏/.test(err31), '标记在而脱敏记录为空 → 明确抛错：' + err31);
 const corruptApp31 = new MockWPS();
 Engine.saveVault(corruptApp31, Engine.loadVault(corruptApp31));
 corruptApp31.grid[Engine.VAULT_SHEET + '!2,1'] = 'M1:not-a-valid-cipher';
@@ -986,7 +986,7 @@ firstSaveApp32.setWriteHook(function (info) {
 let svErrD32 = null;
 try { Engine.saveVault(firstSaveApp32, Engine.loadVault(firstSaveApp32)); } catch (e) { svErrD32 = e; }
 firstSaveApp32.clearWriteHook();
-ok(!!svErrD32 && /此前没有可用映射表/.test(svErrD32.message) && svErrD32.rollback.ok === true,
+ok(!!svErrD32 && /此前没有可用的脱敏记录/.test(svErrD32.message) && svErrD32.rollback.ok === true,
     '首次保存失败 → 清空未完成写入：' + svErrD32.message);
 const firstLoaded32 = Engine.loadVault(firstSaveApp32);
 ok(firstLoaded32 && Object.keys(firstLoaded32.maps).length === 0,
@@ -1359,7 +1359,7 @@ ok(typeof app42.getCell('Sheet1', 2, 1) === 'number' && typeof app42.getCell('Sh
     app42.getCell('Sheet1', 2, 1) !== 1 && app42.getCell('Sheet1', 3, 1) !== 2000000,
     '两格都换成了数字假值：' + app42.getCell('Sheet1', 2, 1) + ',' + app42.getCell('Sheet1', 3, 1));
 
-console.log('\n[43] 只读文档上拒绝脱敏：映射表存不进去，宁可不做');
+console.log('\n[43] 只读文档上拒绝脱敏：脱敏记录存不进去，宁可不做');
 const app43 = new MockWPS();
 app43.setTable('Sheet1', 1, 1, [['姓名'], ['张三'], ['李四']]);
 paintUserBorders(app43, 'Sheet1', 1, 1, 3, 1, THIN_EDGE);
@@ -1987,8 +1987,8 @@ flow59(cleanApp59, 11);
 const cleanSides59 = sides59(cleanApp59, 2, 11, 1, 1);
 ok(allSides59(cleanSides59), '对照：干净文档一次映射四边完整：' + JSON.stringify(cleanSides59));
 
-/* ---------- 60. dropVault 删除映射表失败：恢复隐藏、如实报错、不假装成功 ---------- */
-console.log('\n[60] dropVault 删除映射表失败：恢复隐藏、如实报错、不假装成功');
+/* ---------- 60. dropVault 清除脱敏记录失败：恢复隐藏、如实报错、不假装成功 ---------- */
+console.log('\n[60] dropVault 清除脱敏记录失败：恢复隐藏、如实报错、不假装成功');
 const delApp60 = freshApp();
 paintUserBorders(delApp60, 'Sheet1', 1, 1, table.length, 4, THIN_EDGE);
 const delVault60 = Engine.loadVault(delApp60);
@@ -2001,7 +2001,7 @@ const delRes60 = Engine.dropVault(delApp60);
 const delSheet60 = delApp60.sheets.filter(function (s) { return s.Name === Engine.VAULT_SHEET; })[0];
 ok(delRes60.dropped === false, '删除失败时不假装成功：dropped=' + delRes60.dropped);
 ok(delRes60.errors.length === 1 && delRes60.errors[0].sheet === Engine.VAULT_SHEET &&
-    /删除映射表失败/.test(delRes60.errors[0].message),
+    /清除脱敏记录失败/.test(delRes60.errors[0].message),
     '删除失败如实进 errors：' + JSON.stringify(delRes60.errors));
 ok(delSheet60 && delSheet60.Visible === 2,
     '映射表仍在且被隐藏回去（Visible=2），实际 ' + (delSheet60 ? delSheet60.Visible : '已删除'));
@@ -2213,7 +2213,7 @@ fail64.app.setWriteHook(function (info) {
 let failErr64 = null;
 try { Engine.saveVault(fail64.app, fail64.vault); } catch (e) { failErr64 = e; }
 fail64.app.clearWriteHook();
-ok(!!failErr64 && /映射表保存失败/.test(failErr64.message) && failErr64.rollback.ok === false &&
+ok(!!failErr64 && /脱敏记录保存失败/.test(failErr64.message) && failErr64.rollback.ok === false &&
     /回滚未完成/.test(failErr64.message),
     '保存失败仍 loud、回滚结果如实上报：' + (failErr64 && failErr64.message));
 ok(fail64.vault.recovered === true,
@@ -2405,7 +2405,7 @@ ok(fail68c.err.rollback.failedColumns.join(',') === '3',
     JSON.stringify(fail68c.err.rollback.failedColumns));
 ok(/只有第 3 列未能回滚/.test(fail68c.err.message) && /其余列已恢复原值/.test(fail68c.err.message),
     '错误文案只指向失败列，并说明其余列已恢复原值');
-ok(/映射记录只保留失败列/.test(fail68c.err.message) && /反映射/.test(fail68c.err.message),
+ok(/脱敏记录只保留失败列/.test(fail68c.err.message) && /反映射/.test(fail68c.err.message),
     '错误文案说明区域记录只保留失败列，并指路「反映射」');
 ok(fail68c.v.ranges.length === 1 && fail68c.v.ranges[0].c1 === 3 && fail68c.v.ranges[0].c2 === 3,
     '成功列的区域记录已撤销，只保留失败列（备注，第 3 列）：' +
@@ -2599,7 +2599,7 @@ ok(!!fail71a.err && fail71a.err.rollback.ok === false &&
     fail71a.err.rollback.failedColumns.join(',') === '3',
     '只有备注列（第 3 列）回滚失败：' + JSON.stringify(fail71a.err && fail71a.err.rollback));
 ok(/只有第 3 列未能回滚/.test(fail71a.err.message) && /其余列已恢复原值/.test(fail71a.err.message) &&
-    /映射记录只保留失败列/.test(fail71a.err.message),
+    /脱敏记录只保留失败列/.test(fail71a.err.message),
     '错误文案明确只有失败列未回滚、其余列已恢复，且不再说「先反映射恢复剩余假值」这种通用话');
 const ranges71a = fail71a.vault.ranges;
 ok(ranges71a.length === 1 && ranges71a[0].c1 === 3 && ranges71a[0].c2 === 3,
