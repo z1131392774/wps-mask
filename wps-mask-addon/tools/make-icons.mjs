@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve, basename } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { decode, crop, centerSquare, resize, encode } from './png.mjs'
 
 const TOOLS = dirname(fileURLToPath(import.meta.url))
@@ -37,7 +37,9 @@ const SCALE = argOf('--scale', 2)
 const BROWSERS = [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-  'C:/Program Files/Google/Chrome/Application/chrome.exe'
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable'
 ]
 const browser = BROWSERS.find(p => existsSync(p))
 if (!browser) {
@@ -56,14 +58,22 @@ function renderBig(svg, outFile) {
   writeFileSync(page, '<!doctype html><html><head><style>' +
     'html,body{margin:0;padding:0;overflow:hidden;background:transparent}' +
     'svg{display:block}</style></head><body>' + sized + '</body></html>', 'utf8')
-  execFileSync(browser, [
+  const args = [
     '--headless=new', '--disable-gpu',
     '--window-size=' + BIG + ',' + BIG,
     '--default-background-color=00000000',
     '--virtual-time-budget=2000',
-    '--screenshot=' + outFile,
-    'file:///' + page.replace(/\\/g, '/')
-  ], { stdio: 'ignore' })
+    '--screenshot=' + outFile
+  ]
+  // Linux 无头 Chrome：本机 HOME 不在可写区、又没有可用的 PID/网络命名空间，
+  // 不显式给用户目录会直接退出，沙箱也只能关掉；这里光栅化的只是仓库里的 SVG。
+  // Windows 保持原参数不变。
+  if (process.platform !== 'win32') {
+    args.push('--no-sandbox',
+      '--user-data-dir=' + join(TMP, 'profile-' + basename(outFile, '.png')))
+  }
+  args.push(pathToFileURL(page).href)
+  execFileSync(browser, args, { stdio: 'ignore' })
   return decode(readFileSync(outFile))
 }
 
