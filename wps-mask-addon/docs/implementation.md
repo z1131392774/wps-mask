@@ -8,11 +8,11 @@ The contracts behind [AGENTS.md](../AGENTS.md); read this before changing genera
 
 The table is keyed `n:`/`s:`/`b:` ; probe `used[keyOf(candidate)]`, not `used[rawValue]`; a collision reverts wrongly. A loose index keeps coerced old fakes matchable; `used` records both forms.
 
-When an interval just holds the distinct values, permute the column with `sattolo()` (one cycle, no fixed points); value-by-value generation forces the last onto itself; a fixed offset is the column rotated. `assignExact` computes the span before materialising: 1,000,000 is the ceiling, a non-finite bound is rejected, and a too-wide stretch falls back to random. An interval too small fails naming the column and header.
+When an interval just holds the values, permute it with `sattolo()` (one cycle, no fixed points); value-by-value generation forces the last onto itself, a fixed offset is a rotation. `assignExact` checks the span first: 1,000,000 ceiling, non-finite rejected, too wide falls back to random; too small fails naming column and header.
 
 ## Mixed columns
 
-Values are typed, not shaped. A number comes from the column range; a string goes through `genText`, which appends digits to the field-name prefix and guarantees a non-digit. On revert, `writeColumnParts` prefixes every string with `'`, the host's text marker, so `008081` survives a general-format cell unchanged. A mixed batch with full recorded slots widens `num.max`; the write-failure rollback reuses `textForWrite`.
+Values are typed, not shaped. A number comes from the column range; a string goes through `genText` (field-name prefix plus a guaranteed non-digit). Revert prefixes strings with `'`, the text marker, so `008081` survives a General cell. A full batch widens `num.max`; the write-failure rollback reuses `textForWrite`.
 
 ## Vault format
 
@@ -20,7 +20,7 @@ Values are typed, not shaped. A number comes from the column range; a string goe
 
 Remembered `min`/`max` are data, not policy: union with the batch, grow only, then `absorbBucket()`. Keep a bucket ranges still reference; never fall back to the global index for a missing one — count those cells ambiguous. `pruneUnusedBuckets()` drops buckets no range references.
 
-Saving is one write after a verified backup: the old ciphertext goes to B and is read back, then the new one to A, read back to compare; a failure rolls back or keeps the backup. Mapping, areas, settings and marks share it; `prepareMask` paints the outline first, and `abortMask` restores the pre-mask borders if the save fails. `checkWritten()` re-reads every written cell (loose types), so a dropped write fails the batch. A failed rollback keeps base records plus `partial` per unrestored column: per-row planned fake and original key, plus the signature; revert compares each cell with the fake, never through a bucket.
+Saving is one write after a verified backup: old ciphertext to B, read back, new to A, read back and compared; failure rolls back or keeps the backup. Mapping, areas, settings and marks share it; `prepareMask` paints, `abortMask` restores borders if the save fails. `checkWritten()` re-reads each cell (loose), so a dropped write fails the batch. A failed rollback keeps base records plus `partial` per unrestored column (planned fake, original key, signature); revert compares each cell with the fake, never through a bucket.
 
 ## Masked-area outline
 
@@ -28,4 +28,6 @@ Saving is one write after a verified backup: the old ciphertext goes to B and is
 
 ## Pane and ribbon rendering
 
-The fallback layout avoids flex `gap` and CSS variables: the embedded browser is unknown and fails silently. Grid is enhancement only, inside `@supports (display: grid)`; an old engine keeps the fallback. The pane shows type, a sample and parameters; counts live in the status bar, one sentence per state. Ribbon icons are SVG in `assets/icons/`, rendered to PNG by `tools/make-icons.mjs`; only `getImage` shows one, `image=` is ignored. Screenshot 260/300/380 px with `node tools/preview-pane.mjs`.
+Clearing the records is a ribbon action, not a pane one: `MaskQuickClearRecords` refuses a read-only document, asks for confirmation (an unavailable dialog means no), calls `Engine.dropVault`, and reports per-sheet cleanup failures. The pane's delete control is gone.
+
+The fallback layout avoids flex `gap` and CSS variables: the embedded browser is unknown. Grid is enhancement only (`@supports`); old engines keep the fallback. The pane shows type, a sample, parameters; counts live in the status bar. Icons are SVG in `assets/icons/`, PNG via `tools/make-icons.mjs`; only `getImage` works. Screenshot 260/300/380 px with `node tools/preview-pane.mjs`.
